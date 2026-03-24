@@ -1,0 +1,911 @@
+"""
+장비 예약 서비스
+"""
+
+from datetime import datetime, timedelta
+from dataclasses import replace
+
+from src.domain.models import (
+    User,
+    EquipmentAsset,
+    EquipmentBooking,
+    EquipmentBookingStatus,
+    ResourceStatus,
+    UserRole,
+    generate_id,
+    now_iso,
+)
+from src.domain.daily_booking_rules import (
+    build_daily_booking_period,
+    calculate_request_delay_minutes,
+    validate_daily_booking_dates,
+)
+from src.domain.restriction_rules import evaluate_user_restriction
+from src.storage.repositories import (
+    UserRepository,
+    RoomBookingRepository,
+    EquipmentAssetRepository,
+    EquipmentBookingRepository,
+    AuditLogRepository,
+    UnitOfWork,
+)
+from src.storage.file_lock import global_lock
+from src.config import (
+    MAX_BOOKING_DAYS,
+    TIME_SLOT_MINUTES,
+    MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+    LATE_CANCEL_THRESHOLD_MINUTES,
+)
+
+
+class EquipmentBookingError(Exception):
+    """장비 예약 관련 예외"""
+
+
+class AdminRequiredError(Exception):
+    """관리자 권한 필요 예외"""
+
+
+def _require_admin(user):
+    """관리자 권한 확인"""
+    if user.role != UserRole.ADMIN:
+        raise AdminRequiredError("관리자만 수행할 수 있는 작업입니다.")
+
+
+class EquipmentService:
+    """장비 예약 서비스"""
+
+    def __init__(
+        self,
+        equipment_repo=None,
+        booking_repo=None,
+        room_booking_repo=None,
+        user_repo=None,
+        audit_repo=None,
+        penalty_service=None,
+    ):
+        from src.domain.penalty_service import PenaltyService
+
+        self.equipment_repo = equipment_repo or EquipmentAssetRepository()
+        self.booking_repo = booking_repo or EquipmentBookingRepository()
+        self.room_booking_repo = room_booking_repo or RoomBookingRepository()
+        self.user_repo = user_repo or UserRepository()
+        self.audit_repo = audit_repo or AuditLogRepository()
+        self.penalty_service = penalty_service or PenaltyService(
+            user_repo=self.user_repo,
+            audit_repo=self.audit_repo,
+        )
+
+    def _get_existing_user(self, user):
+        current_user = self.user_repo.get_by_id(user.id)
+        if current_user is None:
+            raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+        return current_user
+
+    def _get_existing_user_by_id(self, user_id):
+        current_user = self.user_repo.get_by_id(user_id)
+        if current_user is None:
+            raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+        return current_user
+
+    def _get_existing_admin(self, admin):
+        _require_admin(admin)
+        current_admin = self.user_repo.get_by_id(admin.id)
+        if current_admin is None or current_admin.role != UserRole.ADMIN:
+            raise AdminRequiredError("관리자만 수행할 수 있는 작업입니다.")
+        return current_admin
+
+    def _ensure_user_can_create_booking(self, user):
+        current_user = self._get_existing_user(user)
+        status = evaluate_user_restriction(current_user, datetime.now())
+
+        if status["is_banned"]:
+            raise EquipmentBookingError(
+                f"이용이 금지된 상태입니다. 금지 해제일: {status['restriction_until']}"
+            )
+
+        if status["is_restricted"]:
+            total_active = len(
+                self.booking_repo.get_active_by_user(current_user.id)
+            ) + len(self.room_booking_repo.get_active_by_user(current_user.id))
+            if total_active >= 1:
+                raise EquipmentBookingError(
+                    f"패널티로 인해 활성 예약 1건만 허용됩니다. 현재 활성 예약: {total_active}건"
+                )
+
+        return current_user
+
+    def _run_policy_checks(self):
+        from src.domain.policy_service import PolicyService
+
+        PolicyService(
+            user_repo=self.user_repo,
+            room_booking_repo=self.room_booking_repo,
+            equipment_booking_repo=self.booking_repo,
+            penalty_repo=self.penalty_service.penalty_repo,
+            audit_repo=self.audit_repo,
+            penalty_service=self.penalty_service,
+        ).run_all_checks()
+
+    def get_all_equipment(self):
+        """모든 장비 조회"""
+        return self.equipment_repo.get_all()
+
+    def get_available_equipment(self):
+        """예약 가능한 장비 조회"""
+        return self.equipment_repo.get_available()
+
+    def get_equipment(self, equipment_id):
+        """장비 조회"""
+        return self.equipment_repo.get_by_id(equipment_id)
+
+    def get_equipment_by_type(self, asset_type):
+        """종류별 장비 조회"""
+        return self.equipment_repo.get_by_type(asset_type)
+
+    def get_available_equipment_by_type(self, asset_type, start_time, end_time):
+        equipment_list = [
+            item
+            for item in self.equipment_repo.get_by_type(asset_type)
+            if item.status == ResourceStatus.AVAILABLE
+        ]
+        available = []
+        for item in equipment_list:
+            conflicts = self.booking_repo.get_conflicting(
+                item.id, start_time.isoformat(), end_time.isoformat()
+            )
+            if not conflicts:
+                available.append(item)
+        return available
+
+    def create_daily_booking(
+        self, user, equipment_id, start_date, end_date, max_active=1
+    ):
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                user = self._ensure_user_can_create_booking(user)
+                equipment = self.equipment_repo.get_by_id(equipment_id)
+                if equipment is None:
+                    raise EquipmentBookingError("존재하지 않는 장비입니다.")
+
+                if equipment.status != ResourceStatus.AVAILABLE:
+                    raise EquipmentBookingError(
+                        f"장비가 현재 {equipment.status.value} 상태입니다."
+                    )
+
+                valid, error, _ = validate_daily_booking_dates(
+                    start_date, end_date, datetime.now()
+                )
+                if not valid:
+                    raise EquipmentBookingError(error)
+
+                start_time, end_time = build_daily_booking_period(start_date, end_date)
+
+                active_bookings = self.booking_repo.get_active_by_user(user.id)
+                if len(active_bookings) >= max_active:
+                    raise EquipmentBookingError(
+                        f"활성 장비 예약 한도({max_active}건)를 초과했습니다. 현재 활성 예약: {len(active_bookings)}건"
+                    )
+
+                conflicts = self.booking_repo.get_conflicting(
+                    equipment_id, start_time.isoformat(), end_time.isoformat()
+                )
+                if conflicts:
+                    raise EquipmentBookingError(
+                        "해당 기간에 이미 예약이 있습니다. 다른 장비 또는 다른 날짜를 선택해주세요."
+                    )
+
+                booking = EquipmentBooking(
+                    id=generate_id(),
+                    user_id=user.id,
+                    equipment_id=equipment_id,
+                    start_time=start_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=EquipmentBookingStatus.RESERVED,
+                )
+
+                self.booking_repo.add(booking)
+                self.audit_repo.log_action(
+                    actor_id=user.id,
+                    action="create_equipment_booking_daily",
+                    target_type="equipment_booking",
+                    target_id=booking.id,
+                    details=f"장비: {equipment.name}, 기간: {start_time} ~ {end_time}",
+                )
+                return booking
+
+    def modify_daily_booking(self, user, booking_id, start_date, end_date):
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                user = self._get_existing_user(user)
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.user_id != user.id:
+                    raise EquipmentBookingError("본인의 예약만 변경할 수 있습니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 변경할 수 없습니다."
+                    )
+
+                valid, error, _ = validate_daily_booking_dates(
+                    start_date, end_date, datetime.now()
+                )
+                if not valid:
+                    raise EquipmentBookingError(error)
+
+                start_time, end_time = build_daily_booking_period(start_date, end_date)
+                conflicts = self.booking_repo.get_conflicting(
+                    booking.equipment_id,
+                    start_time.isoformat(),
+                    end_time.isoformat(),
+                    exclude_id=booking_id,
+                )
+                if conflicts:
+                    raise EquipmentBookingError(
+                        "해당 기간에 이미 예약이 있습니다. 다른 날짜를 선택해주세요."
+                    )
+
+                updated = replace(
+                    booking,
+                    start_time=start_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    updated_at=now_iso(),
+                )
+                self.booking_repo.update(updated)
+                self.audit_repo.log_action(
+                    actor_id=user.id,
+                    action="modify_equipment_booking_daily",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"변경: {start_time} ~ {end_time}",
+                )
+                return updated
+
+    def admin_modify_daily_booking(self, admin, booking_id, start_date, end_date):
+        admin = self._get_existing_admin(admin)
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 변경할 수 없습니다."
+                    )
+
+                booking_user = self.user_repo.get_by_id(booking.user_id)
+                if booking_user is None:
+                    raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+
+                valid, error, _ = validate_daily_booking_dates(
+                    start_date, end_date, datetime.now()
+                )
+                if not valid:
+                    raise EquipmentBookingError(error)
+
+                start_time, end_time = build_daily_booking_period(start_date, end_date)
+                conflicts = self.booking_repo.get_conflicting(
+                    booking.equipment_id,
+                    start_time.isoformat(),
+                    end_time.isoformat(),
+                    exclude_id=booking_id,
+                )
+                if conflicts:
+                    raise EquipmentBookingError("해당 기간에 이미 예약이 있습니다.")
+
+                updated = replace(
+                    booking,
+                    start_time=start_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    updated_at=now_iso(),
+                )
+                self.booking_repo.update(updated)
+                self.audit_repo.log_action(
+                    actor_id=admin.id,
+                    action="admin_modify_equipment_booking_daily",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"변경: {start_time} ~ {end_time}",
+                )
+                return updated
+
+    def create_booking(
+        self,
+        user,
+        equipment_id,
+        start_time,
+        end_time,
+        max_active=MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+    ):
+        """
+        장비 예약 생성
+
+        Args:
+            user: 예약자
+            equipment_id: 장비 ID
+            start_time: 시작 시간
+            end_time: 종료 시간
+            max_active: 최대 활성 예약 수 (제한 상태에 따라 다름)
+
+        Returns:
+            생성된 예약
+
+        Raises:
+            EquipmentBookingError: 예약 불가 시
+        """
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                user = self._ensure_user_can_create_booking(user)
+                effective_max_active = min(max_active, MAX_ACTIVE_EQUIPMENT_BOOKINGS)
+
+                equipment = self.equipment_repo.get_by_id(equipment_id)
+                if equipment is None:
+                    raise EquipmentBookingError("존재하지 않는 장비입니다.")
+
+                if equipment.status != ResourceStatus.AVAILABLE:
+                    raise EquipmentBookingError(
+                        f"장비가 현재 {equipment.status.value} 상태입니다."
+                    )
+
+                self._validate_booking_time(start_time, end_time)
+
+                active_bookings = self.booking_repo.get_active_by_user(user.id)
+                if len(active_bookings) >= effective_max_active:
+                    raise EquipmentBookingError(
+                        f"활성 예약 한도({effective_max_active}건)를 초과했습니다. "
+                        f"현재 활성 예약: {len(active_bookings)}건"
+                    )
+
+                conflicts = self.booking_repo.get_conflicting(
+                    equipment_id, start_time.isoformat(), end_time.isoformat()
+                )
+                if conflicts:
+                    raise EquipmentBookingError(
+                        "해당 시간대에 이미 예약이 있습니다. 다른 시간을 선택해주세요."
+                    )
+
+                booking = EquipmentBooking(
+                    id=generate_id(),
+                    user_id=user.id,
+                    equipment_id=equipment_id,
+                    start_time=start_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=EquipmentBookingStatus.RESERVED,
+                )
+
+                self.booking_repo.add(booking)
+
+                self.audit_repo.log_action(
+                    actor_id=user.id,
+                    action="create_equipment_booking",
+                    target_type="equipment_booking",
+                    target_id=booking.id,
+                    details=f"장비: {equipment.name}, 시간: {start_time} ~ {end_time}",
+                )
+
+                return booking
+
+    def _validate_booking_time(self, start_time, end_time):
+        """예약 시간 유효성 검사"""
+        now = datetime.now()
+
+        # 과거 시간 예약 불가
+        if start_time < now:
+            raise EquipmentBookingError("과거 시간은 예약할 수 없습니다.")
+
+        # 종료가 시작보다 나중이어야 함
+        if end_time <= start_time:
+            raise EquipmentBookingError("종료 시간은 시작 시간 이후여야 합니다.")
+
+        # 14일 이내 예약만 가능
+        max_date = now + timedelta(days=MAX_BOOKING_DAYS)
+        if start_time > max_date:
+            raise EquipmentBookingError(
+                f"{MAX_BOOKING_DAYS}일 이내의 예약만 가능합니다."
+            )
+
+        # 30분 단위 확인
+        if start_time.minute % TIME_SLOT_MINUTES != 0 or start_time.second != 0:
+            raise EquipmentBookingError(
+                f"예약은 {TIME_SLOT_MINUTES}분 단위로만 가능합니다."
+            )
+
+        if end_time.minute % TIME_SLOT_MINUTES != 0 or end_time.second != 0:
+            raise EquipmentBookingError(
+                f"예약은 {TIME_SLOT_MINUTES}분 단위로만 가능합니다."
+            )
+
+    def modify_booking(self, user, booking_id, new_start_time, new_end_time):
+        """
+        예약 변경 (사용자: reserved 상태만)
+        """
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                user = self._get_existing_user(user)
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.user_id != user.id:
+                    raise EquipmentBookingError("본인의 예약만 변경할 수 있습니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 변경할 수 없습니다. "
+                        "예약 대기(reserved) 상태만 변경 가능합니다."
+                    )
+
+                self._validate_booking_time(new_start_time, new_end_time)
+
+                conflicts = self.booking_repo.get_conflicting(
+                    booking.equipment_id,
+                    new_start_time.isoformat(),
+                    new_end_time.isoformat(),
+                    exclude_id=booking_id,
+                )
+                if conflicts:
+                    raise EquipmentBookingError(
+                        "해당 시간대에 이미 예약이 있습니다. 다른 시간을 선택해주세요."
+                    )
+
+                updated = replace(
+                    booking,
+                    start_time=new_start_time.isoformat(),
+                    end_time=new_end_time.isoformat(),
+                    updated_at=now_iso(),
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=user.id,
+                    action="modify_equipment_booking",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"변경: {new_start_time} ~ {new_end_time}",
+                )
+
+                return updated
+
+    def cancel_booking(self, user, booking_id):
+        """
+        예약 취소 (사용자)
+
+        Returns:
+            (취소된 예약, 직전 취소 여부)
+        """
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                user = self._get_existing_user(user)
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.user_id != user.id:
+                    raise EquipmentBookingError("본인의 예약만 취소할 수 있습니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 취소할 수 없습니다."
+                    )
+
+                now = datetime.now()
+                start = datetime.fromisoformat(booking.start_time)
+                is_late_cancel = (
+                    start - now
+                ).total_seconds() < LATE_CANCEL_THRESHOLD_MINUTES * 60
+
+                updated = replace(
+                    booking,
+                    status=EquipmentBookingStatus.CANCELLED,
+                    cancelled_at=now_iso(),
+                    updated_at=now_iso(),
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=user.id,
+                    action="cancel_equipment_booking",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"직전 취소: {is_late_cancel}",
+                )
+
+                if is_late_cancel:
+                    self.penalty_service.apply_late_cancel(
+                        user=user,
+                        booking_type="equipment_booking",
+                        booking_id=booking_id,
+                        actor_id=user.id,
+                    )
+
+                return updated, is_late_cancel
+
+    def admin_cancel_booking(self, admin, booking_id, reason=""):
+        """관리자에 의한 예약 취소"""
+        admin = self._get_existing_admin(admin)
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 취소할 수 없습니다. 관리자 취소는 'reserved' 상태만 가능합니다."
+                    )
+
+                booking_user = self.user_repo.get_by_id(booking.user_id)
+                if booking_user is None:
+                    raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+
+                updated = replace(
+                    booking,
+                    status=EquipmentBookingStatus.ADMIN_CANCELLED,
+                    cancelled_at=now_iso(),
+                    updated_at=now_iso(),
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=admin.id,
+                    action="admin_cancel_equipment_booking",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"사유: {reason}",
+                )
+
+                return updated
+
+    def admin_modify_booking(self, admin, booking_id, new_start_time, new_end_time):
+        """관리자에 의한 예약 변경 (미래의 reserved 상태만)"""
+        admin = self._get_existing_admin(admin)
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 변경할 수 없습니다."
+                    )
+
+                booking_user = self.user_repo.get_by_id(booking.user_id)
+                if booking_user is None:
+                    raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+
+                now = datetime.now()
+                start = datetime.fromisoformat(booking.start_time)
+                if start <= now:
+                    raise EquipmentBookingError(
+                        "이미 시작된 예약은 변경할 수 없습니다."
+                    )
+
+                self._validate_booking_time(new_start_time, new_end_time)
+
+                conflicts = self.booking_repo.get_conflicting(
+                    booking.equipment_id,
+                    new_start_time.isoformat(),
+                    new_end_time.isoformat(),
+                    exclude_id=booking_id,
+                )
+                if conflicts:
+                    raise EquipmentBookingError("해당 시간대에 이미 예약이 있습니다.")
+
+                updated = replace(
+                    booking,
+                    start_time=new_start_time.isoformat(),
+                    end_time=new_end_time.isoformat(),
+                    updated_at=now_iso(),
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=admin.id,
+                    action="admin_modify_equipment_booking",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"변경: {new_start_time} ~ {new_end_time}",
+                )
+
+                return updated
+
+    def checkout(self, admin, booking_id):
+        """대여 시작 처리 (체크아웃)"""
+        admin = self._get_existing_admin(admin)
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.status != EquipmentBookingStatus.RESERVED:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 대여할 수 없습니다."
+                    )
+
+                booking_user = self.user_repo.get_by_id(booking.user_id)
+                if booking_user is None:
+                    raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+
+                updated = replace(
+                    booking,
+                    status=EquipmentBookingStatus.CHECKED_OUT,
+                    checked_out_at=now_iso(),
+                    updated_at=now_iso(),
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=admin.id,
+                    action="equipment_checkout",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details="",
+                )
+
+                return updated
+
+    def return_equipment(self, admin, booking_id):
+        """
+        반납 처리
+
+        Returns:
+            (완료된 예약, 지연 시간(분))
+        """
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+            if booking.status != EquipmentBookingStatus.CHECKED_OUT:
+                raise EquipmentBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 반납할 수 없습니다."
+                )
+
+            now = datetime.now()
+            end_time = datetime.fromisoformat(booking.end_time)
+
+            delay_minutes = 0
+            if now > end_time:
+                delay_minutes = int((now - end_time).total_seconds() / 60)
+
+            updated = replace(
+                booking,
+                status=EquipmentBookingStatus.RETURNED,
+                returned_at=now_iso(),
+                updated_at=now_iso(),
+            )
+
+            self.booking_repo.update(updated)
+
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="equipment_return",
+                target_type="equipment_booking",
+                target_id=booking_id,
+                details=f"지연: {delay_minutes}분",
+            )
+
+            booking_user = self.user_repo.get_by_id(booking.user_id)
+            if booking_user is None:
+                raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+            if delay_minutes > 0:
+                self.penalty_service.apply_late_return(
+                    user=booking_user,
+                    booking_type="equipment_booking",
+                    booking_id=booking_id,
+                    delay_minutes=delay_minutes,
+                    actor_id=admin.id,
+                )
+            else:
+                self.penalty_service.record_normal_use(booking_user)
+
+            return updated, delay_minutes
+
+    def request_return(self, user, booking_id):
+        with global_lock(), UnitOfWork():
+            user = self._get_existing_user(user)
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+            if booking.user_id != user.id:
+                raise EquipmentBookingError("본인의 예약만 반납 신청할 수 있습니다.")
+
+            if booking.status != EquipmentBookingStatus.CHECKED_OUT:
+                raise EquipmentBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 반납 신청할 수 없습니다."
+                )
+
+            updated = replace(
+                booking,
+                status=EquipmentBookingStatus.RETURN_REQUESTED,
+                requested_return_at=now_iso(),
+                updated_at=now_iso(),
+            )
+            self.booking_repo.update(updated)
+            self.audit_repo.log_action(
+                actor_id=user.id,
+                action="request_equipment_return",
+                target_type="equipment_booking",
+                target_id=booking_id,
+                details="",
+            )
+            return updated
+
+    def approve_return_request(self, admin, booking_id):
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+            if booking.status != EquipmentBookingStatus.RETURN_REQUESTED:
+                raise EquipmentBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 반납 승인 처리할 수 없습니다."
+                )
+
+            request_time = datetime.fromisoformat(booking.requested_return_at or now_iso())
+            end_time = datetime.fromisoformat(booking.end_time)
+            delay_minutes = calculate_request_delay_minutes(end_time, request_time)
+
+            updated = replace(
+                booking,
+                status=EquipmentBookingStatus.RETURNED,
+                returned_at=now_iso(),
+                updated_at=now_iso(),
+            )
+            self.booking_repo.update(updated)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="approve_equipment_return_request",
+                target_type="equipment_booking",
+                target_id=booking_id,
+                details=f"지연: {delay_minutes}분",
+            )
+
+            booking_user = self.user_repo.get_by_id(booking.user_id)
+            if booking_user is None:
+                raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+
+            if delay_minutes > 0:
+                self.penalty_service.apply_late_return(
+                    user=booking_user,
+                    booking_type="equipment_booking",
+                    booking_id=booking_id,
+                    delay_minutes=delay_minutes,
+                    actor_id=admin.id,
+                )
+            else:
+                self.penalty_service.record_normal_use(booking_user)
+
+            return updated, delay_minutes
+
+    def mark_no_show(self, booking_id, actor_id="system"):
+        """노쇼 처리"""
+        with global_lock(), UnitOfWork():
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+            if booking.status != EquipmentBookingStatus.RESERVED:
+                raise EquipmentBookingError("예약 대기 상태만 노쇼 처리할 수 있습니다.")
+
+            updated = replace(
+                booking, status=EquipmentBookingStatus.NO_SHOW, updated_at=now_iso()
+            )
+
+            self.booking_repo.update(updated)
+
+            self.audit_repo.log_action(
+                actor_id=actor_id,
+                action="equipment_no_show",
+                target_type="equipment_booking",
+                target_id=booking_id,
+                details="",
+            )
+
+            booking_user = self.user_repo.get_by_id(booking.user_id)
+            if booking_user is None:
+                raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+            self.penalty_service.apply_no_show(
+                user=booking_user,
+                booking_type="equipment_booking",
+                booking_id=booking_id,
+                actor_id=actor_id,
+            )
+
+            return updated
+
+    def get_user_bookings(self, user_id):
+        """사용자의 모든 예약 조회"""
+        self._get_existing_user_by_id(user_id)
+        return self.booking_repo.get_by_user(user_id)
+
+    def get_user_active_bookings(self, user_id):
+        """사용자의 활성 예약 조회"""
+        self._get_existing_user_by_id(user_id)
+        return self.booking_repo.get_active_by_user(user_id)
+
+    def get_all_bookings(self, admin):
+        """모든 예약 조회 (관리자용)"""
+        self._get_existing_admin(admin)
+        return self.booking_repo.get_all()
+
+    def get_equipment_bookings(self, equipment_id):
+        """장비별 예약 조회"""
+        return self.booking_repo.get_by_equipment(equipment_id)
+
+    def update_equipment_status(self, admin, equipment_id, new_status):
+        """
+        장비 상태 변경
+
+        maintenance/disabled로 변경 시 미래 예약 자동 취소
+
+        Returns:
+            (변경된 장비, 취소된 예약 목록)
+        """
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            equipment = self.equipment_repo.get_by_id(equipment_id)
+            if equipment is None:
+                raise EquipmentBookingError("존재하지 않는 장비입니다.")
+
+            cancelled_bookings = []
+
+            # maintenance 또는 disabled로 변경 시 미래 예약 취소
+            if new_status in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
+                now = datetime.now()
+                for booking in self.booking_repo.get_by_equipment(equipment_id):
+                    if booking.status == EquipmentBookingStatus.RESERVED:
+                        start = datetime.fromisoformat(booking.start_time)
+                        if start > now:
+                            booking_user = self.user_repo.get_by_id(booking.user_id)
+                            if booking_user is None:
+                                raise EquipmentBookingError(
+                                    "존재하지 않는 사용자입니다."
+                                )
+                            updated_booking = replace(
+                                booking,
+                                status=EquipmentBookingStatus.ADMIN_CANCELLED,
+                                cancelled_at=now_iso(),
+                                updated_at=now_iso(),
+                            )
+                            self.booking_repo.update(updated_booking)
+                            cancelled_bookings.append(updated_booking)
+
+            updated_equipment = replace(
+                equipment, status=new_status, updated_at=now_iso()
+            )
+
+            self.equipment_repo.update(updated_equipment)
+
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="update_equipment_status",
+                target_type="equipment",
+                target_id=equipment_id,
+                details=f"상태 변경: {new_status.value}, 취소된 예약: {len(cancelled_bookings)}건",
+            )
+
+            return updated_equipment, cancelled_bookings
