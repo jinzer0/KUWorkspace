@@ -1,0 +1,346 @@
+"""
+사용자 시나리오 E2E 테스트
+
+테스트 대상:
+- 회원가입 → 로그인 → 예약 → 체크인 → 퇴실 전체 흐름
+- 예약 수정/취소 흐름
+- 패널티 누적에 따른 제한
+- 정상 이용 연속 보너스
+"""
+
+import pytest
+from datetime import datetime, timedelta
+
+from src.domain.auth_service import AuthError
+from src.domain.room_service import RoomBookingError
+from src.domain.models import (
+    UserRole,
+    RoomBookingStatus,
+    EquipmentBookingStatus,
+)
+
+
+class TestUserSignupLoginFlow:
+    """회원가입 → 로그인 흐름"""
+
+    def test_signup_and_login_flow(self, auth_service):
+        """정상 회원가입 후 로그인"""
+        # 회원가입
+        user = auth_service.signup(username="e2e_user", password="securepass123")
+
+        assert user.id is not None
+        assert user.role == UserRole.USER
+
+        # 로그인
+        logged_in = auth_service.login("e2e_user", "securepass123")
+
+        assert logged_in.id == user.id
+
+    def test_signup_duplicate_then_login(self, auth_service):
+        """중복 가입 시도 후 기존 계정 로그인"""
+        auth_service.signup("existing_user", "pass1")
+
+        # 중복 시도
+        with pytest.raises(AuthError):
+            auth_service.signup("existing_user", "pass2")
+
+        # 원래 비밀번호로 로그인
+        user = auth_service.login("existing_user", "pass1")
+        assert user.username == "existing_user"
+
+
+class TestBookingCompleteFlow:
+    """예약 → 체크인 → 퇴실 전체 흐름"""
+
+    def test_room_booking_complete_flow(
+        self, auth_service, room_service, penalty_service, create_test_room, mock_now
+    ):
+        """회의실 예약부터 정상 퇴실까지"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            # 1. 회원가입
+            user = auth_service.signup("booking_user", "pass")
+            admin = auth_service.signup("admin_user", "pass", role=UserRole.ADMIN)
+
+            # 2. 회의실 생성
+            room = create_test_room(name="E2E Room")
+
+            # 3. 예약 생성
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(hours=2),
+            )
+
+            assert booking.status == RoomBookingStatus.RESERVED
+
+            # 4. 체크인
+            checked_in = room_service.check_in(admin, booking.id)
+            assert checked_in.status == RoomBookingStatus.CHECKED_IN
+
+        # 5. 정시 퇴실
+        checkout_time = datetime(2024, 6, 15, 12, 0, 0)
+        with mock_now(checkout_time):
+            completed, delay = room_service.check_out(admin, booking.id)
+
+            assert completed.status == RoomBookingStatus.COMPLETED
+            assert delay == 0
+
+            # 6. 정상 이용 기록 - check_out이 자동으로 record_normal_use 호출
+            updated_user = auth_service.get_user(user.id)
+            assert updated_user.normal_use_streak == 1
+
+    def test_equipment_booking_complete_flow(
+        self,
+        auth_service,
+        equipment_service,
+        penalty_service,
+        create_test_equipment,
+        mock_now,
+    ):
+        """장비 예약부터 정상 반납까지"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("eq_user", "pass")
+            admin = auth_service.signup("eq_admin", "pass", role=UserRole.ADMIN)
+
+            equipment = create_test_equipment(name="E2E Laptop")
+
+            # 예약
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(days=3),
+            )
+
+            # 대여
+            checked_out = equipment_service.checkout(admin, booking.id)
+            assert checked_out.status == EquipmentBookingStatus.CHECKED_OUT
+
+        # 반납
+        return_time = datetime(2024, 6, 18, 10, 0, 0)
+        with mock_now(return_time):
+            returned, delay = equipment_service.return_equipment(admin, booking.id)
+
+            assert returned.status == EquipmentBookingStatus.RETURNED
+            assert delay == 0
+
+
+class TestBookingModificationFlow:
+    """예약 수정/취소 흐름"""
+
+    def test_modify_booking_flow(
+        self, auth_service, room_service, create_test_room, mock_now
+    ):
+        """예약 수정 흐름"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("modify_user", "pass")
+            room = create_test_room()
+
+            # 원래 예약
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(hours=2),
+            )
+
+            # 수정
+            modified = room_service.modify_booking(
+                user,
+                booking.id,
+                fixed_time + timedelta(hours=3),
+                fixed_time + timedelta(hours=4),
+            )
+
+            assert modified.id == booking.id
+            assert datetime.fromisoformat(modified.start_time).hour == 13
+
+    def test_cancel_booking_normal_flow(
+        self, auth_service, room_service, create_test_room, mock_now
+    ):
+        """정상 취소 흐름 (직전 취소 아님)"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("cancel_user", "pass")
+            room = create_test_room()
+
+            # 2시간 후 예약
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(hours=2),
+                fixed_time + timedelta(hours=3),
+            )
+
+            # 취소
+            cancelled, is_late = room_service.cancel_booking(user, booking.id)
+
+            assert cancelled.status == RoomBookingStatus.CANCELLED
+            assert is_late is False
+
+
+class TestPenaltyAccumulationFlow:
+    """패널티 누적 흐름"""
+
+    def test_penalty_accumulation_restricts_booking(
+        self,
+        auth_service,
+        room_service,
+        penalty_service,
+        policy_service,
+        create_test_room,
+        mock_now,
+    ):
+        """패널티 누적으로 인한 예약 제한"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("penalty_user", "pass")
+
+            # 노쇼로 3점 부여
+            penalty_service.apply_no_show(user, "room_booking", "fake-booking-1")
+
+            # 상태 확인
+            status = penalty_service.get_user_status(user)
+
+            assert status["points"] == 3
+            assert status["is_restricted"] is True
+            assert status["max_active_bookings"] == 1
+
+    def test_penalty_6_points_bans_user(
+        self, auth_service, penalty_service, policy_service, mock_now
+    ):
+        """6점 이상 시 이용 금지"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("banned_user", "pass")
+
+            # 노쇼 2번 = 6점
+            penalty_service.apply_no_show(user, "room_booking", "b1")
+            penalty_service.apply_no_show(user, "room_booking", "b2")
+
+            can_book, max_total, message = policy_service.check_user_can_book(user)
+
+            assert can_book is False
+            assert max_total == 0
+            assert "금지" in message
+
+
+class TestStreakBonusFlow:
+    """정상 이용 연속 보너스 흐름"""
+
+    def test_streak_10_reduces_penalty(self, auth_service, penalty_service, mock_now):
+        """10회 연속 정상 이용 시 1점 감소"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("streak_user", "pass")
+
+            # 처음에 패널티 부여
+            penalty_service.apply_late_cancel(user, "room_booking", "b1")  # +2점
+
+            updated = auth_service.get_user(user.id)
+            assert updated.penalty_points == 2
+
+            # 9회 정상 이용
+            for _ in range(9):
+                penalty_service.record_normal_use(user)
+
+            updated = auth_service.get_user(user.id)
+            assert updated.normal_use_streak == 9
+            assert updated.penalty_points == 2  # 아직 변화 없음
+
+            # 10회째 정상 이용
+            reduced = penalty_service.record_normal_use(user)
+
+            assert reduced is True
+
+            updated = auth_service.get_user(user.id)
+            assert updated.normal_use_streak == 0  # 리셋
+            assert updated.penalty_points == 1  # 1점 감소
+
+
+class TestLateReturnPenaltyFlow:
+    """지연 반납 패널티 흐름"""
+
+    def test_late_checkout_applies_penalty(
+        self, auth_service, room_service, penalty_service, create_test_room, mock_now
+    ):
+        """지연 퇴실 시 패널티 적용"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("late_user", "pass")
+            admin = auth_service.signup("late_admin", "pass", role=UserRole.ADMIN)
+            room = create_test_room()
+
+            # 예약 및 체크인
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(hours=2),  # 12:00 종료
+            )
+            room_service.check_in(admin, booking.id)
+
+        # 25분 지연 퇴실
+        late_time = datetime(2024, 6, 15, 12, 25, 0)
+        with mock_now(late_time):
+            completed, delay = room_service.check_out(admin, booking.id)
+
+            assert delay == 25
+
+            # 패널티 적용 (ceil(25/10) = 3점) - check_out이 자동으로 apply_late_return 호출
+            updated = auth_service.get_user(user.id)
+            assert updated.penalty_points == 3
+
+
+class TestMultipleBookingsFlow:
+    """여러 예약 관리 흐름"""
+
+    def test_user_max_3_room_bookings(
+        self,
+        auth_service,
+        room_service,
+        create_test_room,
+        room_factory,
+        room_repo,
+        mock_now,
+    ):
+        """사용자는 최대 3개 회의실 예약 가능"""
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("multi_booking_user", "pass")
+
+            # 4개 회의실 준비
+            rooms = [create_test_room(name=f"Room {i}") for i in range(4)]
+
+            # 3개 예약 성공
+            for i in range(3):
+                room_service.create_booking(
+                    user,
+                    rooms[i].id,
+                    fixed_time + timedelta(hours=i + 1),
+                    fixed_time + timedelta(hours=i + 2),
+                )
+
+            # 4번째 예약 실패
+            with pytest.raises(RoomBookingError) as exc_info:
+                room_service.create_booking(
+                    user,
+                    rooms[3].id,
+                    fixed_time + timedelta(hours=5),
+                    fixed_time + timedelta(hours=6),
+                )
+
+            assert "한도" in str(exc_info.value) or "초과" in str(exc_info.value)
