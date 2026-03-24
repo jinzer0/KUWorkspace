@@ -56,7 +56,7 @@ class TestBookingCompleteFlow:
         self, auth_service, room_service, penalty_service, create_test_room, mock_now
     ):
         """회의실 예약부터 정상 퇴실까지"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             # 1. 회원가입
@@ -70,8 +70,8 @@ class TestBookingCompleteFlow:
             booking = room_service.create_booking(
                 user,
                 room.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(hours=2),
+                fixed_time,
+                fixed_time.replace(hour=18),
             )
 
             assert booking.status == RoomBookingStatus.RESERVED
@@ -81,7 +81,7 @@ class TestBookingCompleteFlow:
             assert checked_in.status == RoomBookingStatus.CHECKED_IN
 
         # 5. 정시 퇴실
-        checkout_time = datetime(2024, 6, 15, 12, 0, 0)
+        checkout_time = datetime(2024, 6, 15, 18, 0, 0)
         with mock_now(checkout_time):
             completed, delay = room_service.check_out(admin, booking.id)
 
@@ -101,7 +101,7 @@ class TestBookingCompleteFlow:
         mock_now,
     ):
         """장비 예약부터 정상 반납까지"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = auth_service.signup("eq_user", "pass")
@@ -113,7 +113,7 @@ class TestBookingCompleteFlow:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
+                fixed_time,
                 fixed_time + timedelta(days=3),
             )
 
@@ -122,7 +122,7 @@ class TestBookingCompleteFlow:
             assert checked_out.status == EquipmentBookingStatus.CHECKED_OUT
 
         # 반납
-        return_time = datetime(2024, 6, 18, 10, 0, 0)
+        return_time = datetime(2024, 6, 18, 9, 0, 0)
         with mock_now(return_time):
             returned, delay = equipment_service.return_equipment(admin, booking.id)
 
@@ -272,11 +272,11 @@ class TestStreakBonusFlow:
 class TestLateReturnPenaltyFlow:
     """지연 반납 패널티 흐름"""
 
-    def test_late_checkout_applies_penalty(
+    def test_checkout_requires_exact_boundary(
         self, auth_service, room_service, penalty_service, create_test_room, mock_now
     ):
-        """지연 퇴실 시 패널티 적용"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        """종료 경계를 벗어나면 퇴실 처리할 수 없음"""
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = auth_service.signup("late_user", "pass")
@@ -287,27 +287,25 @@ class TestLateReturnPenaltyFlow:
             booking = room_service.create_booking(
                 user,
                 room.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(hours=2),  # 12:00 종료
+                fixed_time,
+                fixed_time.replace(hour=18),
             )
             room_service.check_in(admin, booking.id)
 
-        # 25분 지연 퇴실
-        late_time = datetime(2024, 6, 15, 12, 25, 0)
+        late_time = datetime(2024, 6, 15, 18, 25, 0)
         with mock_now(late_time):
-            completed, delay = room_service.check_out(admin, booking.id)
+            with pytest.raises(RoomBookingError) as exc_info:
+                room_service.check_out(admin, booking.id)
 
-            assert delay == 25
-
-            # 패널티 적용 (ceil(25/10) = 3점) - check_out이 자동으로 apply_late_return 호출
+            assert "현재 운영 시점" in str(exc_info.value)
             updated = auth_service.get_user(user.id)
-            assert updated.penalty_points == 3
+            assert updated.penalty_points == 0
 
 
 class TestMultipleBookingsFlow:
     """여러 예약 관리 흐름"""
 
-    def test_user_max_3_room_bookings(
+    def test_user_max_1_room_booking(
         self,
         auth_service,
         room_service,
@@ -316,31 +314,28 @@ class TestMultipleBookingsFlow:
         room_repo,
         mock_now,
     ):
-        """사용자는 최대 3개 회의실 예약 가능"""
+        """사용자는 최대 1개의 회의실 활성 예약만 가질 수 있다."""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
             user = auth_service.signup("multi_booking_user", "pass")
 
-            # 4개 회의실 준비
-            rooms = [create_test_room(name=f"Room {i}") for i in range(4)]
+            rooms = [create_test_room(name=f"Room {i}") for i in range(2)]
 
-            # 3개 예약 성공
-            for i in range(3):
-                room_service.create_booking(
-                    user,
-                    rooms[i].id,
-                    fixed_time + timedelta(hours=i + 1),
-                    fixed_time + timedelta(hours=i + 2),
-                )
+            room_service.create_booking(
+                user,
+                rooms[0].id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(hours=2),
+            )
 
-            # 4번째 예약 실패
+            # 2번째 예약 실패
             with pytest.raises(RoomBookingError) as exc_info:
                 room_service.create_booking(
                     user,
-                    rooms[3].id,
-                    fixed_time + timedelta(hours=5),
-                    fixed_time + timedelta(hours=6),
+                    rooms[1].id,
+                    fixed_time + timedelta(hours=3),
+                    fixed_time + timedelta(hours=4),
                 )
 
             assert "한도" in str(exc_info.value) or "초과" in str(exc_info.value)

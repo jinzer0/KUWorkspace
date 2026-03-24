@@ -11,6 +11,7 @@ from src.domain.auth_rules import (
     validate_username as validate_auth_username,
     validate_password as validate_auth_password,
 )
+from src.runtime_clock import get_current_time
 
 
 def validate_date_input(date_str):
@@ -32,7 +33,7 @@ def validate_date_input(date_str):
         return False, None, "유효하지 않은 날짜입니다."
 
     # 날짜 범위 검증
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = get_current_time().replace(hour=0, minute=0, second=0, microsecond=0)
     max_date = today + timedelta(days=MAX_BOOKING_DAYS)
 
     if date < today:
@@ -97,7 +98,7 @@ def validate_datetime_input(date_str, time_str):
     )
 
     # 과거 시간 검증
-    if combined < datetime.now():
+    if combined < get_current_time():
         return False, None, "과거 시간은 선택할 수 없습니다."
 
     return True, combined, ""
@@ -237,7 +238,7 @@ def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 
             continue
 
         valid, error, _ = validate_daily_booking_dates(
-            start_date.date(), end_date.date(), datetime.now()
+            start_date.date(), end_date.date(), get_current_time()
         )
         if valid:
             return start_date.date(), end_date.date()

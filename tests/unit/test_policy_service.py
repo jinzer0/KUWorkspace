@@ -2,7 +2,7 @@
 정책 서비스 테스트
 
 테스트 대상:
-- 노쇼 자동 판정 (15분 유예)
+- 시점 이동 블로킹과 이벤트
 - 90일 경과 패널티 초기화
 - 제한 기간 만료 처리
 - 6점 이상 사용자 미래 예약 자동 취소
@@ -23,159 +23,115 @@ from src.domain.models import (
 from src.storage.file_lock import global_lock
 
 
-class TestNoShowAutomation:
-    """노쇼 자동 판정 테스트"""
+class TestClockAdvance:
+    """가상 시점 이동 테스트"""
 
-    def test_room_no_show_after_15_minutes(
+    def test_prepare_advance_blocks_room_start_without_admin_action(
         self,
         policy_service,
         create_test_user,
         create_test_room,
         room_booking_repo,
-        mock_now,
+        fake_clock,
     ):
-        """회의실 예약 15분 경과 후 노쇼 판정"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+        user = create_test_user()
+        room = create_test_room()
 
-        with mock_now(fixed_time):
-            user = create_test_user()
-            room = create_test_room()
+        booking = RoomBooking(
+            id="booking-1",
+            user_id=user.id,
+            room_id=room.id,
+            start_time=current_time.isoformat(),
+            end_time=datetime(2024, 6, 16, 18, 0, 0).isoformat(),
+            status=RoomBookingStatus.RESERVED,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
 
-            # 10:00 시작 예약 생성
-            booking = RoomBooking(
-                id="booking-1",
-                user_id=user.id,
-                room_id=room.id,
-                start_time=fixed_time.isoformat(),
-                end_time=(fixed_time + timedelta(hours=1)).isoformat(),
-                status=RoomBookingStatus.RESERVED,
-            )
-            with global_lock():
-                room_booking_repo.add(booking)
+        result = policy_service.prepare_advance()
 
-        # 10:16에 정책 실행 (15분 경과)
-        check_time = fixed_time + timedelta(minutes=16)
-        with mock_now(check_time):
-            results = policy_service.run_all_checks(check_time)
+        assert result["can_advance"] is False
+        assert any("체크인 또는 노쇼" in blocker for blocker in result["blockers"])
 
-            assert "booking-1" in results["no_show_room"]
-
-            # 예약 상태 확인
-            updated = room_booking_repo.get_by_id("booking-1")
-            assert updated.status == RoomBookingStatus.NO_SHOW
-
-    def test_room_no_no_show_within_15_minutes(
-        self,
-        policy_service,
-        create_test_user,
-        create_test_room,
-        room_booking_repo,
-        mock_now,
-    ):
-        """회의실 예약 15분 이내면 노쇼 아님"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
-
-        with mock_now(fixed_time):
-            user = create_test_user()
-            room = create_test_room()
-
-            booking = RoomBooking(
-                id="booking-2",
-                user_id=user.id,
-                room_id=room.id,
-                start_time=fixed_time.isoformat(),
-                end_time=(fixed_time + timedelta(hours=1)).isoformat(),
-                status=RoomBookingStatus.RESERVED,
-            )
-            with global_lock():
-                room_booking_repo.add(booking)
-
-        # 10:14에 정책 실행 (15분 미만)
-        check_time = fixed_time + timedelta(minutes=14)
-        with mock_now(check_time):
-            results = policy_service.run_all_checks(check_time)
-
-            assert "booking-2" not in results["no_show_room"]
-
-    def test_equipment_no_show_after_15_minutes(
+    def test_prepare_advance_blocks_equipment_end_without_user_request(
         self,
         policy_service,
         create_test_user,
         create_test_equipment,
         equipment_booking_repo,
-        mock_now,
+        fake_clock,
     ):
-        """장비 예약 15분 경과 후 노쇼 판정"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
+        user = create_test_user()
+        equipment = create_test_equipment()
 
-        with mock_now(fixed_time):
-            user = create_test_user()
-            equipment = create_test_equipment()
+        booking = EquipmentBooking(
+            id="eq-booking-1",
+            user_id=user.id,
+            equipment_id=equipment.id,
+            start_time=datetime(2024, 6, 16, 9, 0, 0).isoformat(),
+            end_time=current_time.isoformat(),
+            status=EquipmentBookingStatus.CHECKED_OUT,
+        )
+        with global_lock():
+            equipment_booking_repo.add(booking)
 
-            booking = EquipmentBooking(
-                id="eq-booking-1",
-                user_id=user.id,
-                equipment_id=equipment.id,
-                start_time=fixed_time.isoformat(),
-                end_time=(fixed_time + timedelta(days=1)).isoformat(),
-                status=EquipmentBookingStatus.RESERVED,
-            )
-            with global_lock():
-                equipment_booking_repo.add(booking)
+        result = policy_service.prepare_advance()
 
-        check_time = fixed_time + timedelta(minutes=16)
-        with mock_now(check_time):
-            results = policy_service.run_all_checks(check_time)
+        assert result["can_advance"] is False
+        assert any("반납 신청" in blocker for blocker in result["blockers"])
 
-            assert "eq-booking-1" in results["no_show_equipment"]
-
-    def test_room_no_show_missing_user_fails(
-        self, policy_service, create_test_room, room_booking_repo, mock_now
+    def test_advance_time_moves_clock_and_logs_event(
+        self,
+        policy_service,
+        audit_repo,
+        fake_clock,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
 
-        with mock_now(fixed_time):
-            room = create_test_room()
-            booking = RoomBooking(
-                id="booking-missing-user",
-                user_id="missing-user",
-                room_id=room.id,
-                start_time=fixed_time.isoformat(),
-                end_time=(fixed_time + timedelta(hours=1)).isoformat(),
-                status=RoomBookingStatus.RESERVED,
-            )
-            with global_lock():
-                room_booking_repo.add(booking)
+        result = policy_service.advance_time(actor_id="admin-1")
 
-        with mock_now(fixed_time + timedelta(minutes=16)):
-            with pytest.raises(PenaltyError) as exc_info:
-                policy_service.run_all_checks(fixed_time + timedelta(minutes=16))
+        assert result["can_advance"] is True
+        assert result["next_time"] == datetime(2024, 6, 17, 9, 0, 0)
+        assert any("운영 시점이" in event for event in result["events"])
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+        logs = audit_repo.get_by_actor("admin-1")
+        assert any(log.action == "clock_advance" for log in logs)
 
-    def test_equipment_no_show_missing_user_fails(
-        self, policy_service, create_test_equipment, equipment_booking_repo, mock_now
+    def test_advance_time_blocked_writes_audit_log(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        audit_repo,
+        fake_clock,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+        user = create_test_user()
+        room = create_test_room()
 
-        with mock_now(fixed_time):
-            equipment = create_test_equipment()
-            booking = EquipmentBooking(
-                id="eq-booking-missing-user",
-                user_id="missing-user",
-                equipment_id=equipment.id,
-                start_time=fixed_time.isoformat(),
-                end_time=(fixed_time + timedelta(days=1)).isoformat(),
-                status=EquipmentBookingStatus.RESERVED,
-            )
-            with global_lock():
-                equipment_booking_repo.add(booking)
+        booking = RoomBooking(
+            id="blocked-booking",
+            user_id=user.id,
+            room_id=room.id,
+            start_time=current_time.isoformat(),
+            end_time=datetime(2024, 6, 16, 18, 0, 0).isoformat(),
+            status=RoomBookingStatus.RESERVED,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
 
-        with mock_now(fixed_time + timedelta(minutes=16)):
-            with pytest.raises(PenaltyError) as exc_info:
-                policy_service.run_all_checks(fixed_time + timedelta(minutes=16))
+        result = policy_service.advance_time(actor_id="admin-2")
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+        assert result["can_advance"] is False
+        logs = audit_repo.get_by_actor("admin-2")
+        assert any(log.action == "clock_advance_blocked" for log in logs)
 
 
 class TestPenaltyResetAutomation:
@@ -340,7 +296,7 @@ class TestCheckUserCanBook:
         can_book, max_total, message = policy_service.check_user_can_book(user)
 
         assert can_book is True
-        assert max_total == 6
+        assert max_total == 2
         assert message == ""
 
     def test_restricted_user_limited_booking(
@@ -390,13 +346,13 @@ class TestGetMaxBookingsForUser:
     """사용자별 최대 예약 수 조회 테스트"""
 
     def test_normal_user_max_bookings(self, policy_service, create_test_user):
-        """정상 사용자: 회의실 3, 장비 3"""
+        """정상 사용자: 회의실 1, 장비 1"""
         user = create_test_user(penalty_points=0)
 
         max_room, max_equipment = policy_service.get_max_bookings_for_user(user)
 
-        assert max_room == 3
-        assert max_equipment == 3
+        assert max_room == 1
+        assert max_equipment == 1
 
     def test_restricted_user_max_bookings(
         self, policy_service, create_test_user, mock_now

@@ -30,7 +30,7 @@ class TestAdminPenaltyManagement:
         self, auth_service, room_service, penalty_service, create_test_room, mock_now
     ):
         """관리자가 파손 패널티 부과"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = auth_service.signup("damage_user", "pass")
@@ -41,12 +41,12 @@ class TestAdminPenaltyManagement:
             booking = room_service.create_booking(
                 user,
                 room.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(hours=2),
+                fixed_time,
+                fixed_time.replace(hour=18),
             )
             room_service.check_in(admin, booking.id)
 
-        checkout_time = datetime(2024, 6, 15, 12, 0, 0)
+        checkout_time = datetime(2024, 6, 15, 18, 0, 0)
         with mock_now(checkout_time):
             room_service.check_out(admin, booking.id)
 
@@ -118,10 +118,11 @@ class TestAdminStatusChange:
 
         with mock_now(fixed_time):
             user = auth_service.signup("maint_user", "pass")
+            user2 = auth_service.signup("maint_user_2", "pass")
             admin = auth_service.signup("maint_admin", "pass", role=UserRole.ADMIN)
             room = create_test_room()
 
-            # 미래 예약 2개
+            # 서로 다른 사용자로 미래 예약 2개
             booking1 = room_service.create_booking(
                 user,
                 room.id,
@@ -129,7 +130,7 @@ class TestAdminStatusChange:
                 fixed_time + timedelta(hours=2),
             )
             booking2 = room_service.create_booking(
-                user,
+                user2,
                 room.id,
                 fixed_time + timedelta(hours=3),
                 fixed_time + timedelta(hours=4),
@@ -205,7 +206,7 @@ class TestAdminBookingCancellation:
         self, auth_service, room_service, create_test_room, mock_now
     ):
         """PLAN2.md: 관리자 취소는 reserved -> admin_cancelled만 허용, checked_in 상태는 취소 불가"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = auth_service.signup("checkin_cancel", "pass")
@@ -215,8 +216,8 @@ class TestAdminBookingCancellation:
             booking = room_service.create_booking(
                 user,
                 room.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(hours=2),
+                fixed_time,
+                fixed_time.replace(hour=18),
             )
 
             room_service.check_in(admin, booking.id)
@@ -293,43 +294,38 @@ class TestAdminPenaltyHistory:
 class TestAdminPolicyExecution:
     """관리자 정책 실행"""
 
-    def test_admin_triggers_no_show_check(
+    def test_admin_clock_advance_is_blocked_by_unprocessed_start_booking(
         self,
         auth_service,
         policy_service,
-        room_service,
         create_test_room,
         room_booking_repo,
-        mock_now,
+        fake_clock,
     ):
-        """관리자가 노쇼 점검 실행"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        """관리자가 시점 이동을 시도하면 시작 미처리 예약 때문에 차단됨"""
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        fake_clock(fixed_time)
+        user = auth_service.signup("noshow_user", "pass")
+        auth_service.signup("noshow_admin", "pass", role=UserRole.ADMIN)
+        room = create_test_room()
 
-        with mock_now(fixed_time):
-            user = auth_service.signup("noshow_user", "pass")
-            admin = auth_service.signup("noshow_admin", "pass", role=UserRole.ADMIN)
-            room = create_test_room()
+        from src.domain.models import RoomBooking, RoomBookingStatus
 
-            # 10:00 시작 예약 (직접 생성)
-            from src.domain.models import RoomBooking, RoomBookingStatus
+        booking = RoomBooking(
+            id="noshow-booking",
+            user_id=user.id,
+            room_id=room.id,
+            start_time=fixed_time.isoformat(),
+            end_time=fixed_time.replace(hour=18).isoformat(),
+            status=RoomBookingStatus.RESERVED,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
 
-            booking = RoomBooking(
-                id="noshow-booking",
-                user_id=user.id,
-                room_id=room.id,
-                start_time=fixed_time.isoformat(),
-                end_time=(fixed_time + timedelta(hours=1)).isoformat(),
-                status=RoomBookingStatus.RESERVED,
-            )
-            with global_lock():
-                room_booking_repo.add(booking)
+        result = policy_service.advance_time(actor_id="noshow-admin")
 
-        # 10:16에 정책 실행
-        check_time = fixed_time + timedelta(minutes=16)
-        with mock_now(check_time):
-            results = policy_service.run_all_checks(check_time)
-
-            assert "noshow-booking" in results["no_show_room"]
+        assert result["can_advance"] is False
+        assert any("체크인 또는 노쇼" in blocker for blocker in result["blockers"])
 
 
 class TestAdminUserManagement:

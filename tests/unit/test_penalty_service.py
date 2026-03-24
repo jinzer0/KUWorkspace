@@ -348,7 +348,7 @@ class TestStreakBonus:
 
         status = penalty_service.get_user_status(updated_user)
         assert status["is_restricted"] is False
-        assert status["max_active_bookings"] == 6
+        assert status["max_active_bookings"] == 2
 
     def test_record_normal_use_nonexistent_user_fails(
         self, penalty_service, user_factory
@@ -486,7 +486,7 @@ class TestUserStatus:
         assert status["points"] == 0
         assert status["is_banned"] is False
         assert status["is_restricted"] is False
-        assert status["max_active_bookings"] == 6
+        assert status["max_active_bookings"] == 2
         assert status["warning_message"] is None
 
     def test_status_warning_at_3_points(self, penalty_service, create_test_user):

@@ -21,6 +21,7 @@ from src.storage.repositories import (
     UnitOfWork,
 )
 from src.storage.file_lock import global_lock
+from src.runtime_clock import get_runtime_clock
 from src.config import (
     NO_SHOW_PENALTY,
     LATE_CANCEL_PENALTY,
@@ -52,10 +53,11 @@ def _require_admin(user):
 class PenaltyService:
     """패널티 서비스"""
 
-    def __init__(self, user_repo=None, penalty_repo=None, audit_repo=None):
+    def __init__(self, user_repo=None, penalty_repo=None, audit_repo=None, clock=None):
         self.user_repo = user_repo or UserRepository()
         self.penalty_repo = penalty_repo or PenaltyRepository()
         self.audit_repo = audit_repo or AuditLogRepository()
+        self.clock = clock or get_runtime_clock()
 
     def _get_existing_admin(self, admin):
         _require_admin(admin)
@@ -264,7 +266,7 @@ class PenaltyService:
 
         # 제한 상태 확인 및 설정
         restriction_until = current_user.restriction_until
-        now = datetime.now()
+        now = self.clock.now()
 
         if new_points >= PENALTY_BAN_THRESHOLD:
             # 6점 이상: 30일 이용 금지
@@ -353,7 +355,7 @@ class PenaltyService:
         user = self._get_existing_user(user)
 
         if current_time is None:
-            current_time = datetime.now()
+            current_time = self.clock.now()
 
         last_penalty_date = self.penalty_repo.get_last_penalty_date(user.id)
 
@@ -403,7 +405,7 @@ class PenaltyService:
         """
         current_user = self._get_existing_user(user)
 
-        status = evaluate_user_restriction(current_user, datetime.now())
+        status = evaluate_user_restriction(current_user, self.clock.now())
         points = status["points"]
         is_banned = status["is_banned"]
         is_restricted = status["is_restricted"]

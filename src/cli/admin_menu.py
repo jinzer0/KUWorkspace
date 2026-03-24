@@ -32,6 +32,7 @@ from src.config import (
     FIXED_BOOKING_START_MINUTE,
 )
 from src.cli.menu import confirm, pause, select_from_list
+from src.cli.clock_menu import ClockMenu
 from src.cli.formatters import (
     print_header,
     print_subheader,
@@ -174,6 +175,9 @@ class AdminMenu:
             print("  15. 사용자 목록")
             print("  16. 사용자 상세 조회")
             print("  17. 파손/오염 패널티 부여")
+            print("  18. 회의실 노쇼 처리")
+            print("  19. 장비 노쇼 처리")
+            print("  20. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -214,6 +218,12 @@ class AdminMenu:
                 self._show_user_detail()
             elif choice == "17":
                 self._apply_damage_penalty()
+            elif choice == "18":
+                self._mark_room_no_show()
+            elif choice == "19":
+                self._mark_equipment_no_show()
+            elif choice == "20":
+                ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
                     print_success("로그아웃 되었습니다.")
@@ -432,6 +442,50 @@ class AdminMenu:
                     return
                 if user.normal_use_streak >= 9:
                     print_info("정상 이용 10회 달성! 패널티 -1점")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _mark_room_no_show(self):
+        print_header("회의실 노쇼 처리")
+
+        all_bookings = self._get_room_bookings_or_abort()
+        if all_bookings is None:
+            return
+
+        current_time = self.policy_service.clock.now().isoformat()
+        candidates = [
+            b
+            for b in all_bookings
+            if b.status == RoomBookingStatus.RESERVED and b.start_time == current_time
+        ]
+
+        if not candidates:
+            print_info("현재 시점에 노쇼 처리 가능한 회의실 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in candidates:
+            room = self.room_service.get_room(booking.room_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{room.name if room else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "노쇼 처리할 예약 선택")
+        if not booking_id:
+            return
+
+        try:
+            self.room_service.mark_no_show(booking_id, actor_id=self.user.id)
+            print_success("회의실 예약을 노쇼 처리했습니다.")
         except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
             print_error(str(e))
 
@@ -756,6 +810,55 @@ class AdminMenu:
                     return
                 if user.normal_use_streak >= 9:
                     print_info("정상 이용 10회 달성! 패널티 -1점")
+        except (
+            EquipmentBookingError,
+            EquipmentAdminRequiredError,
+            AuthError,
+            PenaltyError,
+        ) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _mark_equipment_no_show(self):
+        print_header("장비 노쇼 처리")
+
+        all_bookings = self._get_equipment_bookings_or_abort()
+        if all_bookings is None:
+            return
+
+        current_time = self.policy_service.clock.now().isoformat()
+        candidates = [
+            b
+            for b in all_bookings
+            if b.status == EquipmentBookingStatus.RESERVED and b.start_time == current_time
+        ]
+
+        if not candidates:
+            print_info("현재 시점에 노쇼 처리 가능한 장비 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in candidates:
+            equip = self.equipment_service.get_equipment(booking.equipment_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{equip.name if equip else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "노쇼 처리할 예약 선택")
+        if not booking_id:
+            return
+
+        try:
+            self.equipment_service.mark_no_show(booking_id, actor_id=self.user.id)
+            print_success("장비 예약을 노쇼 처리했습니다.")
         except (
             EquipmentBookingError,
             EquipmentAdminRequiredError,

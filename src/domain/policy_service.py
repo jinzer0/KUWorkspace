@@ -1,8 +1,4 @@
-"""
-정책 서비스 - 자동 처리 루틴
-
-앱 시작, 로그인 직후, 예약 관련 작업 직전, 관리자 예약 관리 메뉴 진입 시 실행
-"""
+"""정책 서비스 - 가상 시점 전환과 상태 점검을 담당합니다."""
 
 from datetime import datetime
 from dataclasses import replace
@@ -22,7 +18,12 @@ from src.storage.repositories import (
 )
 from src.storage.file_lock import global_lock
 from src.domain.penalty_service import PenaltyService, PenaltyError
-from src.config import NO_SHOW_GRACE_MINUTES, PENALTY_BAN_THRESHOLD
+from src.config import (
+    PENALTY_BAN_THRESHOLD,
+    MAX_ACTIVE_ROOM_BOOKINGS,
+    MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+)
+from src.runtime_clock import get_runtime_clock
 
 
 class PolicyService:
@@ -36,7 +37,9 @@ class PolicyService:
         penalty_repo=None,
         audit_repo=None,
         penalty_service=None,
+        clock=None,
     ):
+        self.clock = clock or get_runtime_clock()
         self.user_repo = user_repo or UserRepository()
         self.room_booking_repo = room_booking_repo or RoomBookingRepository()
         self.equipment_booking_repo = (
@@ -48,115 +51,213 @@ class PolicyService:
             user_repo=self.user_repo,
             penalty_repo=self.penalty_repo,
             audit_repo=self.audit_repo,
+            clock=self.clock,
         )
 
     def run_all_checks(self, current_time=None):
-        """
-        모든 정책 점검 루틴 실행
-
-        Returns:
-            dict: 키별 점검 결과 목록을 담은 딕셔너리입니다.
-        """
         if current_time is None:
-            current_time = datetime.now()
+            current_time = self.clock.now()
 
+        with global_lock(), UnitOfWork():
+            return self._run_checks_locked(current_time)
+
+    def _run_checks_locked(self, current_time):
         results = {
-            "no_show_room": [],
-            "no_show_equipment": [],
             "penalty_reset_users": [],
             "restriction_expired_users": [],
             "banned_user_cancelled_bookings": [],
         }
 
-        with global_lock(), UnitOfWork():
-            # 1. 노쇼 판정
-            no_show_rooms = self._check_room_no_shows(current_time)
-            results["no_show_room"] = [b.id for b in no_show_rooms]
+        reset_users = self._check_penalty_resets(current_time)
+        results["penalty_reset_users"] = [u.id for u in reset_users]
 
-            no_show_equipment = self._check_equipment_no_shows(current_time)
-            results["no_show_equipment"] = [b.id for b in no_show_equipment]
+        expired_users = self._check_restriction_expiry(current_time)
+        results["restriction_expired_users"] = [u.id for u in expired_users]
 
-            # 2. 90일 경과 패널티 초기화
-            reset_users = self._check_penalty_resets(current_time)
-            results["penalty_reset_users"] = [u.id for u in reset_users]
-
-            # 3. 제한 기간 만료 반영
-            expired_users = self._check_restriction_expiry(current_time)
-            results["restriction_expired_users"] = [u.id for u in expired_users]
-
-            # 4. 6점 이상 사용자 미래 예약 자동 취소
-            cancelled = self._cancel_banned_user_bookings(current_time)
-            results["banned_user_cancelled_bookings"] = cancelled
-
+        cancelled = self._cancel_banned_user_bookings(current_time)
+        results["banned_user_cancelled_bookings"] = cancelled
         return results
 
-    def _check_room_no_shows(self, current_time):
-        """회의실 노쇼 판정"""
-        no_shows = []
-        pending = self.room_booking_repo.get_pending_checkin(
-            current_time, NO_SHOW_GRACE_MINUTES
-        )
+    def prepare_advance(self, current_time=None):
+        if current_time is None:
+            current_time = self.clock.now()
+        return self._build_advance_state(current_time)
 
-        for booking in pending:
-            # 노쇼로 상태 변경
-            updated = replace(
-                booking, status=RoomBookingStatus.NO_SHOW, updated_at=now_iso()
-            )
-            self.room_booking_repo.update(updated)
+    def advance_time(self, actor_id="system"):
+        with global_lock(), UnitOfWork():
+            current_time = self.clock.now()
+            state = self._build_advance_state(current_time)
+            if not state["can_advance"]:
+                self.audit_repo.log_action(
+                    actor_id=actor_id,
+                    action="clock_advance_blocked",
+                    target_type="system_clock",
+                    target_id=current_time.isoformat(),
+                    details=" | ".join(state["blockers"]),
+                )
+                return state
 
-            # 패널티 적용
-            user = self.user_repo.get_by_id(booking.user_id)
-            if user is None:
-                raise PenaltyError("존재하지 않는 사용자입니다.")
-            self.penalty_service.apply_no_show(
-                user=user, booking_type="room_booking", booking_id=booking.id
-            )
-
-            self.audit_repo.log_action(
-                actor_id="system",
-                action="auto_no_show_room",
-                target_type="room_booking",
-                target_id=booking.id,
-                details="자동 노쇼 판정",
-            )
-
-            no_shows.append(updated)
-
-        return no_shows
-
-    def _check_equipment_no_shows(self, current_time):
-        """장비 노쇼 판정"""
-        no_shows = []
-        pending = self.equipment_booking_repo.get_pending_checkout(
-            current_time, NO_SHOW_GRACE_MINUTES
-        )
-
-        for booking in pending:
-            # 노쇼로 상태 변경
-            updated = replace(
-                booking, status=EquipmentBookingStatus.NO_SHOW, updated_at=now_iso()
-            )
-            self.equipment_booking_repo.update(updated)
-
-            # 패널티 적용
-            user = self.user_repo.get_by_id(booking.user_id)
-            if user is None:
-                raise PenaltyError("존재하지 않는 사용자입니다.")
-            self.penalty_service.apply_no_show(
-                user=user, booking_type="equipment_booking", booking_id=booking.id
-            )
+            next_time = self.clock.advance()
+            maintenance = self._run_checks_locked(next_time)
+            events = list(state["events"])
+            events.extend(self._build_post_advance_events(next_time, maintenance))
 
             self.audit_repo.log_action(
-                actor_id="system",
-                action="auto_no_show_equipment",
-                target_type="equipment_booking",
-                target_id=booking.id,
-                details="자동 노쇼 판정",
+                actor_id=actor_id,
+                action="clock_advance",
+                target_type="system_clock",
+                target_id=next_time.isoformat(),
+                details=" | ".join(events) if events else "운영 시점 이동",
             )
 
-            no_shows.append(updated)
+            state["next_time"] = next_time
+            state["events"] = events
+            state["maintenance"] = maintenance
+            return state
 
-        return no_shows
+    def _build_advance_state(self, current_time):
+        next_time = self.clock.next_slot()
+        blockers = []
+
+        if current_time.hour == 9:
+            blockers.extend(self._collect_start_blockers(current_time))
+            events = [
+                f"{next_time.strftime('%Y-%m-%d %H:%M')}로 이동 준비",
+                f"당일 종료 예정 회의실 {self._count_room_endings(next_time)}건, 장비 {self._count_equipment_endings(next_time)}건",
+            ]
+        else:
+            blockers.extend(self._collect_end_blockers(current_time))
+            events = [
+                f"{next_time.strftime('%Y-%m-%d %H:%M')}로 이동 준비",
+                f"다음 시점 시작 예정 회의실 {self._count_room_starts(next_time)}건, 장비 {self._count_equipment_starts(next_time)}건",
+            ]
+
+        return {
+            "can_advance": len(blockers) == 0,
+            "current_time": current_time,
+            "next_time": next_time,
+            "blockers": blockers,
+            "events": events,
+        }
+
+    def _user_label(self, user_id):
+        user = self.user_repo.get_by_id(user_id)
+        if user is None:
+            return user_id
+        return user.username
+
+    def _collect_start_blockers(self, current_time):
+        blockers = []
+
+        for booking in self.room_booking_repo.get_all():
+            if booking.status != RoomBookingStatus.RESERVED:
+                continue
+            if datetime.fromisoformat(booking.start_time) != current_time:
+                continue
+            blockers.append(
+                f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 체크인 또는 노쇼 처리가 필요합니다."
+            )
+
+        for booking in self.equipment_booking_repo.get_all():
+            if booking.status != EquipmentBookingStatus.RESERVED:
+                continue
+            if datetime.fromisoformat(booking.start_time) != current_time:
+                continue
+            blockers.append(
+                f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 대여 시작 또는 노쇼 처리가 필요합니다."
+            )
+
+        return blockers
+
+    def _collect_end_blockers(self, current_time):
+        blockers = []
+
+        for booking in self.room_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != current_time:
+                continue
+            if booking.status == RoomBookingStatus.CHECKED_IN:
+                blockers.append(
+                    f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 사용자 퇴실 신청이 필요합니다."
+                )
+            elif booking.status == RoomBookingStatus.CHECKOUT_REQUESTED:
+                blockers.append(
+                    f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 관리자 퇴실 승인이 필요합니다."
+                )
+
+        for booking in self.equipment_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != current_time:
+                continue
+            if booking.status == EquipmentBookingStatus.CHECKED_OUT:
+                blockers.append(
+                    f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 사용자 반납 신청이 필요합니다."
+                )
+            elif booking.status == EquipmentBookingStatus.RETURN_REQUESTED:
+                blockers.append(
+                    f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 관리자 반납 승인이 필요합니다."
+                )
+
+        return blockers
+
+    def _count_room_starts(self, target_time):
+        return len(
+            [
+                booking
+                for booking in self.room_booking_repo.get_all()
+                if booking.status == RoomBookingStatus.RESERVED
+                and datetime.fromisoformat(booking.start_time) == target_time
+            ]
+        )
+
+    def _count_equipment_starts(self, target_time):
+        return len(
+            [
+                booking
+                for booking in self.equipment_booking_repo.get_all()
+                if booking.status == EquipmentBookingStatus.RESERVED
+                and datetime.fromisoformat(booking.start_time) == target_time
+            ]
+        )
+
+    def _count_room_endings(self, target_time):
+        return len(
+            [
+                booking
+                for booking in self.room_booking_repo.get_all()
+                if booking.status
+                in {RoomBookingStatus.CHECKED_IN, RoomBookingStatus.CHECKOUT_REQUESTED}
+                and datetime.fromisoformat(booking.end_time) == target_time
+            ]
+        )
+
+    def _count_equipment_endings(self, target_time):
+        return len(
+            [
+                booking
+                for booking in self.equipment_booking_repo.get_all()
+                if booking.status
+                in {
+                    EquipmentBookingStatus.CHECKED_OUT,
+                    EquipmentBookingStatus.RETURN_REQUESTED,
+                }
+                and datetime.fromisoformat(booking.end_time) == target_time
+            ]
+        )
+
+    def _build_post_advance_events(self, current_time, maintenance):
+        events = [f"운영 시점이 {current_time.strftime('%Y-%m-%d %H:%M')}로 이동했습니다."]
+
+        reset_count = len(maintenance["penalty_reset_users"])
+        expired_count = len(maintenance["restriction_expired_users"])
+        cancelled_count = len(maintenance["banned_user_cancelled_bookings"])
+
+        if reset_count:
+            events.append(f"90일 경과 패널티 초기화 {reset_count}건")
+        if expired_count:
+            events.append(f"이용 제한 만료 처리 {expired_count}건")
+        if cancelled_count:
+            events.append(f"이용 금지 사용자 미래 예약 자동 취소 {cancelled_count}건")
+
+        return events
 
     def _check_penalty_resets(self, current_time):
         """90일 경과 패널티 초기화"""
@@ -280,7 +381,11 @@ class PolicyService:
                 )
             return (True, 1, "패널티로 인해 활성 예약 1건만 허용됩니다.")
 
-        return (True, 6, "")  # 정상 상태: 회의실 3 + 장비 3
+        return (
+            True,
+            MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+            "",
+        )
 
     def get_max_bookings_for_user(self, user):
         """
@@ -306,9 +411,6 @@ class PolicyService:
             if equipment_active >= 1:
                 return (0, 0)
             return (1, 1)  # 둘 중 하나만 가능
-
-        # 정상 상태
-        from src.config import MAX_ACTIVE_ROOM_BOOKINGS, MAX_ACTIVE_EQUIPMENT_BOOKINGS
 
         return (MAX_ACTIVE_ROOM_BOOKINGS, MAX_ACTIVE_EQUIPMENT_BOOKINGS)
 
