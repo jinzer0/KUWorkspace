@@ -1,82 +1,84 @@
 # KUWorkspace
 
-CLI program for managing shared-office room reservations and equipment rentals. It provides separate guest, user, and admin flows, persists state in local JSON Lines files under `data/`, and applies operational rules such as no-show handling, late-cancel penalties, temporary booking restrictions, and admin-managed check-in / return workflows.
+공유 오피스의 회의실 예약과 장비 대여를 관리하는 CLI 프로그램입니다. 게스트, 일반 사용자, 관리자 흐름이 분리되어 있으며, 모든 데이터는 `data/` 아래의 JSON Lines 텍스트 파일에 저장됩니다. 노쇼, 직전 취소, 지연 반납, 이용 제한 같은 운영 규칙도 함께 처리합니다.
 
 > [!NOTE]
-> This repository is a local-file CLI application, not a web service. Data is stored in text files in `data/`, and the project currently does not pin a specific Python version or ship a packaged release.
+> 이 저장소는 웹 서비스가 아니라 로컬 파일 기반 CLI 애플리케이션입니다. 데이터는 `data/` 디렉터리의 텍스트 파일에 저장되며, 패키지 배포용 프로젝트 구조나 고정 Python 버전 명세는 아직 포함되어 있지 않습니다.
 
-## What It Does
+## 주요 기능
 
-- Guest flow for sign up, login, and exit
-- User flow for room reservations, equipment reservations, booking changes, cancellations, checkout / return requests, and personal status lookup
-- Admin flow for room / equipment status changes, global booking inspection, manual check-in / checkout processing, and damage / contamination penalties
-- Automatic policy checks for no-shows, expired restrictions, 90-day penalty resets, and automatic cancellation of future bookings for banned users
-- File-based persistence with global locking and a Unit of Work layer for multi-file atomic writes
+- 게스트 메뉴에서 회원가입, 로그인, 프로그램 종료 지원
+- 일반 사용자 메뉴에서 회의실 예약, 장비 예약, 예약 변경, 예약 취소, 퇴실 / 반납 신청, 내 상태 조회 지원
+- 관리자 메뉴에서 회의실 / 장비 상태 변경, 전체 예약 조회, 체크인 / 대여 시작 / 반납 승인, 사용자 패널티 관리 지원
+- 노쇼 판정, 제한 해제, 90일 패널티 초기화, 이용 금지 사용자 미래 예약 자동 취소 같은 정책 자동 처리 제공
+- 전역 파일 잠금과 `UnitOfWork`를 이용한 다중 파일 원자적 저장 지원
 
-## Core Rules
+## 핵심 운영 규칙
 
-- Booking UI is date-range based, with a fixed daily usage window of `09:00` to `18:00`
-- A booking can start from tomorrow and extend for up to 14 days
-- Booking requests can be made up to 6 months ahead
-- No-show: `+3` points after a 15-minute grace period
-- Late cancel: `+2` points when cancelling within 1 hour of start
-- Late checkout / return: `ceil(delay_minutes / 10)` points
-- `3-5` penalty points restrict the user to 1 active booking
-- `6+` penalty points ban usage for 30 days and automatically cancel future reserved bookings
-- Every 10 consecutive normal uses reduces penalty points by 1
+- 예약 UI는 시간 입력형이 아니라 날짜 범위 기반입니다
+- 실제 이용 시간은 매일 `09:00`부터 `18:00`까지로 고정됩니다
+- 예약 시작일은 내일부터 선택할 수 있습니다
+- 예약 가능 기간은 시작일 기준 최대 6개월 이내입니다
+- 1회 예약 기간은 최대 14일입니다
+- 노쇼는 15분 유예 후 `+3점` 패널티가 부여됩니다
+- 시작 1시간 이내 취소는 `+2점` 패널티가 부여됩니다
+- 지연 퇴실 / 반납은 `ceil(지연 분 / 10)` 점수만큼 패널티가 부여됩니다
+- 패널티가 `3~5점`이면 활성 예약 1건만 허용됩니다
+- 패널티가 `6점 이상`이면 30일 이용 금지와 함께 미래 예약이 자동 취소됩니다
+- 정상 이용 10회를 연속 달성하면 패널티 점수 1점이 차감됩니다
 
-## Repository Layout
+## 저장소 구조
 
-| Path | Purpose |
+| 경로 | 설명 |
 | --- | --- |
-| `main.py` | Application entrypoint and top-level menu loop |
-| `src/cli/` | Guest, user, and admin terminal menus plus input/format helpers |
-| `src/domain/` | Booking, auth, policy, and penalty services with domain models |
-| `src/storage/` | JSONL repositories, file locking, and atomic write helpers |
-| `scripts/seed_data.py` | Seeds an admin account plus sample rooms and equipment |
-| `data/` | Runtime storage for users, bookings, penalties, and audit logs |
-| `tests/` | Unit, integration, and end-to-end test suites |
-| `flow.md` | Current end-to-end CLI flow and rule documentation |
-| `PLAN.md`, `PLAN2.md` | Planning documents for features and concurrency design |
+| `main.py` | 프로그램 진입점과 최상위 메뉴 루프 |
+| `src/cli/` | 게스트 / 사용자 / 관리자 메뉴와 입력, 출력 포맷 유틸리티 |
+| `src/domain/` | 인증, 예약, 정책, 패널티 처리와 도메인 모델 |
+| `src/storage/` | JSONL 저장소, 파일 잠금, 원자적 쓰기 구현 |
+| `scripts/seed_data.py` | 관리자 계정과 샘플 회의실 / 장비 데이터를 생성하는 스크립트 |
+| `data/` | 사용자, 예약, 패널티, 감사 로그 등 런타임 데이터 저장 위치 |
+| `tests/` | 단위 / 통합 / E2E 테스트 |
+| `flow.md` | 현재 코드 기준 사용자 흐름과 규칙 문서 |
+| `PLAN.md`, `PLAN2.md` | 기능 및 동시성 설계 문서 |
 
-## Setup
+## 설치
 
-Install dependencies from the repository root:
+저장소 루트에서 의존성을 설치합니다.
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Seed sample data:
+샘플 데이터를 생성합니다.
 
 ```bash
 python scripts/seed_data.py
 ```
 
-The seed script creates:
+시드 스크립트는 다음 데이터를 만듭니다.
 
-- Admin account: `admin / admin123`
-- Sample rooms across 4-person, 6-person, and 8-person capacities
-- Sample equipment such as projectors, laptops, cables, and webcams
+- 관리자 계정: `admin / admin123`
+- 4인, 6인, 8인 규모의 샘플 회의실
+- 프로젝터, 노트북, 케이블, 웹캠 등의 샘플 장비
 
-## Quick Start
+## 빠른 시작
 
-Run the CLI:
+CLI를 실행합니다.
 
 ```bash
 python main.py
 ```
 
-Typical first-run flow:
+처음 실행할 때 추천 순서는 다음과 같습니다.
 
-1. Run `python scripts/seed_data.py`
-2. Start the app with `python main.py`
-3. Log in as `admin / admin123` to inspect assets and bookings
-4. Create a normal user account from the guest menu and test the user booking flow
+1. `python scripts/seed_data.py` 실행
+2. `python main.py` 실행
+3. `admin / admin123`으로 로그인해 자원과 예약 현황 확인
+4. 게스트 메뉴에서 일반 사용자 계정을 새로 만든 뒤 예약 흐름 테스트
 
-## Data Model and Storage
+## 데이터 저장 방식
 
-Runtime data lives in plain text files under `data/`:
+런타임 데이터는 `data/` 아래의 텍스트 파일로 저장됩니다.
 
 - `users.txt`
 - `rooms.txt`
@@ -86,25 +88,25 @@ Runtime data lives in plain text files under `data/`:
 - `penalties.txt`
 - `audit_log.txt`
 
-The storage layer reads and writes JSON Lines records through repository classes in `src/storage/repositories.py`. Write paths require a global file lock, and multi-file updates are staged through `UnitOfWork` before being committed atomically.
+저장 계층은 `src/storage/repositories.py`에서 JSON Lines 레코드를 읽고 씁니다. 모든 쓰기 경로는 전역 잠금을 요구하며, 여러 파일을 함께 갱신해야 할 때는 `UnitOfWork`로 변경 사항을 스테이징한 뒤 한 번에 커밋합니다.
 
-## Testing
+## 테스트
 
-Run the test suite with:
+전체 테스트는 다음 명령으로 실행할 수 있습니다.
 
 ```bash
 pytest
 ```
 
-The repository includes:
+테스트 범위는 다음과 같습니다.
 
-- Unit tests for auth, policy, booking, menu, and data handling logic
-- Integration tests for repositories, locking, and concurrency behavior
-- End-to-end tests for signup/login, booking flows, penalties, and admin operations
+- 인증, 예약, 정책, 메뉴 처리, 데이터 입출력에 대한 단위 테스트
+- 저장소, 잠금, 동시성 동작에 대한 통합 테스트
+- 회원가입 / 로그인, 예약 흐름, 패널티, 관리자 처리에 대한 E2E 테스트
 
-## Caveats
+## 현재 제약 사항
 
-- Passwords are stored in plain text as part of the assignment constraints
-- The CLI currently exposes a date-range booking flow even though some lower-level services also support time-based methods
-- The project uses local file storage and is intended for coursework / small-scale local execution, not concurrent distributed deployment
-- Sample runtime data under `data/` may change as the application is used
+- 과제 요구사항에 따라 비밀번호는 평문으로 저장됩니다
+- CLI는 날짜 범위 기반 예약 흐름을 사용하지만, 일부 하위 서비스는 시간 단위 메서드도 함께 가지고 있습니다
+- 로컬 파일 저장소를 전제로 한 구조이므로 분산 환경이나 대규모 동시 사용을 목표로 하지 않습니다
+- `data/` 아래의 샘플 데이터는 프로그램 사용에 따라 계속 변경될 수 있습니다
