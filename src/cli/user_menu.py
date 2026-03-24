@@ -18,6 +18,7 @@ from src.config import (
     FIXED_BOOKING_START_MINUTE,
 )
 from src.cli.menu import confirm, pause, select_from_list
+from src.cli.clock_menu import ClockMenu
 from src.cli.formatters import (
     print_header,
     print_subheader,
@@ -122,6 +123,7 @@ class UserMenu:
 
             print("\n[내 정보]")
             print("  13. 내 상태 조회")
+            print("  14. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -154,6 +156,8 @@ class UserMenu:
                 self._request_equipment_return()
             elif choice == "13":
                 self._show_my_status()
+            elif choice == "14":
+                ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
                     print_success("로그아웃 되었습니다.")

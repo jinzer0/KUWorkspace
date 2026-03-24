@@ -2,19 +2,27 @@
 
 from datetime import datetime
 
-from src.config import PENALTY_RESTRICTION_THRESHOLD, PENALTY_BAN_THRESHOLD
+from src.config import (
+    PENALTY_RESTRICTION_THRESHOLD,
+    PENALTY_BAN_THRESHOLD,
+    MAX_ACTIVE_ROOM_BOOKINGS,
+    MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+)
+from src.runtime_clock import get_current_time
 
 
 def evaluate_user_restriction(user, current_time=None):
     """사용자의 현재 제한 상태를 계산합니다."""
     if current_time is None:
-        current_time = datetime.now()
+        current_time = get_current_time()
 
     points = user.penalty_points
     restriction_until = user.restriction_until
     is_banned = False
     is_restricted = False
-    max_active_bookings = 6
+    max_active_bookings = (
+        MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS
+    )
 
     if restriction_until and points >= PENALTY_RESTRICTION_THRESHOLD:
         restriction_end = datetime.fromisoformat(restriction_until)

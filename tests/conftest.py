@@ -33,12 +33,14 @@ from src.domain.models import (
     generate_id,
 )
 from src.storage.file_lock import global_lock
+from src.runtime_clock import SystemClock, set_active_clock, clear_active_clock
 
 # =============================================================================
 # DATETIME MOCKING UTILITIES
 # =============================================================================
 
 DATETIME_PATCH_TARGETS = [
+    "src.runtime_clock.datetime",
     "src.domain.room_service.datetime",
     "src.domain.equipment_service.datetime",
     "src.domain.penalty_service.datetime",
@@ -136,6 +138,20 @@ def freeze_time():
 
     for p in patches:
         p.stop()
+
+
+@pytest.fixture
+def fake_clock():
+    """세션 가상 시계를 직접 제어하는 픽스처."""
+
+    def _set(fixed_time):
+        set_active_clock(SystemClock(fixed_time))
+        from src.runtime_clock import get_active_clock
+
+        return get_active_clock()
+
+    yield _set
+    clear_active_clock()
 
 
 # =============================================================================

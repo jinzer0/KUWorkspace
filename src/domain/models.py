@@ -9,6 +9,8 @@ from typing import Optional
 import uuid
 import json
 
+from src.runtime_clock import get_current_time
+
 # ===== Enums =====
 
 
@@ -72,7 +74,7 @@ def generate_id() -> str:
 
 def now_iso() -> str:
     """현재 시각 ISO 형식 문자열"""
-    return datetime.now().isoformat()
+    return get_current_time().isoformat()
 
 
 def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:

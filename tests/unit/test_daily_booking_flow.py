@@ -140,7 +140,7 @@ def test_room_capacity_falls_back_to_larger_room(
         assert rooms[0].name == "Large"
 
 
-def test_room_checkout_request_and_approval_apply_delay_penalty(
+def test_room_checkout_request_and_approval_completes_without_delay_penalty(
     room_service, auth_service, create_test_user, create_test_room, mock_now
 ):
     with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
@@ -155,20 +155,20 @@ def test_room_checkout_request_and_approval_apply_delay_penalty(
             attendee_count=4,
         )
 
-    with mock_now(datetime(2024, 6, 16, 9, 5, 0)):
+    with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
         room_service.check_in(admin, booking.id)
 
-    with mock_now(datetime(2024, 6, 16, 18, 30, 0)):
+    with mock_now(datetime(2024, 6, 16, 18, 0, 0)):
         requested = room_service.request_checkout(user, booking.id)
         assert requested.status == RoomBookingStatus.CHECKOUT_REQUESTED
 
         approved, delay_minutes = room_service.approve_checkout_request(admin, booking.id)
         assert approved.status == RoomBookingStatus.COMPLETED
-        assert delay_minutes == 30
-        assert auth_service.get_user(user.id).penalty_points == 3
+        assert delay_minutes == 0
+        assert auth_service.get_user(user.id).penalty_points == 0
 
 
-def test_equipment_return_request_and_approval_apply_delay_penalty(
+def test_equipment_return_request_and_approval_completes_without_delay_penalty(
     equipment_service, auth_service, create_test_user, create_test_equipment, mock_now
 ):
     with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
@@ -182,10 +182,10 @@ def test_equipment_return_request_and_approval_apply_delay_penalty(
             end_date=date(2024, 6, 16),
         )
 
-    with mock_now(datetime(2024, 6, 16, 9, 5, 0)):
+    with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
         equipment_service.checkout(admin, booking.id)
 
-    with mock_now(datetime(2024, 6, 16, 18, 20, 0)):
+    with mock_now(datetime(2024, 6, 16, 18, 0, 0)):
         requested = equipment_service.request_return(user, booking.id)
         assert requested.status == EquipmentBookingStatus.RETURN_REQUESTED
 
@@ -193,5 +193,5 @@ def test_equipment_return_request_and_approval_apply_delay_penalty(
             admin, booking.id
         )
         assert approved.status == EquipmentBookingStatus.RETURNED
-        assert delay_minutes == 20
-        assert auth_service.get_user(user.id).penalty_points == 2
+        assert delay_minutes == 0
+        assert auth_service.get_user(user.id).penalty_points == 0

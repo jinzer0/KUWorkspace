@@ -16,7 +16,6 @@ from src.domain.models import (
 )
 from src.domain.daily_booking_rules import (
     build_daily_booking_period,
-    calculate_request_delay_minutes,
     validate_daily_booking_dates,
 )
 from src.domain.restriction_rules import evaluate_user_restriction
@@ -29,11 +28,11 @@ from src.storage.repositories import (
     UnitOfWork,
 )
 from src.storage.file_lock import global_lock
+from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_BOOKING_DAYS,
     TIME_SLOT_MINUTES,
     MAX_ACTIVE_ROOM_BOOKINGS,
-    LATE_CANCEL_THRESHOLD_MINUTES,
 )
 
 
@@ -66,9 +65,11 @@ class RoomService:
         user_repo=None,
         audit_repo=None,
         penalty_service=None,
+        clock=None,
     ):
         from src.domain.penalty_service import PenaltyService
 
+        self.clock = clock or get_runtime_clock()
         self.room_repo = room_repo or RoomRepository()
         self.booking_repo = booking_repo or RoomBookingRepository()
         self.equipment_booking_repo = (
@@ -79,6 +80,7 @@ class RoomService:
         self.penalty_service = penalty_service or PenaltyService(
             user_repo=self.user_repo,
             audit_repo=self.audit_repo,
+            clock=self.clock,
         )
 
     def _get_existing_user(self, user):
@@ -102,7 +104,7 @@ class RoomService:
 
     def _ensure_user_can_create_booking(self, user):
         current_user = self._get_existing_user(user)
-        status = evaluate_user_restriction(current_user, datetime.now())
+        status = evaluate_user_restriction(current_user, self.clock.now())
 
         if status["is_banned"]:
             raise RoomBookingError(
@@ -130,7 +132,15 @@ class RoomService:
             penalty_repo=self.penalty_service.penalty_repo,
             audit_repo=self.audit_repo,
             penalty_service=self.penalty_service,
+            clock=self.clock,
         ).run_all_checks()
+
+    def _require_current_boundary(self, boundary_time, action_name):
+        current_time = self.clock.now()
+        if boundary_time != current_time:
+            raise RoomBookingError(
+                f"{action_name}은 현재 운영 시점({current_time.strftime('%Y-%m-%d %H:%M')})과 일치하는 예약에서만 가능합니다."
+            )
 
     def get_all_rooms(self):
         """모든 회의실 조회"""
@@ -182,7 +192,7 @@ class RoomService:
                     )
 
                 valid, error, _ = validate_daily_booking_dates(
-                    start_date, end_date, datetime.now()
+                    start_date, end_date, self.clock.now()
                 )
                 if not valid:
                     raise RoomBookingError(error)
@@ -240,7 +250,7 @@ class RoomService:
                     )
 
                 valid, error, _ = validate_daily_booking_dates(
-                    start_date, end_date, datetime.now()
+                    start_date, end_date, self.clock.now()
                 )
                 if not valid:
                     raise RoomBookingError(error)
@@ -292,7 +302,7 @@ class RoomService:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
 
                 valid, error, _ = validate_daily_booking_dates(
-                    start_date, end_date, datetime.now()
+                    start_date, end_date, self.clock.now()
                 )
                 if not valid:
                     raise RoomBookingError(error)
@@ -397,7 +407,7 @@ class RoomService:
 
     def _validate_booking_time(self, start_time, end_time):
         """예약 시간 유효성 검사"""
-        now = datetime.now()
+        now = self.clock.now()
 
         # 과거 시간 예약 불가
         if start_time < now:
@@ -504,11 +514,7 @@ class RoomService:
                         f"'{booking.status.value}' 상태의 예약은 취소할 수 없습니다."
                     )
 
-                now = datetime.now()
-                start = datetime.fromisoformat(booking.start_time)
-                is_late_cancel = (
-                    start - now
-                ).total_seconds() < LATE_CANCEL_THRESHOLD_MINUTES * 60
+                is_late_cancel = False
 
                 updated = replace(
                     booking,
@@ -524,16 +530,8 @@ class RoomService:
                     action="cancel_room_booking",
                     target_type="room_booking",
                     target_id=booking_id,
-                    details=f"직전 취소: {is_late_cancel}",
+                    details="사용자 취소",
                 )
-
-                if is_late_cancel:
-                    self.penalty_service.apply_late_cancel(
-                        user=user,
-                        booking_type="room_booking",
-                        booking_id=booking_id,
-                        actor_id=user.id,
-                    )
 
                 return updated, is_late_cancel
 
@@ -592,7 +590,7 @@ class RoomService:
                 if booking_user is None:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
 
-                now = datetime.now()
+                now = self.clock.now()
                 start = datetime.fromisoformat(booking.start_time)
                 if start <= now:
                     raise RoomBookingError("이미 시작된 예약은 변경할 수 없습니다.")
@@ -644,6 +642,9 @@ class RoomService:
                 booking_user = self.user_repo.get_by_id(booking.user_id)
                 if booking_user is None:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
+                self._require_current_boundary(
+                    datetime.fromisoformat(booking.start_time), "체크인"
+                )
 
                 updated = replace(
                     booking,
@@ -676,12 +677,9 @@ class RoomService:
                     f"'{booking.status.value}' 상태의 예약은 퇴실 처리할 수 없습니다."
                 )
 
-            now = datetime.now()
             end_time = datetime.fromisoformat(booking.end_time)
-
+            self._require_current_boundary(end_time, "퇴실 처리")
             delay_minutes = 0
-            if now > end_time:
-                delay_minutes = int((now - end_time).total_seconds() / 60)
 
             updated = replace(
                 booking,
@@ -703,16 +701,7 @@ class RoomService:
             booking_user = self.user_repo.get_by_id(booking.user_id)
             if booking_user is None:
                 raise RoomBookingError("존재하지 않는 사용자입니다.")
-            if delay_minutes > 0:
-                self.penalty_service.apply_late_return(
-                    user=booking_user,
-                    booking_type="room_booking",
-                    booking_id=booking_id,
-                    delay_minutes=delay_minutes,
-                    actor_id=admin.id,
-                )
-            else:
-                self.penalty_service.record_normal_use(booking_user)
+            self.penalty_service.record_normal_use(booking_user)
 
             return updated, delay_minutes
 
@@ -730,6 +719,9 @@ class RoomService:
                 raise RoomBookingError(
                     f"'{booking.status.value}' 상태의 예약은 퇴실 신청할 수 없습니다."
                 )
+            self._require_current_boundary(
+                datetime.fromisoformat(booking.end_time), "퇴실 신청"
+            )
 
             updated = replace(
                 booking,
@@ -759,11 +751,9 @@ class RoomService:
                     f"'{booking.status.value}' 상태의 예약은 퇴실 승인 처리할 수 없습니다."
                 )
 
-            request_time = datetime.fromisoformat(
-                booking.requested_checkout_at or now_iso()
-            )
             end_time = datetime.fromisoformat(booking.end_time)
-            delay_minutes = calculate_request_delay_minutes(end_time, request_time)
+            self._require_current_boundary(end_time, "퇴실 승인")
+            delay_minutes = 0
 
             updated = replace(
                 booking,
@@ -784,16 +774,7 @@ class RoomService:
             if booking_user is None:
                 raise RoomBookingError("존재하지 않는 사용자입니다.")
 
-            if delay_minutes > 0:
-                self.penalty_service.apply_late_return(
-                    user=booking_user,
-                    booking_type="room_booking",
-                    booking_id=booking_id,
-                    delay_minutes=delay_minutes,
-                    actor_id=admin.id,
-                )
-            else:
-                self.penalty_service.record_normal_use(booking_user)
+            self.penalty_service.record_normal_use(booking_user)
 
             return updated, delay_minutes
 
@@ -806,6 +787,9 @@ class RoomService:
 
             if booking.status != RoomBookingStatus.RESERVED:
                 raise RoomBookingError("예약 대기 상태만 노쇼 처리할 수 있습니다.")
+            self._require_current_boundary(
+                datetime.fromisoformat(booking.start_time), "노쇼 처리"
+            )
 
             updated = replace(
                 booking, status=RoomBookingStatus.NO_SHOW, updated_at=now_iso()
@@ -863,7 +847,7 @@ class RoomService:
 
             # maintenance 또는 disabled로 변경 시 미래 예약 취소
             if new_status in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
-                now = datetime.now()
+                now = self.clock.now()
                 for booking in self.booking_repo.get_by_room(room_id):
                     if booking.status == RoomBookingStatus.RESERVED:
                         start = datetime.fromisoformat(booking.start_time)

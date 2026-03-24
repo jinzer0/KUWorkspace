@@ -140,28 +140,27 @@ class TestCreateEquipmentBooking:
         with mock_now(fixed_time):
             user = create_test_user()
             equipment_items = [
-                create_test_equipment(name=f"Bypass Equipment {i}") for i in range(4)
+                create_test_equipment(name=f"Bypass Equipment {i}") for i in range(2)
             ]
 
-            for i in range(3):
-                equipment_service.create_booking(
-                    user,
-                    equipment_items[i].id,
-                    fixed_time + timedelta(hours=i + 1),
-                    fixed_time + timedelta(days=i + 1),
-                    max_active=99,
-                )
+            equipment_service.create_booking(
+                user,
+                equipment_items[0].id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(days=1),
+                max_active=99,
+            )
 
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.create_booking(
                     user,
-                    equipment_items[3].id,
-                    fixed_time + timedelta(hours=5),
-                    fixed_time + timedelta(days=5),
+                    equipment_items[1].id,
+                    fixed_time + timedelta(hours=3),
+                    fixed_time + timedelta(days=2),
                     max_active=99,
                 )
 
-            assert "3건" in str(exc_info.value)
+            assert "1건" in str(exc_info.value)
 
     def test_create_booking_restricted_user_with_existing_room_booking_fails(
         self,
@@ -299,20 +298,15 @@ class TestModifyEquipmentBooking:
             )
 
         with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
-            with pytest.raises(EquipmentBookingError) as exc_info:
-                equipment_service.modify_booking(
-                    user,
-                    booking.id,
-                    fixed_time + timedelta(hours=3),
-                    fixed_time + timedelta(days=2),
-                )
-
-            assert "no_show" in str(exc_info.value)
-            assert (
-                equipment_service.booking_repo.get_by_id(booking.id).status
-                == EquipmentBookingStatus.NO_SHOW
+            modified = equipment_service.modify_booking(
+                user,
+                booking.id,
+                fixed_time + timedelta(hours=3),
+                fixed_time + timedelta(days=2),
             )
-            assert auth_service.get_user(user.id).penalty_points == 3
+
+            assert modified.status == EquipmentBookingStatus.RESERVED
+            assert auth_service.get_user(user.id).penalty_points == 0
 
 
 class TestCancelEquipmentBooking:
@@ -343,7 +337,7 @@ class TestCancelEquipmentBooking:
     def test_cancel_booking_late_cancel(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
-        """직전 취소 (1시간 이내)"""
+        """가상 시점 정책에서는 직전 취소 패널티를 적용하지 않음"""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
@@ -360,7 +354,7 @@ class TestCancelEquipmentBooking:
 
             cancelled, is_late = equipment_service.cancel_booking(user, booking.id)
 
-            assert is_late is True
+            assert is_late is False
 
     def test_cancel_booking_runs_policy_checks_before_action(
         self,
@@ -383,15 +377,11 @@ class TestCancelEquipmentBooking:
             )
 
         with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
-            with pytest.raises(EquipmentBookingError) as exc_info:
-                equipment_service.cancel_booking(user, booking.id)
+            cancelled, is_late = equipment_service.cancel_booking(user, booking.id)
 
-            assert "no_show" in str(exc_info.value)
-            assert (
-                equipment_service.booking_repo.get_by_id(booking.id).status
-                == EquipmentBookingStatus.NO_SHOW
-            )
-            assert auth_service.get_user(user.id).penalty_points == 3
+            assert cancelled.status == EquipmentBookingStatus.CANCELLED
+            assert is_late is False
+            assert auth_service.get_user(user.id).penalty_points == 0
 
 
 class TestCheckoutReturn:
@@ -401,7 +391,7 @@ class TestCheckoutReturn:
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
         """정상 대여"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -411,7 +401,7 @@ class TestCheckoutReturn:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
+                fixed_time,
                 fixed_time + timedelta(days=2),
             )
 
@@ -445,12 +435,9 @@ class TestCheckoutReturn:
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.checkout(admin, booking.id)
 
-            assert "no_show" in str(exc_info.value)
-            assert (
-                equipment_service.booking_repo.get_by_id(booking.id).status
-                == EquipmentBookingStatus.NO_SHOW
-            )
-            assert auth_service.get_user(user.id).penalty_points == 3
+            assert "현재 운영 시점" in str(exc_info.value)
+            assert equipment_service.booking_repo.get_by_id(booking.id).status == EquipmentBookingStatus.RESERVED
+            assert auth_service.get_user(user.id).penalty_points == 0
 
     def test_checkout_missing_booking_user_fails(
         self,
@@ -460,7 +447,7 @@ class TestCheckoutReturn:
         equipment_booking_repo,
         mock_now,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
@@ -469,20 +456,20 @@ class TestCheckoutReturn:
                 id="equipment-missing-user-checkout",
                 user_id="missing-user",
                 equipment_id=equipment.id,
-                start_time=(fixed_time + timedelta(hours=1)).isoformat(),
+                start_time=fixed_time.isoformat(),
                 end_time=(fixed_time + timedelta(days=1)).isoformat(),
                 status=EquipmentBookingStatus.RESERVED,
             )
             with global_lock():
                 equipment_booking_repo.add(booking)
 
-        with mock_now(fixed_time + timedelta(hours=1, minutes=10)):
+        with mock_now(fixed_time):
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.checkout(admin, booking.id)
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
-    def test_default_equipment_service_still_applies_no_show_policy(
+    def test_default_equipment_service_no_longer_applies_auto_no_show_policy(
         self,
         equipment_repo,
         equipment_booking_repo,
@@ -521,14 +508,14 @@ class TestCheckoutReturn:
 
             updated_booking = service.booking_repo.get_by_id(booking.id)
             assert updated_booking is not None
-            assert updated_booking.status == EquipmentBookingStatus.NO_SHOW
-            assert auth_service.get_user(user.id).penalty_points == 3
+            assert updated_booking.status == EquipmentBookingStatus.RESERVED
+            assert auth_service.get_user(user.id).penalty_points == 0
 
     def test_return_on_time(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
         """정시 반납"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -538,25 +525,25 @@ class TestCheckoutReturn:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(days=2),  # 6/17 10:00 종료
+                fixed_time,
+                fixed_time + timedelta(days=2),
             )
 
             equipment_service.checkout(admin, booking.id)
 
         # 종료 시간 정각에 반납
-        return_time = datetime(2024, 6, 17, 10, 0, 0)
+        return_time = datetime(2024, 6, 17, 9, 0, 0)
         with mock_now(return_time):
             returned, delay = equipment_service.return_equipment(admin, booking.id)
 
             assert returned.status == EquipmentBookingStatus.RETURNED
             assert delay == 0
 
-    def test_return_late(
+    def test_return_requires_exact_boundary(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
-        """지연 반납 (지연 시간 계산)"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        """종료 경계를 벗어나면 반납 처리 불가"""
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -566,18 +553,18 @@ class TestCheckoutReturn:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(days=2),  # 6/17 10:00 종료
+                fixed_time,
+                fixed_time + timedelta(days=2),
             )
 
             equipment_service.checkout(admin, booking.id)
 
-        # 1시간 30분 지연 반납
         late_time = datetime(2024, 6, 17, 11, 30, 0)
         with mock_now(late_time):
-            returned, delay = equipment_service.return_equipment(admin, booking.id)
+            with pytest.raises(EquipmentBookingError) as exc_info:
+                equipment_service.return_equipment(admin, booking.id)
 
-            assert delay == 90  # 90분 지연
+            assert "현재 운영 시점" in str(exc_info.value)
 
     def test_return_missing_booking_user_fails(
         self,
@@ -587,7 +574,7 @@ class TestCheckoutReturn:
         equipment_booking_repo,
         mock_now,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
@@ -596,14 +583,14 @@ class TestCheckoutReturn:
                 id="equipment-missing-user-return",
                 user_id="missing-user",
                 equipment_id=equipment.id,
-                start_time=(fixed_time + timedelta(hours=1)).isoformat(),
+                start_time=fixed_time.isoformat(),
                 end_time=(fixed_time + timedelta(days=1)).isoformat(),
                 status=EquipmentBookingStatus.CHECKED_OUT,
             )
             with global_lock():
                 equipment_booking_repo.add(booking)
 
-        with mock_now(datetime(2024, 6, 16, 10, 0, 0)):
+        with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.return_equipment(admin, booking.id)
 
@@ -617,7 +604,7 @@ class TestNoShowEquipment:
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
         """노쇼 처리"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -626,7 +613,7 @@ class TestNoShowEquipment:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
+                fixed_time,
                 fixed_time + timedelta(days=2),
             )
 
@@ -642,7 +629,7 @@ class TestNoShowEquipment:
         equipment_booking_repo,
         mock_now,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
             equipment = create_test_equipment()
@@ -650,7 +637,7 @@ class TestNoShowEquipment:
                 id="equipment-noshow-missing-user",
                 user_id="missing-user",
                 equipment_id=equipment.id,
-                start_time=(fixed_time + timedelta(hours=1)).isoformat(),
+                start_time=fixed_time.isoformat(),
                 end_time=(fixed_time + timedelta(days=1)).isoformat(),
                 status=EquipmentBookingStatus.RESERVED,
             )

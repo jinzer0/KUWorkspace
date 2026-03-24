@@ -7,6 +7,7 @@ from src.domain.policy_service import PolicyService
 from src.domain.penalty_service import PenaltyError
 from src.cli.menu import confirm, pause
 from src.cli.formatters import print_header, print_success, print_error
+from src.cli.clock_menu import ClockMenu
 from src.cli.validators import validate_username, validate_password
 
 
@@ -41,6 +42,7 @@ class GuestMenu:
             print_header("공유 오피스 예약 시스템")
             print("  1. 로그인")
             print("  2. 회원가입")
+            print("  9. 운영 시계")
             print("  0. 종료")
             print("-" * 50)
 
@@ -52,6 +54,8 @@ class GuestMenu:
                     return user
             elif choice == "2":
                 self._signup()
+            elif choice == "9":
+                ClockMenu(self.policy_service, actor_id="guest").run()
             elif choice == "0":
                 if confirm("정말 종료하시겠습니까?"):
                     print("\n프로그램을 종료합니다.")
