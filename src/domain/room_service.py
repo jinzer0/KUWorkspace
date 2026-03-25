@@ -33,6 +33,10 @@ from src.config import (
     MAX_BOOKING_DAYS,
     TIME_SLOT_MINUTES,
     MAX_ACTIVE_ROOM_BOOKINGS,
+    LATE_CANCEL_PENALTY,
+    LATE_CANCEL_THRESHOLD_MINUTES,
+    START_REQUEST_CUTOFF_HOUR,
+    END_REQUEST_CUTOFF_HOUR,
 )
 
 
@@ -140,6 +144,24 @@ class RoomService:
         if boundary_time != current_time:
             raise RoomBookingError(
                 f"{action_name}은 현재 운영 시점({current_time.strftime('%Y-%m-%d %H:%M')})과 일치하는 예약에서만 가능합니다."
+            )
+
+    def _require_start_request_window(self, booking):
+        start_time = datetime.fromisoformat(booking.start_time)
+        self._require_current_boundary(start_time, "체크인 요청")
+        current_time = self.clock.now()
+        if current_time.hour >= START_REQUEST_CUTOFF_HOUR:
+            raise RoomBookingError(
+                f"체크인 요청은 {START_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
+            )
+
+    def _require_end_request_window(self, booking):
+        end_time = datetime.fromisoformat(booking.end_time)
+        self._require_current_boundary(end_time, "퇴실 요청")
+        current_time = self.clock.now()
+        if current_time.hour >= END_REQUEST_CUTOFF_HOUR:
+            raise RoomBookingError(
+                f"퇴실 요청은 {END_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
             )
 
     def get_all_rooms(self):
@@ -515,6 +537,20 @@ class RoomService:
                     )
 
                 is_late_cancel = False
+                start_time = datetime.fromisoformat(booking.start_time)
+                current_time = self.clock.now()
+                minutes_to_start = (start_time - current_time).total_seconds() / 60
+                if 0 <= minutes_to_start <= LATE_CANCEL_THRESHOLD_MINUTES:
+                    is_late_cancel = True
+                    booking_user = self.user_repo.get_by_id(booking.user_id)
+                    if booking_user is None:
+                        raise RoomBookingError("존재하지 않는 사용자입니다.")
+                    self.penalty_service.apply_late_cancel(
+                        user=booking_user,
+                        booking_type="room_booking",
+                        booking_id=booking.id,
+                        actor_id=user.id,
+                    )
 
                 updated = replace(
                     booking,
@@ -634,7 +670,7 @@ class RoomService:
                 if booking is None:
                     raise RoomBookingError("존재하지 않는 예약입니다.")
 
-                if booking.status != RoomBookingStatus.RESERVED:
+                if booking.status != RoomBookingStatus.CHECKIN_REQUESTED:
                     raise RoomBookingError(
                         f"'{booking.status.value}' 상태의 예약은 체크인할 수 없습니다."
                     )
@@ -664,6 +700,39 @@ class RoomService:
                 )
 
                 return updated
+
+    def request_check_in(self, user, booking_id):
+        with global_lock(), UnitOfWork():
+            user = self._get_existing_user(user)
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise RoomBookingError("존재하지 않는 예약입니다.")
+
+            if booking.user_id != user.id:
+                raise RoomBookingError("본인의 예약만 체크인 요청할 수 있습니다.")
+
+            if booking.status != RoomBookingStatus.RESERVED:
+                raise RoomBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 체크인 요청할 수 없습니다."
+                )
+
+            self._require_start_request_window(booking)
+
+            updated = replace(
+                booking,
+                status=RoomBookingStatus.CHECKIN_REQUESTED,
+                requested_checkin_at=now_iso(),
+                updated_at=now_iso(),
+            )
+            self.booking_repo.update(updated)
+            self.audit_repo.log_action(
+                actor_id=user.id,
+                action="request_room_check_in",
+                target_type="room_booking",
+                target_id=booking_id,
+                details="",
+            )
+            return updated
 
     def check_out(self, admin, booking_id):
         admin = self._get_existing_admin(admin)
@@ -705,6 +774,54 @@ class RoomService:
 
             return updated, delay_minutes
 
+    def force_complete_checkout(self, admin, booking_id):
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise RoomBookingError("존재하지 않는 예약입니다.")
+
+            if booking.status != RoomBookingStatus.CHECKED_IN:
+                raise RoomBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 지연 퇴실 처리할 수 없습니다."
+                )
+
+            end_time = datetime.fromisoformat(booking.end_time)
+            self._require_current_boundary(end_time, "지연 퇴실 처리")
+            delay_minutes = int((self.clock.now() - end_time).total_seconds() / 60)
+            if delay_minutes <= 0:
+                delay_minutes = 60
+
+            updated = replace(
+                booking,
+                status=RoomBookingStatus.COMPLETED,
+                completed_at=now_iso(),
+                updated_at=now_iso(),
+            )
+
+            self.booking_repo.update(updated)
+
+            booking_user = self.user_repo.get_by_id(booking.user_id)
+            if booking_user is None:
+                raise RoomBookingError("존재하지 않는 사용자입니다.")
+            self.penalty_service.apply_late_return(
+                user=booking_user,
+                booking_type="room_booking",
+                booking_id=booking_id,
+                delay_minutes=delay_minutes,
+                actor_id=admin.id,
+            )
+
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="force_complete_room_checkout",
+                target_type="room_booking",
+                target_id=booking_id,
+                details=f"지연: {delay_minutes}분",
+            )
+
+            return updated, delay_minutes
+
     def request_checkout(self, user, booking_id):
         with global_lock(), UnitOfWork():
             user = self._get_existing_user(user)
@@ -719,9 +836,7 @@ class RoomService:
                 raise RoomBookingError(
                     f"'{booking.status.value}' 상태의 예약은 퇴실 신청할 수 없습니다."
                 )
-            self._require_current_boundary(
-                datetime.fromisoformat(booking.end_time), "퇴실 신청"
-            )
+            self._require_end_request_window(booking)
 
             updated = replace(
                 booking,
@@ -778,8 +893,15 @@ class RoomService:
 
             return updated, delay_minutes
 
-    def mark_no_show(self, booking_id, actor_id="system"):
+    def mark_no_show(self, booking_id, admin=None, actor_id="system"):
         """노쇼 처리"""
+        if admin is None:
+            admin_user = self.user_repo.get_by_id(actor_id)
+            if admin_user is None:
+                raise RoomBookingError("노쇼 처리는 관리자 권한이 필요합니다.")
+            admin = admin_user
+        admin = self._get_existing_admin(admin)
+
         with global_lock(), UnitOfWork():
             booking = self.booking_repo.get_by_id(booking_id)
             if booking is None:

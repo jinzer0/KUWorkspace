@@ -111,19 +111,21 @@ class UserMenu:
             print("  3. 내 회의실 예약 조회")
             print("  4. 회의실 예약 변경")
             print("  5. 회의실 예약 취소")
-            print("  6. 회의실 퇴실 신청")
+            print("  6. 회의실 체크인 요청")
+            print("  7. 회의실 퇴실 신청")
 
             print("\n[장비]")
-            print("  7. 장비 목록 조회")
-            print("  8. 장비 예약하기")
-            print("  9. 내 장비 예약 조회")
-            print("  10. 장비 예약 변경")
-            print("  11. 장비 예약 취소")
-            print("  12. 장비 반납 신청")
+            print("  8. 장비 목록 조회")
+            print("  9. 장비 예약하기")
+            print("  10. 내 장비 예약 조회")
+            print("  11. 장비 예약 변경")
+            print("  12. 장비 예약 취소")
+            print("  13. 장비 픽업 요청")
+            print("  14. 장비 반납 신청")
 
             print("\n[내 정보]")
-            print("  13. 내 상태 조회")
-            print("  14. 운영 시계")
+            print("  15. 내 상태 조회")
+            print("  16. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -141,22 +143,26 @@ class UserMenu:
             elif choice == "5":
                 self._cancel_room_booking()
             elif choice == "6":
-                self._request_room_checkout()
+                self._request_room_checkin()
             elif choice == "7":
-                self._show_equipment()
+                self._request_room_checkout()
             elif choice == "8":
-                self._create_equipment_booking()
+                self._show_equipment()
             elif choice == "9":
-                self._show_my_equipment_bookings()
+                self._create_equipment_booking()
             elif choice == "10":
-                self._modify_equipment_booking()
+                self._show_my_equipment_bookings()
             elif choice == "11":
-                self._cancel_equipment_booking()
+                self._modify_equipment_booking()
             elif choice == "12":
-                self._request_equipment_return()
+                self._cancel_equipment_booking()
             elif choice == "13":
-                self._show_my_status()
+                self._request_equipment_pickup()
             elif choice == "14":
+                self._request_equipment_return()
+            elif choice == "15":
+                self._show_my_status()
+            elif choice == "16":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
@@ -369,6 +375,49 @@ class UserMenu:
                 f"  새 시간: {format_booking_time_range(booking.start_time, booking.end_time)}"
             )
         except (RoomBookingError, PenaltyError) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _request_room_checkin(self):
+        print_header("회의실 체크인 요청")
+
+        if not self._refresh_user():
+            return
+
+        try:
+            requestable = [
+                b
+                for b in self.room_service.get_user_bookings(self.user.id)
+                if b.status == RoomBookingStatus.RESERVED
+            ]
+        except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
+            self._handle_user_query_error(e)
+            return
+
+        if not requestable:
+            print_info("체크인 요청 가능한 회의실 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in requestable:
+            room = self.room_service.get_room(booking.room_id)
+            items.append(
+                (
+                    booking.id,
+                    f"{room.name if room else '-'} - {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "체크인 요청할 예약 선택")
+        if not booking_id:
+            return
+
+        try:
+            self.room_service.request_check_in(self.user, booking_id)
+            print_success("체크인 요청이 접수되었습니다. 관리자 승인 대기 상태입니다.")
+        except (PenaltyError, RoomBookingError) as e:
             print_error(str(e))
 
         pause()
@@ -674,6 +723,49 @@ class UserMenu:
                 f"  새 기간: {format_booking_time_range(booking.start_time, booking.end_time)}"
             )
         except (EquipmentBookingError, PenaltyError) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _request_equipment_pickup(self):
+        print_header("장비 픽업 요청")
+
+        if not self._refresh_user():
+            return
+
+        try:
+            requestable = [
+                b
+                for b in self.equipment_service.get_user_bookings(self.user.id)
+                if b.status == EquipmentBookingStatus.RESERVED
+            ]
+        except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
+            self._handle_user_query_error(e)
+            return
+
+        if not requestable:
+            print_info("픽업 요청 가능한 장비 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in requestable:
+            equip = self.equipment_service.get_equipment(booking.equipment_id)
+            items.append(
+                (
+                    booking.id,
+                    f"{equip.name if equip else '-'} - {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "픽업 요청할 예약 선택")
+        if not booking_id:
+            return
+
+        try:
+            self.equipment_service.request_pickup(self.user, booking_id)
+            print_success("픽업 요청이 접수되었습니다. 관리자 승인 대기 상태입니다.")
+        except (PenaltyError, EquipmentBookingError) as e:
             print_error(str(e))
 
         pause()

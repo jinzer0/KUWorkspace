@@ -85,6 +85,7 @@ def format_status_badge(status):
     status_map = {
         # 회의실 예약 상태
         "reserved": "[예약됨]",
+        "checkin_requested": "[체크인요청]",
         "checked_in": "[입실]",
         "checkout_requested": "[퇴실승인대기]",
         "completed": "[완료]",
@@ -92,6 +93,7 @@ def format_status_badge(status):
         "no_show": "[노쇼]",
         "admin_cancelled": "[관리자취소]",
         # 장비 예약 상태
+        "pickup_requested": "[픽업요청]",
         "checked_out": "[대여중]",
         "return_requested": "[반납승인대기]",
         "returned": "[반납완료]",

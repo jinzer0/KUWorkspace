@@ -177,7 +177,9 @@ class AdminMenu:
             print("  17. 파손/오염 패널티 부여")
             print("  18. 회의실 노쇼 처리")
             print("  19. 장비 노쇼 처리")
-            print("  20. 운영 시계")
+            print("  20. 회의실 퇴실 지연 처리")
+            print("  21. 장비 반납 지연 처리")
+            print("  22. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -223,6 +225,10 @@ class AdminMenu:
             elif choice == "19":
                 self._mark_equipment_no_show()
             elif choice == "20":
+                self._force_room_late_checkout()
+            elif choice == "21":
+                self._force_equipment_late_return()
+            elif choice == "22":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
@@ -357,7 +363,9 @@ class AdminMenu:
         all_bookings = self._get_room_bookings_or_abort()
         if all_bookings is None:
             return
-        pending = [b for b in all_bookings if b.status == RoomBookingStatus.RESERVED]
+        pending = [
+            b for b in all_bookings if b.status == RoomBookingStatus.CHECKIN_REQUESTED
+        ]
 
         if not pending:
             print_info("체크인 대기 중인 예약이 없습니다.")
@@ -424,24 +432,54 @@ class AdminMenu:
             return
 
         try:
-            booking, delay_minutes = self.room_service.approve_checkout_request(
+            self.room_service.approve_checkout_request(self.user, booking_id)
+            print_success("퇴실 승인이 완료되었습니다.")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _force_room_late_checkout(self):
+        print_header("회의실 퇴실 지연 처리")
+
+        all_bookings = self._get_room_bookings_or_abort()
+        if all_bookings is None:
+            return
+        current_time = self.policy_service.clock.now().isoformat()
+        checked_in = [
+            b
+            for b in all_bookings
+            if b.status == RoomBookingStatus.CHECKED_IN and b.end_time == current_time
+        ]
+
+        if not checked_in:
+            print_info("퇴실 지연 처리 대상이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in checked_in:
+            room = self.room_service.get_room(booking.room_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{room.name if room else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "퇴실 지연 처리할 예약 선택")
+        if not booking_id:
+            return
+
+        try:
+            _, delay_minutes = self.room_service.force_complete_checkout(
                 self.user, booking_id
             )
-            print_success("퇴실 승인이 완료되었습니다.")
-
-            if delay_minutes > 0:
-                print_warning(f"지연 퇴실: {delay_minutes}분")
-                from math import ceil
-
-                penalty_points = ceil(delay_minutes / 10)
-                print_info(f"패널티 +{penalty_points}점 부과")
-            else:
-                print_info("정시 퇴실")
-                user = self._get_booking_user_or_abort(booking.user_id)
-                if user is None:
-                    return
-                if user.normal_use_streak >= 9:
-                    print_info("정상 이용 10회 달성! 패널티 -1점")
+            print_success("퇴실 지연 처리가 완료되었습니다.")
+            print_info(f"지연 처리 시간: {delay_minutes}분, 지연 패널티 2점 부과")
         except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
             print_error(str(e))
 
@@ -719,7 +757,7 @@ class AdminMenu:
         if all_bookings is None:
             return
         pending = [
-            b for b in all_bookings if b.status == EquipmentBookingStatus.RESERVED
+            b for b in all_bookings if b.status == EquipmentBookingStatus.PICKUP_REQUESTED
         ]
 
         if not pending:
@@ -745,7 +783,7 @@ class AdminMenu:
             return
 
         try:
-            booking = self.equipment_service.checkout(self.user, booking_id)
+            self.equipment_service.checkout(self.user, booking_id)
             print_success("대여가 시작되었습니다.")
         except (
             EquipmentBookingError,
@@ -792,24 +830,62 @@ class AdminMenu:
             return
 
         try:
-            booking, delay_minutes = self.equipment_service.approve_return_request(
+            self.equipment_service.approve_return_request(
                 self.user, booking_id
             )
             print_success("반납 승인이 완료되었습니다.")
+        except (
+            EquipmentBookingError,
+            EquipmentAdminRequiredError,
+            AuthError,
+            PenaltyError,
+        ) as e:
+            print_error(str(e))
 
-            if delay_minutes > 0:
-                print_warning(f"지연 반납: {delay_minutes}분")
-                from math import ceil
+        pause()
 
-                penalty_points = ceil(delay_minutes / 10)
-                print_info(f"패널티 +{penalty_points}점 부과")
-            else:
-                print_info("정시 반납")
-                user = self._get_booking_user_or_abort(booking.user_id)
-                if user is None:
-                    return
-                if user.normal_use_streak >= 9:
-                    print_info("정상 이용 10회 달성! 패널티 -1점")
+    def _force_equipment_late_return(self):
+        print_header("장비 반납 지연 처리")
+
+        all_bookings = self._get_equipment_bookings_or_abort()
+        if all_bookings is None:
+            return
+        current_time = self.policy_service.clock.now().isoformat()
+        checked_out = [
+            b
+            for b in all_bookings
+            if b.status == EquipmentBookingStatus.CHECKED_OUT
+            and b.end_time == current_time
+        ]
+
+        if not checked_out:
+            print_info("반납 지연 처리 대상이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in checked_out:
+            equip = self.equipment_service.get_equipment(booking.equipment_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{equip.name if equip else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "반납 지연 처리할 예약 선택")
+        if not booking_id:
+            return
+
+        try:
+            _, delay_minutes = self.equipment_service.force_complete_return(
+                self.user, booking_id
+            )
+            print_success("반납 지연 처리가 완료되었습니다.")
+            print_info(f"지연 처리 시간: {delay_minutes}분, 지연 패널티 2점 부과")
         except (
             EquipmentBookingError,
             EquipmentAdminRequiredError,

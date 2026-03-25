@@ -12,9 +12,10 @@ from src.cli.formatters import (
 class ClockMenu:
     """공용 운영 시계 메뉴"""
 
-    def __init__(self, policy_service, actor_id="system"):
+    def __init__(self, policy_service, actor_id="system", allow_advance=True):
         self.policy_service = policy_service
         self.actor_id = actor_id
+        self.allow_advance = allow_advance
 
     def run(self):
         while True:
@@ -25,8 +26,11 @@ class ClockMenu:
             print(f"  다음 시점: {format_datetime(preview['next_time'].isoformat())}")
             print()
             print("  1. 현재 시점 보기")
-            print("  2. 다음 시점으로 이동")
-            print("  3. 미해결 사건 보기")
+            if self.allow_advance:
+                print("  2. 다음 시점으로 이동")
+                print("  3. 미해결 사건 보기")
+            else:
+                print("  2. 미해결 사건 보기")
             print("  0. 돌아가기")
             print("-" * 50)
 
@@ -34,9 +38,14 @@ class ClockMenu:
 
             if choice == "1":
                 self._show_preview(preview)
-            elif choice == "2":
+            elif self.allow_advance and choice == "2":
                 self._advance()
-            elif choice == "3":
+            elif choice == "2":
+                if not self.allow_advance:
+                    self._show_blockers(preview)
+                else:
+                    print_error("잘못된 선택입니다.")
+            elif choice == "3" and self.allow_advance:
                 self._show_blockers(preview)
             elif choice == "0":
                 return

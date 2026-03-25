@@ -150,22 +150,38 @@ class PolicyService:
         blockers = []
 
         for booking in self.room_booking_repo.get_all():
-            if booking.status != RoomBookingStatus.RESERVED:
+            if booking.status not in {
+                RoomBookingStatus.RESERVED,
+                RoomBookingStatus.CHECKIN_REQUESTED,
+            }:
                 continue
             if datetime.fromisoformat(booking.start_time) != current_time:
                 continue
-            blockers.append(
-                f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 체크인 또는 노쇼 처리가 필요합니다."
-            )
+            if booking.status == RoomBookingStatus.CHECKIN_REQUESTED:
+                blockers.append(
+                    f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 체크인 승인 대기 상태입니다."
+                )
+            else:
+                blockers.append(
+                    f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 체크인 요청 또는 노쇼 처리가 필요합니다."
+                )
 
         for booking in self.equipment_booking_repo.get_all():
-            if booking.status != EquipmentBookingStatus.RESERVED:
+            if booking.status not in {
+                EquipmentBookingStatus.RESERVED,
+                EquipmentBookingStatus.PICKUP_REQUESTED,
+            }:
                 continue
             if datetime.fromisoformat(booking.start_time) != current_time:
                 continue
-            blockers.append(
-                f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 대여 시작 또는 노쇼 처리가 필요합니다."
-            )
+            if booking.status == EquipmentBookingStatus.PICKUP_REQUESTED:
+                blockers.append(
+                    f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 픽업 승인 대기 상태입니다."
+                )
+            else:
+                blockers.append(
+                    f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 픽업 요청 또는 노쇼 처리가 필요합니다."
+                )
 
         return blockers
 
@@ -203,7 +219,8 @@ class PolicyService:
             [
                 booking
                 for booking in self.room_booking_repo.get_all()
-                if booking.status == RoomBookingStatus.RESERVED
+                if booking.status
+                in {RoomBookingStatus.RESERVED, RoomBookingStatus.CHECKIN_REQUESTED}
                 and datetime.fromisoformat(booking.start_time) == target_time
             ]
         )
@@ -213,7 +230,8 @@ class PolicyService:
             [
                 booking
                 for booking in self.equipment_booking_repo.get_all()
-                if booking.status == EquipmentBookingStatus.RESERVED
+                if booking.status
+                in {EquipmentBookingStatus.RESERVED, EquipmentBookingStatus.PICKUP_REQUESTED}
                 and datetime.fromisoformat(booking.start_time) == target_time
             ]
         )

@@ -34,6 +34,9 @@ from src.config import (
     MAX_BOOKING_DAYS,
     TIME_SLOT_MINUTES,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+    START_REQUEST_CUTOFF_HOUR,
+    END_REQUEST_CUTOFF_HOUR,
+    LATE_CANCEL_THRESHOLD_MINUTES,
 )
 
 
@@ -135,6 +138,24 @@ class EquipmentService:
         if boundary_time != current_time:
             raise EquipmentBookingError(
                 f"{action_name}은 현재 운영 시점({current_time.strftime('%Y-%m-%d %H:%M')})과 일치하는 예약에서만 가능합니다."
+            )
+
+    def _require_start_request_window(self, booking):
+        start_time = datetime.fromisoformat(booking.start_time)
+        self._require_current_boundary(start_time, "픽업 요청")
+        current_time = self.clock.now()
+        if current_time.hour >= START_REQUEST_CUTOFF_HOUR:
+            raise EquipmentBookingError(
+                f"픽업 요청은 {START_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
+            )
+
+    def _require_end_request_window(self, booking):
+        end_time = datetime.fromisoformat(booking.end_time)
+        self._require_current_boundary(end_time, "반납 요청")
+        current_time = self.clock.now()
+        if current_time.hour >= END_REQUEST_CUTOFF_HOUR:
+            raise EquipmentBookingError(
+                f"반납 요청은 {END_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
             )
 
     def get_all_equipment(self):
@@ -510,6 +531,20 @@ class EquipmentService:
                     )
 
                 is_late_cancel = False
+                start_time = datetime.fromisoformat(booking.start_time)
+                current_time = self.clock.now()
+                minutes_to_start = (start_time - current_time).total_seconds() / 60
+                if 0 <= minutes_to_start <= LATE_CANCEL_THRESHOLD_MINUTES:
+                    is_late_cancel = True
+                    booking_user = self.user_repo.get_by_id(booking.user_id)
+                    if booking_user is None:
+                        raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+                    self.penalty_service.apply_late_cancel(
+                        user=booking_user,
+                        booking_type="equipment_booking",
+                        booking_id=booking.id,
+                        actor_id=user.id,
+                    )
 
                 updated = replace(
                     booking,
@@ -634,9 +669,9 @@ class EquipmentService:
                 if booking is None:
                     raise EquipmentBookingError("존재하지 않는 예약입니다.")
 
-                if booking.status != EquipmentBookingStatus.RESERVED:
+                if booking.status != EquipmentBookingStatus.PICKUP_REQUESTED:
                     raise EquipmentBookingError(
-                        f"'{booking.status.value}' 상태의 예약은 대여할 수 없습니다."
+                        f"'{booking.status.value}' 상태의 예약은 대여 시작할 수 없습니다."
                     )
 
                 booking_user = self.user_repo.get_by_id(booking.user_id)
@@ -664,6 +699,39 @@ class EquipmentService:
                 )
 
                 return updated
+
+    def request_pickup(self, user, booking_id):
+        with global_lock(), UnitOfWork():
+            user = self._get_existing_user(user)
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+            if booking.user_id != user.id:
+                raise EquipmentBookingError("본인의 예약만 픽업 요청할 수 있습니다.")
+
+            if booking.status != EquipmentBookingStatus.RESERVED:
+                raise EquipmentBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 픽업 요청할 수 없습니다."
+                )
+
+            self._require_start_request_window(booking)
+
+            updated = replace(
+                booking,
+                status=EquipmentBookingStatus.PICKUP_REQUESTED,
+                requested_pickup_at=now_iso(),
+                updated_at=now_iso(),
+            )
+            self.booking_repo.update(updated)
+            self.audit_repo.log_action(
+                actor_id=user.id,
+                action="request_equipment_pickup",
+                target_type="equipment_booking",
+                target_id=booking_id,
+                details="",
+            )
+            return updated
 
     def return_equipment(self, admin, booking_id):
         """
@@ -711,6 +779,53 @@ class EquipmentService:
 
             return updated, delay_minutes
 
+    def force_complete_return(self, admin, booking_id):
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            booking = self.booking_repo.get_by_id(booking_id)
+            if booking is None:
+                raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+            if booking.status != EquipmentBookingStatus.CHECKED_OUT:
+                raise EquipmentBookingError(
+                    f"'{booking.status.value}' 상태의 예약은 지연 반납 처리할 수 없습니다."
+                )
+
+            end_time = datetime.fromisoformat(booking.end_time)
+            self._require_current_boundary(end_time, "지연 반납 처리")
+            delay_minutes = int((self.clock.now() - end_time).total_seconds() / 60)
+            if delay_minutes <= 0:
+                delay_minutes = 60
+
+            updated = replace(
+                booking,
+                status=EquipmentBookingStatus.RETURNED,
+                returned_at=now_iso(),
+                updated_at=now_iso(),
+            )
+            self.booking_repo.update(updated)
+
+            booking_user = self.user_repo.get_by_id(booking.user_id)
+            if booking_user is None:
+                raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+            self.penalty_service.apply_late_return(
+                user=booking_user,
+                booking_type="equipment_booking",
+                booking_id=booking_id,
+                delay_minutes=delay_minutes,
+                actor_id=admin.id,
+            )
+
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="force_complete_equipment_return",
+                target_type="equipment_booking",
+                target_id=booking_id,
+                details=f"지연: {delay_minutes}분",
+            )
+
+            return updated, delay_minutes
+
     def request_return(self, user, booking_id):
         with global_lock(), UnitOfWork():
             user = self._get_existing_user(user)
@@ -725,9 +840,7 @@ class EquipmentService:
                 raise EquipmentBookingError(
                     f"'{booking.status.value}' 상태의 예약은 반납 신청할 수 없습니다."
                 )
-            self._require_current_boundary(
-                datetime.fromisoformat(booking.end_time), "반납 신청"
-            )
+            self._require_end_request_window(booking)
 
             updated = replace(
                 booking,
@@ -784,8 +897,15 @@ class EquipmentService:
 
             return updated, delay_minutes
 
-    def mark_no_show(self, booking_id, actor_id="system"):
+    def mark_no_show(self, booking_id, admin=None, actor_id="system"):
         """노쇼 처리"""
+        if admin is None:
+            admin_user = self.user_repo.get_by_id(actor_id)
+            if admin_user is None:
+                raise EquipmentBookingError("노쇼 처리는 관리자 권한이 필요합니다.")
+            admin = admin_user
+        admin = self._get_existing_admin(admin)
+
         with global_lock(), UnitOfWork():
             booking = self.booking_repo.get_by_id(booking_id)
             if booking is None:

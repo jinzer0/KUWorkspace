@@ -33,6 +33,7 @@ class RoomBookingStatus(str, Enum):
     """회의실 예약 상태"""
 
     RESERVED = "reserved"
+    CHECKIN_REQUESTED = "checkin_requested"
     CHECKED_IN = "checked_in"
     CHECKOUT_REQUESTED = "checkout_requested"
     COMPLETED = "completed"
@@ -45,6 +46,7 @@ class EquipmentBookingStatus(str, Enum):
     """장비 예약 상태"""
 
     RESERVED = "reserved"
+    PICKUP_REQUESTED = "pickup_requested"
     CHECKED_OUT = "checked_out"
     RETURN_REQUESTED = "return_requested"
     RETURNED = "returned"
@@ -199,6 +201,7 @@ class RoomBooking:
     end_time: str  # ISO datetime
     status: RoomBookingStatus = RoomBookingStatus.RESERVED
     checked_in_at: Optional[str] = None
+    requested_checkin_at: Optional[str] = None
     requested_checkout_at: Optional[str] = None
     completed_at: Optional[str] = None
     cancelled_at: Optional[str] = None
@@ -235,6 +238,7 @@ class EquipmentBooking:
     end_time: str  # ISO datetime
     status: EquipmentBookingStatus = EquipmentBookingStatus.RESERVED
     checked_out_at: Optional[str] = None
+    requested_pickup_at: Optional[str] = None
     requested_return_at: Optional[str] = None
     returned_at: Optional[str] = None
     cancelled_at: Optional[str] = None

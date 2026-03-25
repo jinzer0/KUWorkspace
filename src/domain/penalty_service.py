@@ -3,7 +3,6 @@
 """
 
 from datetime import datetime, timedelta
-from math import ceil
 from dataclasses import replace
 
 from src.domain.models import (
@@ -25,6 +24,7 @@ from src.runtime_clock import get_runtime_clock
 from src.config import (
     NO_SHOW_PENALTY,
     LATE_CANCEL_PENALTY,
+    LATE_RETURN_PENALTY,
     MAX_DAMAGE_PENALTY,
     PENALTY_WARNING_THRESHOLD,
     PENALTY_RESTRICTION_THRESHOLD,
@@ -100,7 +100,7 @@ class PenaltyService:
                 points=NO_SHOW_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo="예약 시작 후 15분 내 미출석",
+                memo="체크인/픽업 요청 미이행",
                 updated_at=now_iso(),
             )
 
@@ -160,7 +160,7 @@ class PenaltyService:
         self, user, booking_type, booking_id, delay_minutes, actor_id="system"
     ):
         """
-        지연 퇴실/반납 패널티 적용 (ceil(지연분/10)점)
+        지연 퇴실/반납 패널티 적용 (+2점 고정)
 
         Args:
             user: 대상 사용자
@@ -177,28 +177,26 @@ class PenaltyService:
             return None
 
         with global_lock(), UnitOfWork():
-            points = ceil(delay_minutes / 10)
-
             penalty = Penalty(
                 id=generate_id(),
                 user_id=user.id,
                 reason=PenaltyReason.LATE_RETURN,
-                points=points,
+                points=LATE_RETURN_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo=f"지연 {delay_minutes}분",
+                memo=f"지연 {delay_minutes}분 처리",
                 updated_at=now_iso(),
             )
 
             self.penalty_repo.add(penalty)
-            self._update_user_penalty_points(user, points)
+            self._update_user_penalty_points(user, LATE_RETURN_PENALTY)
 
             self.audit_repo.log_action(
                 actor_id=actor_id,
                 action="apply_late_return_penalty",
                 target_type="user",
                 target_id=user.id,
-                details=f"지연 반납 패널티 +{points}점 ({delay_minutes}분 지연), 예약: {booking_type}/{booking_id}",
+                details=f"지연 반납 패널티 +{LATE_RETURN_PENALTY}점 ({delay_minutes}분 지연), 예약: {booking_type}/{booking_id}",
             )
 
             return penalty

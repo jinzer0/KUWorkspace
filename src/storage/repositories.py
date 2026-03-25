@@ -278,6 +278,7 @@ class RoomBookingRepository(BaseRepository):
 
         active_statuses = {
             RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
             RoomBookingStatus.CHECKED_IN,
             RoomBookingStatus.CHECKOUT_REQUESTED,
         }
@@ -289,6 +290,7 @@ class RoomBookingRepository(BaseRepository):
 
         active_statuses = {
             RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
             RoomBookingStatus.CHECKED_IN,
             RoomBookingStatus.CHECKOUT_REQUESTED,
         }
@@ -305,25 +307,6 @@ class RoomBookingRepository(BaseRepository):
                 conflicts.append(booking)
 
         return conflicts
-
-    def get_pending_checkin(self, current_time, grace_minutes=15):
-        """체크인 대기 중인 예약 (노쇼 판정 대상)"""
-        from src.domain.models import RoomBookingStatus
-        from datetime import timedelta
-
-        result = []
-        for booking in self.get_all():
-            if booking.status != RoomBookingStatus.RESERVED:
-                continue
-
-            start = datetime.fromisoformat(booking.start_time)
-            deadline = start + timedelta(minutes=grace_minutes)
-
-            if current_time > deadline:
-                result.append(booking)
-
-        return result
-
 
 class EquipmentBookingRepository(BaseRepository):
     """장비 예약 Repository"""
@@ -349,6 +332,7 @@ class EquipmentBookingRepository(BaseRepository):
 
         active_statuses = {
             EquipmentBookingStatus.RESERVED,
+            EquipmentBookingStatus.PICKUP_REQUESTED,
             EquipmentBookingStatus.CHECKED_OUT,
             EquipmentBookingStatus.RETURN_REQUESTED,
         }
@@ -360,6 +344,7 @@ class EquipmentBookingRepository(BaseRepository):
 
         active_statuses = {
             EquipmentBookingStatus.RESERVED,
+            EquipmentBookingStatus.PICKUP_REQUESTED,
             EquipmentBookingStatus.CHECKED_OUT,
             EquipmentBookingStatus.RETURN_REQUESTED,
         }
@@ -376,25 +361,6 @@ class EquipmentBookingRepository(BaseRepository):
                 conflicts.append(booking)
 
         return conflicts
-
-    def get_pending_checkout(self, current_time, grace_minutes=15):
-        """대여 시작 대기 중인 예약 (노쇼 판정 대상)"""
-        from src.domain.models import EquipmentBookingStatus
-        from datetime import timedelta
-
-        result = []
-        for booking in self.get_all():
-            if booking.status != EquipmentBookingStatus.RESERVED:
-                continue
-
-            start = datetime.fromisoformat(booking.start_time)
-            deadline = start + timedelta(minutes=grace_minutes)
-
-            if current_time > deadline:
-                result.append(booking)
-
-        return result
-
 
 class PenaltyRepository:
     """패널티 Repository (append-only, UnitOfWork 지원)"""

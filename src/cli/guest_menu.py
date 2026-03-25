@@ -55,7 +55,9 @@ class GuestMenu:
             elif choice == "2":
                 self._signup()
             elif choice == "9":
-                ClockMenu(self.policy_service, actor_id="guest").run()
+                ClockMenu(
+                    self.policy_service, actor_id="guest", allow_advance=False
+                ).run()
             elif choice == "0":
                 if confirm("정말 종료하시겠습니까?"):
                     print("\n프로그램을 종료합니다.")
