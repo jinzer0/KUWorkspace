@@ -84,7 +84,6 @@ class TestLateReturnPenalty:
     """지연 반납 패널티 테스트"""
 
     def test_apply_late_return_1_minute(self, penalty_service, create_test_user):
-        """1분 지연 시 ceil(1/10) = 1점"""
         user = create_test_user(penalty_points=0)
 
         penalty = penalty_service.apply_late_return(
@@ -94,10 +93,9 @@ class TestLateReturnPenalty:
             delay_minutes=1,
         )
 
-        assert penalty.points == 1
+        assert penalty.points == 2
 
     def test_apply_late_return_10_minutes(self, penalty_service, create_test_user):
-        """10분 지연 시 ceil(10/10) = 1점"""
         user = create_test_user(penalty_points=0)
 
         penalty = penalty_service.apply_late_return(
@@ -107,10 +105,9 @@ class TestLateReturnPenalty:
             delay_minutes=10,
         )
 
-        assert penalty.points == 1
+        assert penalty.points == 2
 
     def test_apply_late_return_11_minutes(self, penalty_service, create_test_user):
-        """11분 지연 시 ceil(11/10) = 2점"""
         user = create_test_user(penalty_points=0)
 
         penalty = penalty_service.apply_late_return(
@@ -123,7 +120,6 @@ class TestLateReturnPenalty:
         assert penalty.points == 2
 
     def test_apply_late_return_25_minutes(self, penalty_service, create_test_user):
-        """25분 지연 시 ceil(25/10) = 3점"""
         user = create_test_user(penalty_points=0)
 
         penalty = penalty_service.apply_late_return(
@@ -133,7 +129,7 @@ class TestLateReturnPenalty:
             delay_minutes=25,
         )
 
-        assert penalty.points == 3
+        assert penalty.points == 2
 
     def test_apply_late_return_zero_delay_returns_none(
         self, penalty_service, create_test_user

@@ -53,7 +53,7 @@ class TestClockAdvance:
         result = policy_service.prepare_advance()
 
         assert result["can_advance"] is False
-        assert any("체크인 또는 노쇼" in blocker for blocker in result["blockers"])
+        assert any("체크인 요청 또는 노쇼" in blocker for blocker in result["blockers"])
 
     def test_prepare_advance_blocks_equipment_end_without_user_request(
         self,
@@ -209,6 +209,25 @@ class TestRestrictionExpiry:
             updated = user_repo.get_by_id(user.id)
             assert updated.restriction_until is not None
 
+    def test_restriction_expiry_writes_audit_log(
+        self, policy_service, create_test_user, audit_repo, mock_now
+    ):
+        expired_time = datetime(2024, 6, 10, 10, 0, 0)
+        check_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(check_time):
+            user = create_test_user(
+                penalty_points=3, restriction_until=expired_time.isoformat()
+            )
+
+            policy_service.run_all_checks(check_time)
+
+        logs = audit_repo.get_by_actor("system")
+        assert any(
+            log.action == "restriction_expired" and log.target_id == user.id
+            for log in logs
+        )
+
 
 class TestBannedUserBookingCancellation:
     """6점 이상 사용자 예약 자동 취소 테스트"""
@@ -284,6 +303,43 @@ class TestBannedUserBookingCancellation:
 
             # 체크인 상태이므로 취소되지 않음
             assert "past-booking" not in results["banned_user_cancelled_bookings"]
+
+    def test_banned_user_auto_cancellation_writes_audit_log(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        audit_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(
+                penalty_points=6,
+                restriction_until=(fixed_time + timedelta(days=30)).isoformat(),
+            )
+            room = create_test_room()
+            future_booking = RoomBooking(
+                id="future-audit-booking",
+                user_id=user.id,
+                room_id=room.id,
+                start_time=(fixed_time + timedelta(hours=2)).isoformat(),
+                end_time=(fixed_time + timedelta(hours=3)).isoformat(),
+                status=RoomBookingStatus.RESERVED,
+            )
+            with global_lock():
+                room_booking_repo.add(future_booking)
+
+            policy_service.run_all_checks(fixed_time)
+
+        logs = audit_repo.get_by_actor("system")
+        assert any(
+            log.action == "auto_cancel_banned_user"
+            and log.target_id == "future-audit-booking"
+            for log in logs
+        )
 
 
 class TestCheckUserCanBook:

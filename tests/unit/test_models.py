@@ -19,6 +19,8 @@ from src.domain.models import (
     EquipmentBooking,
     Penalty,
     AuditLog,
+    Message,
+    MessageType,
     RoomBookingStatus,
     EquipmentBookingStatus,
     ResourceStatus,
@@ -264,6 +266,149 @@ class TestAuditLog:
         assert restored.id == log.id
         assert restored.actor_id == "system"
         assert restored.action == "auto_no_show"
+
+
+class TestMessage:
+    """Message 모델 테스트"""
+
+    def test_message_to_dict_roundtrip(self):
+        """Message to_dict → from_dict 라운드트립"""
+        message = Message(
+            id=generate_id(),
+            user_id="user-123",
+            created_at=now_iso(),
+            type=MessageType.INQUIRY,
+            content="이것은 문의입니다",
+        )
+
+        msg_dict = message.to_dict()
+        restored = Message.from_dict(msg_dict)
+
+        assert restored.id == message.id
+        assert restored.user_id == message.user_id
+        assert restored.created_at == message.created_at
+        assert restored.type == MessageType.INQUIRY
+        assert restored.content == message.content
+
+    def test_message_to_json_roundtrip(self):
+        """Message to_json → from_json 라운드트립"""
+        message = Message(
+            id=generate_id(),
+            user_id="user-456",
+            created_at=now_iso(),
+            type=MessageType.REPORT,
+            content="이것은 신고입니다",
+        )
+
+        json_str = message.to_json()
+        restored = Message.from_json(json_str)
+
+        assert restored.id == message.id
+        assert restored.user_id == message.user_id
+        assert restored.type == MessageType.REPORT
+        assert restored.content == message.content
+
+    def test_message_type_enum_serialization_inquiry(self):
+        """MessageType.INQUIRY가 inquiry로 직렬화되는지 확인"""
+        message = Message(
+            id=generate_id(),
+            user_id="user-789",
+            created_at=now_iso(),
+            type=MessageType.INQUIRY,
+            content="content",
+        )
+
+        d = message.to_dict()
+        assert d["type"] == "inquiry"
+
+        json_str = message.to_json()
+        parsed = json.loads(json_str)
+        assert parsed["type"] == "inquiry"
+
+    def test_message_type_enum_serialization_report(self):
+        """MessageType.REPORT가 report로 직렬화되는지 확인"""
+        message = Message(
+            id=generate_id(),
+            user_id="user-789",
+            created_at=now_iso(),
+            type=MessageType.REPORT,
+            content="content",
+        )
+
+        d = message.to_dict()
+        assert d["type"] == "report"
+
+        json_str = message.to_json()
+        parsed = json.loads(json_str)
+        assert parsed["type"] == "report"
+
+    def test_message_all_required_fields_preserved(self):
+        """Message가 모든 필수 필드를 보존하는지 확인"""
+        msg_id = generate_id()
+        user_id = "user-xyz"
+        created_at = now_iso()
+        content = "test content 123"
+
+        message = Message(
+            id=msg_id,
+            user_id=user_id,
+            created_at=created_at,
+            type=MessageType.INQUIRY,
+            content=content,
+        )
+
+        d = message.to_dict()
+        assert set(d.keys()) == {"id", "user_id", "created_at", "type", "content"}
+
+        restored = Message.from_dict(d)
+        assert restored.id == msg_id
+        assert restored.user_id == user_id
+        assert restored.created_at == created_at
+        assert restored.content == content
+
+    def test_message_id_default_is_generated(self):
+        """Message의 id가 기본값으로 생성되는지 확인"""
+        message = Message(
+            user_id="user-default-test",
+            type=MessageType.INQUIRY,
+            content="testing defaults",
+        )
+
+        assert message.id is not None
+        assert len(message.id) > 0
+        assert isinstance(message.id, str)
+
+    def test_message_created_at_default_is_generated(self):
+        """Message의 created_at이 기본값으로 생성되는지 확인"""
+        message = Message(
+            user_id="user-time-test",
+            type=MessageType.REPORT,
+            content="testing time default",
+        )
+
+        assert message.created_at is not None
+        assert len(message.created_at) > 0
+        # Should be valid ISO format
+        parsed = datetime.fromisoformat(message.created_at)
+        assert isinstance(parsed, datetime)
+
+    def test_message_without_id_and_created_at_creates_unique_records(self):
+        """id와 created_at 기본값을 사용한 Message 생성이 고유 레코드를 만드는지 확인"""
+        msg1 = Message(
+            user_id="user-1",
+            type=MessageType.INQUIRY,
+            content="first",
+        )
+        msg2 = Message(
+            user_id="user-2",
+            type=MessageType.REPORT,
+            content="second",
+        )
+
+        assert msg1.id != msg2.id
+        # created_at might be the same or very close, so just check they exist
+        assert msg1.created_at is not None
+        assert msg2.created_at is not None
 
 
 class TestHelperFunctions:

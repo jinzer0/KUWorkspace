@@ -17,6 +17,7 @@ ROOM_BOOKINGS_FILE = DATA_DIR / "room_bookings.txt"
 EQUIPMENT_BOOKINGS_FILE = DATA_DIR / "equipment_bookings.txt"
 PENALTIES_FILE = DATA_DIR / "penalties.txt"
 AUDIT_LOG_FILE = DATA_DIR / "audit_log.txt"
+MESSAGE_FILE = DATA_DIR / "message.txt"
 
 DATA_FILES = [
     USERS_FILE,
@@ -26,6 +27,7 @@ DATA_FILES = [
     EQUIPMENT_BOOKINGS_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
+    MESSAGE_FILE,
 ]
 
 # 예약 정책 상수

@@ -156,6 +156,8 @@ def test_room_checkout_request_and_approval_completes_without_delay_penalty(
         )
 
     with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+        requested = room_service.request_check_in(user, booking.id)
+        assert requested.status == RoomBookingStatus.CHECKIN_REQUESTED
         room_service.check_in(admin, booking.id)
 
     with mock_now(datetime(2024, 6, 16, 18, 0, 0)):
@@ -183,6 +185,8 @@ def test_equipment_return_request_and_approval_completes_without_delay_penalty(
         )
 
     with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+        requested = equipment_service.request_pickup(user, booking.id)
+        assert requested.status == EquipmentBookingStatus.PICKUP_REQUESTED
         equipment_service.checkout(admin, booking.id)
 
     with mock_now(datetime(2024, 6, 16, 18, 0, 0)):

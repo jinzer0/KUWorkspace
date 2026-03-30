@@ -66,6 +66,13 @@ class PenaltyReason(str, Enum):
     OTHER = "other"
 
 
+class MessageType(str, Enum):
+    """사용자 메시지 유형"""
+
+    INQUIRY = "inquiry"
+    REPORT = "report"
+
+
 # ===== Helper Functions =====
 
 
@@ -322,4 +329,33 @@ class AuditLog:
 
     @classmethod
     def from_json(cls, json_str: str) -> "AuditLog":
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class Message:
+    """사용자 문의/신고 메시지"""
+
+    user_id: str
+    type: MessageType
+    content: str
+    id: str = field(default_factory=generate_id)
+    created_at: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["type"] = self.type.value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Message":
+        data = data.copy()
+        data["type"] = MessageType(data["type"])
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "Message":
         return cls.from_dict(json.loads(json_str))

@@ -11,6 +11,7 @@ from src.domain.room_service import RoomService, RoomBookingError
 from src.domain.equipment_service import EquipmentService, EquipmentBookingError
 from src.domain.penalty_service import PenaltyService, PenaltyError
 from src.domain.policy_service import PolicyService
+from src.domain.message_service import MessageService, MessageError
 from src.config import (
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
@@ -46,6 +47,7 @@ class UserMenu:
         equipment_service=None,
         penalty_service=None,
         policy_service=None,
+        message_service=None,
     ):
         self.user = user
         self.auth_service = auth_service or AuthService()
@@ -57,6 +59,7 @@ class UserMenu:
             penalty_service=self.penalty_service
         )
         self.policy_service = policy_service or PolicyService()
+        self.message_service = message_service or MessageService()
 
     def _run_policy_checks(self):
         try:
@@ -125,7 +128,8 @@ class UserMenu:
 
             print("\n[내 정보]")
             print("  15. 내 상태 조회")
-            print("  16. 운영 시계")
+            print("  16. 문의/신고")
+            print("  17. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -163,6 +167,8 @@ class UserMenu:
             elif choice == "15":
                 self._show_my_status()
             elif choice == "16":
+                self._submit_message()
+            elif choice == "17":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
@@ -981,3 +987,61 @@ class UserMenu:
                 print(f"    ... 외 {len(penalties) - 5}건")
 
         pause()
+
+    def _submit_message(self):
+        """문의/신고 제출"""
+        print_header("문의/신고")
+
+        if not self._run_policy_checks():
+            return
+        if not self._refresh_user():
+            return
+
+        print("\n제출할 메시지 유형을 선택해주세요.")
+        print("  1. 문의")
+        print("  2. 신고")
+        print("  0. 취소")
+
+        while True:
+            choice = input("\n선택: ").strip()
+            if choice == "0":
+                return
+            elif choice == "1":
+                message_type = "inquiry"
+                type_label = "문의"
+                break
+            elif choice == "2":
+                message_type = "report"
+                type_label = "신고"
+                break
+            else:
+                print_error("잘못된 선택입니다. 1(문의), 2(신고), 0(취소) 중 선택해주세요.")
+
+        while True:
+            content = input(f"\n{type_label} 내용 (1~100자, 줄바꿈 불가): ")
+
+            try:
+                self.message_service._validate_content(content)
+                break
+            except MessageError as e:
+                print_error(str(e))
+                continue
+
+        while True:
+            confirm_input = input(f"\n{type_label}를 제출하시겠습니까? (y/n): ").strip()
+            if confirm_input == "y":
+                try:
+                    self.message_service.create_message(
+                        user_id=self.user.id, message_type=message_type, content=content
+                    )
+                    print_success(f"{type_label}가 제출되었습니다.")
+                except MessageError as e:
+                    print_error(str(e))
+                pause()
+                return
+            elif confirm_input == "n":
+                print_info(f"{type_label}가 취소되었습니다.")
+                pause()
+                return
+            else:
+                print_error("y 또는 n을 입력해주세요.")

@@ -30,7 +30,7 @@ class TestCreateEquipmentBooking:
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
         """정상 장비 예약 생성"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -337,7 +337,6 @@ class TestCancelEquipmentBooking:
     def test_cancel_booking_late_cancel(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
-        """가상 시점 정책에서는 직전 취소 패널티를 적용하지 않음"""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
@@ -354,7 +353,7 @@ class TestCancelEquipmentBooking:
 
             cancelled, is_late = equipment_service.cancel_booking(user, booking.id)
 
-            assert is_late is False
+            assert is_late is True
 
     def test_cancel_booking_runs_policy_checks_before_action(
         self,
@@ -405,6 +404,9 @@ class TestCheckoutReturn:
                 fixed_time + timedelta(days=2),
             )
 
+            requested = equipment_service.request_pickup(user, booking.id)
+            assert requested.status == EquipmentBookingStatus.PICKUP_REQUESTED
+
             checked_out = equipment_service.checkout(admin, booking.id)
 
             assert checked_out.status == EquipmentBookingStatus.CHECKED_OUT
@@ -416,27 +418,33 @@ class TestCheckoutReturn:
         auth_service,
         create_test_user,
         create_test_equipment,
+        equipment_booking_repo,
         mock_now,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
-            booking = equipment_service.create_booking(
-                user,
-                equipment.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(days=1),
+            booking = EquipmentBooking(
+                id="equipment-checkout-boundary",
+                user_id=user.id,
+                equipment_id=equipment.id,
+                start_time=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
+                end_time=datetime(2024, 6, 16, 9, 0, 0).isoformat(),
+                status=EquipmentBookingStatus.PICKUP_REQUESTED,
+                requested_pickup_at=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
             )
+            with global_lock():
+                equipment_booking_repo.add(booking)
 
         with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.checkout(admin, booking.id)
 
             assert "현재 운영 시점" in str(exc_info.value)
-            assert equipment_service.booking_repo.get_by_id(booking.id).status == EquipmentBookingStatus.RESERVED
+            assert equipment_service.booking_repo.get_by_id(booking.id).status == EquipmentBookingStatus.PICKUP_REQUESTED
             assert auth_service.get_user(user.id).penalty_points == 0
 
     def test_checkout_missing_booking_user_fails(
@@ -458,7 +466,8 @@ class TestCheckoutReturn:
                 equipment_id=equipment.id,
                 start_time=fixed_time.isoformat(),
                 end_time=(fixed_time + timedelta(days=1)).isoformat(),
-                status=EquipmentBookingStatus.RESERVED,
+                status=EquipmentBookingStatus.PICKUP_REQUESTED,
+                requested_pickup_at=fixed_time.isoformat(),
             )
             with global_lock():
                 equipment_booking_repo.add(booking)
@@ -529,6 +538,9 @@ class TestCheckoutReturn:
                 fixed_time + timedelta(days=2),
             )
 
+            requested = equipment_service.request_pickup(user, booking.id)
+            assert requested.status == EquipmentBookingStatus.PICKUP_REQUESTED
+
             equipment_service.checkout(admin, booking.id)
 
         # 종료 시간 정각에 반납
@@ -556,6 +568,9 @@ class TestCheckoutReturn:
                 fixed_time,
                 fixed_time + timedelta(days=2),
             )
+
+            requested = equipment_service.request_pickup(user, booking.id)
+            assert requested.status == EquipmentBookingStatus.PICKUP_REQUESTED
 
             equipment_service.checkout(admin, booking.id)
 
@@ -596,6 +611,36 @@ class TestCheckoutReturn:
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
+    def test_force_complete_equipment_return_applies_late_penalty(
+        self,
+        equipment_service,
+        auth_service,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            admin = create_test_user(username="admin-force", role=UserRole.ADMIN)
+            equipment = create_test_equipment()
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time,
+                fixed_time + timedelta(days=1),
+            )
+            equipment_service.request_pickup(user, booking.id)
+            equipment_service.checkout(admin, booking.id)
+
+        with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+            returned, delay = equipment_service.force_complete_return(admin, booking.id)
+
+            assert returned.status == EquipmentBookingStatus.RETURNED
+            assert delay == 60
+            assert auth_service.get_user(user.id).penalty_points == 2
+
 
 class TestNoShowEquipment:
     """장비 노쇼 처리 테스트"""
@@ -608,6 +653,7 @@ class TestNoShowEquipment:
 
         with mock_now(fixed_time):
             user = create_test_user()
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
 
             booking = equipment_service.create_booking(
@@ -617,7 +663,7 @@ class TestNoShowEquipment:
                 fixed_time + timedelta(days=2),
             )
 
-            no_show = equipment_service.mark_no_show(booking.id)
+            no_show = equipment_service.mark_no_show(booking.id, admin=admin)
 
             assert no_show.status == EquipmentBookingStatus.NO_SHOW
             assert equipment_service.user_repo.get_by_id(user.id).penalty_points == 3
@@ -625,6 +671,7 @@ class TestNoShowEquipment:
     def test_mark_no_show_missing_user_fails(
         self,
         equipment_service,
+        create_test_user,
         create_test_equipment,
         equipment_booking_repo,
         mock_now,
@@ -632,6 +679,7 @@ class TestNoShowEquipment:
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = EquipmentBooking(
                 id="equipment-noshow-missing-user",
@@ -645,7 +693,7 @@ class TestNoShowEquipment:
                 equipment_booking_repo.add(booking)
 
             with pytest.raises(EquipmentBookingError) as exc_info:
-                equipment_service.mark_no_show(booking.id)
+                equipment_service.mark_no_show(booking.id, admin=admin)
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 

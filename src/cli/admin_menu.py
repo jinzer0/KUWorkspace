@@ -25,6 +25,7 @@ from src.domain.penalty_service import (
     AdminRequiredError,
 )
 from src.domain.policy_service import PolicyService
+from src.domain.message_service import MessageService
 from src.config import (
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
@@ -63,6 +64,7 @@ class AdminMenu:
         equipment_service=None,
         penalty_service=None,
         policy_service=None,
+        message_service=None,
     ):
         self.user = user
         self.auth_service = auth_service or AuthService()
@@ -74,6 +76,7 @@ class AdminMenu:
             penalty_service=self.penalty_service
         )
         self.policy_service = policy_service or PolicyService()
+        self.message_service = message_service or MessageService()
 
     def _safe_get_user(self, user_id):
         try:
@@ -179,7 +182,8 @@ class AdminMenu:
             print("  19. 장비 노쇼 처리")
             print("  20. 회의실 퇴실 지연 처리")
             print("  21. 장비 반납 지연 처리")
-            print("  22. 운영 시계")
+            print("  22. 문의/신고 조회")
+            print("  23. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -229,6 +233,8 @@ class AdminMenu:
             elif choice == "21":
                 self._force_equipment_late_return()
             elif choice == "22":
+                self._show_messages()
+            elif choice == "23":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
@@ -1166,6 +1172,79 @@ class AdminMenu:
         except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
             print_error(str(e))
 
+        pause()
+
+    def _show_messages(self):
+        """문의/신고 조회 (메시지 뷰 핸들러)"""
+        print_header("문의/신고 조회")
+
+        messages = self.message_service.list_messages()
+        
+        if not messages:
+            print("등록된 문의/신고가 없습니다.")
+            pause()
+            return
+        
+        sorted_messages = sorted(messages, key=lambda m: m.created_at, reverse=True)
+        displayed_messages = sorted_messages[:30]
+        
+        type_map = {
+            "inquiry": "문의",
+            "report": "신고"
+        }
+        
+        headers = ["유형", "사용자 ID", "등록 시각", "내용"]
+        rows = []
+        for msg in displayed_messages:
+            type_label = type_map.get(msg.type.value, msg.type.value)
+            user_id_display = msg.user_id
+            created_display = format_datetime(msg.created_at)
+            
+            content_display = msg.content
+            if len(content_display) > 30:
+                content_display = content_display[:30] + "..."
+            
+            rows.append([
+                type_label,
+                user_id_display,
+                created_display,
+                content_display
+            ])
+        
+        print(format_table(headers, rows))
+        
+        if len(sorted_messages) > 30:
+            print(f"\n  ... 외 {len(sorted_messages) - 30}건")
+        
+        items = [
+            (msg.id, f"{type_map.get(msg.type.value, msg.type.value)} / {msg.user_id} / {format_datetime(msg.created_at)}")
+            for msg in displayed_messages
+        ]
+        
+        selected_id = select_from_list(items, "상세 조회할 메시지 선택")
+        if not selected_id:
+            return
+        
+        selected_message = next((m for m in displayed_messages if m.id == selected_id), None)
+        if selected_message:
+            self._show_message_detail(selected_message)
+
+    def _show_message_detail(self, message):
+        """문의/신고 상세 조회"""
+        print_subheader("문의/신고 상세")
+        
+        type_map = {
+            "inquiry": "문의",
+            "report": "신고"
+        }
+        type_label = type_map.get(message.type.value, message.type.value)
+        
+        print(f"유형: {type_label}")
+        print(f"사용자 ID: {message.user_id}")
+        print(f"등록 시각: {format_datetime(message.created_at)}")
+        print(f"메시지 ID: {message.id}")
+        print(f"내용: {message.content}")
+        
         pause()
 
     def _apply_damage_penalty(self):

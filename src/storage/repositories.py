@@ -15,6 +15,7 @@ from src.config import (
     EQUIPMENT_BOOKINGS_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
+    MESSAGE_FILE,
 )
 from src.domain.models import (
     User,
@@ -24,6 +25,7 @@ from src.domain.models import (
     EquipmentBooking,
     Penalty,
     AuditLog,
+    Message,
     generate_id,
     now_iso,
 )
@@ -456,3 +458,34 @@ class AuditLogRepository:
             for l in self.get_all()
             if l.target_type == target_type and l.target_id == target_id
         ]
+
+
+class MessageRepository:
+    """메시지 Repository (append-only, UnitOfWork 지원)"""
+
+    def __init__(self, file_path=MESSAGE_FILE):
+        self.file_path = file_path
+        self.to_json = lambda m: m.to_json()
+
+    def get_all(self):
+        """모든 메시지 조회"""
+        uow = get_current_uow()
+        if uow and self.file_path in uow._staged:
+            return list(uow._staged[self.file_path][0])
+        return read_jsonl(self.file_path, Message.from_json)
+
+    def get_by_user(self, user_id):
+        """사용자별 메시지 조회"""
+        return [m for m in self.get_all() if m.user_id == user_id]
+
+    def add(self, message):
+        """메시지 추가 (UnitOfWork 활성 시 스테이징)"""
+        records = self.get_all()
+        records.append(message)
+        uow = get_current_uow()
+        if uow:
+            uow.stage(self, records)
+        else:
+            require_write_lock()
+            atomic_write_jsonl(self.file_path, records, self.to_json)
+        return message

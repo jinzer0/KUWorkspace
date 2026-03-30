@@ -26,6 +26,8 @@ from src.domain.models import (
     RoomBooking,
     EquipmentBooking,
     Penalty,
+    Message,
+    MessageType,
     RoomBookingStatus,
     EquipmentBookingStatus,
     ResourceStatus,
@@ -180,9 +182,23 @@ def temp_data_dir(tmp_path):
     equipment_bookings_file = data_dir / "equipment_bookings.txt"
     penalties_file = data_dir / "penalties.txt"
     audit_log_file = data_dir / "audit_log.txt"
+    message_file = data_dir / "message.txt"
 
-    # Patch config paths
+    # Patch config paths AND the DATA_FILES list itself (critical for ensure_data_dir)
+    isolated_data_files = [
+        users_file,
+        rooms_file,
+        equipment_file,
+        room_bookings_file,
+        equipment_bookings_file,
+        penalties_file,
+        audit_log_file,
+        message_file,
+    ]
+
     with patch("src.config.DATA_DIR", data_dir), patch(
+        "src.config.DATA_FILES", isolated_data_files
+    ), patch(
         "src.config.LOCK_FILE", lock_file
     ), patch("src.config.USERS_FILE", users_file), patch(
         "src.config.ROOMS_FILE", rooms_file
@@ -196,6 +212,8 @@ def temp_data_dir(tmp_path):
         "src.config.PENALTIES_FILE", penalties_file
     ), patch(
         "src.config.AUDIT_LOG_FILE", audit_log_file
+    ), patch(
+        "src.config.MESSAGE_FILE", message_file
     ), patch(
         "src.storage.file_lock.DATA_DIR", data_dir
     ), patch(
@@ -415,6 +433,35 @@ def penalty_factory():
     return _create
 
 
+@pytest.fixture
+def message_factory():
+    """Factory for creating Message instances with sensible defaults."""
+    _counter = [0]
+
+    def _create(
+        user_id=None,
+        type=MessageType.INQUIRY,
+        content="",
+        id=None,
+        created_at=None,
+        **overrides,
+    ):
+        _counter[0] += 1
+        msg = Message(
+            user_id=user_id or generate_id(),
+            type=type,
+            content=content or f"Test message {_counter[0]}",
+            **overrides,
+        )
+        if id:
+            object.__setattr__(msg, "id", id)
+        if created_at:
+            object.__setattr__(msg, "created_at", created_at)
+        return msg
+
+    return _create
+
+
 # =============================================================================
 # REPOSITORY FIXTURES
 # =============================================================================
@@ -476,6 +523,14 @@ def audit_repo(temp_data_dir):
     from src.storage.repositories import AuditLogRepository
 
     return AuditLogRepository(file_path=temp_data_dir / "audit_log.txt")
+
+
+@pytest.fixture
+def message_repo(temp_data_dir):
+    """MessageRepository with isolated temp directory."""
+    from src.storage.repositories import MessageRepository
+
+    return MessageRepository(file_path=temp_data_dir / "message.txt")
 
 
 # =============================================================================
@@ -565,6 +620,14 @@ def policy_service(
         audit_repo=audit_repo,
         penalty_service=penalty_service,
     )
+
+
+@pytest.fixture
+def message_service(message_repo):
+    """MessageService with isolated repository."""
+    from src.domain.message_service import MessageService
+
+    return MessageService(message_repo=message_repo)
 
 
 # =============================================================================

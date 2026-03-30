@@ -13,6 +13,7 @@ from src.domain.room_service import RoomService
 from src.domain.equipment_service import EquipmentService
 from src.domain.penalty_service import PenaltyService
 from src.domain.policy_service import PolicyService
+from src.domain.message_service import MessageService
 from src.cli.guest_menu import GuestMenu
 from src.cli.user_menu import UserMenu
 from src.cli.admin_menu import AdminMenu
@@ -63,6 +64,7 @@ def main():
     room_service = RoomService(penalty_service=penalty_service)
     equipment_service = EquipmentService(penalty_service=penalty_service)
     policy_service = PolicyService()
+    message_service = MessageService()
 
     while True:
         guest_menu = GuestMenu(auth_service=auth_service, policy_service=policy_service)
@@ -80,6 +82,7 @@ def main():
                 equipment_service=equipment_service,
                 penalty_service=penalty_service,
                 policy_service=policy_service,
+                message_service=message_service,
             )
         else:
             menu = UserMenu(
@@ -89,6 +92,7 @@ def main():
                 equipment_service=equipment_service,
                 penalty_service=penalty_service,
                 policy_service=policy_service,
+                message_service=message_service,
             )
 
         menu.run()

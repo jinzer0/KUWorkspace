@@ -32,7 +32,7 @@ class TestCreateBooking:
         self, room_service, create_test_user, create_test_room, mock_now
     ):
         """정상 예약 생성"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -526,7 +526,6 @@ class TestCancelBooking:
     def test_cancel_booking_late_cancel(
         self, room_service, create_test_user, create_test_room, mock_now
     ):
-        """가상 시점 정책에서는 직전 취소 패널티를 적용하지 않음"""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
@@ -543,7 +542,7 @@ class TestCancelBooking:
 
             cancelled, is_late = room_service.cancel_booking(user, booking.id)
 
-            assert is_late is False
+            assert is_late is True
 
     def test_cancel_booking_not_owner(
         self, room_service, create_test_user, create_test_room, mock_now
@@ -610,6 +609,9 @@ class TestCheckInOut:
                 fixed_time.replace(hour=18),
             )
 
+            requested = room_service.request_check_in(user, booking.id)
+            assert requested.status == RoomBookingStatus.CHECKIN_REQUESTED
+
             checked_in = room_service.check_in(admin, booking.id)
 
             assert checked_in.status == RoomBookingStatus.CHECKED_IN
@@ -621,27 +623,33 @@ class TestCheckInOut:
         auth_service,
         create_test_user,
         create_test_room,
+        room_booking_repo,
         mock_now,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
-            booking = room_service.create_booking(
-                user,
-                room.id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(hours=2),
+            booking = RoomBooking(
+                id="room-checkin-boundary",
+                user_id=user.id,
+                room_id=room.id,
+                start_time=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
+                end_time=datetime(2024, 6, 15, 18, 0, 0).isoformat(),
+                status=RoomBookingStatus.CHECKIN_REQUESTED,
+                requested_checkin_at=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
             )
+            with global_lock():
+                room_booking_repo.add(booking)
 
         with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
             with pytest.raises(RoomBookingError) as exc_info:
                 room_service.check_in(admin, booking.id)
 
             assert "현재 운영 시점" in str(exc_info.value)
-            assert room_service.booking_repo.get_by_id(booking.id).status == RoomBookingStatus.RESERVED
+            assert room_service.booking_repo.get_by_id(booking.id).status == RoomBookingStatus.CHECKIN_REQUESTED
             assert auth_service.get_user(user.id).penalty_points == 0
 
     def test_check_in_missing_booking_user_fails(
@@ -663,7 +671,8 @@ class TestCheckInOut:
                 room_id=room.id,
                 start_time=fixed_time.isoformat(),
                 end_time=fixed_time.replace(hour=18).isoformat(),
-                status=RoomBookingStatus.RESERVED,
+                status=RoomBookingStatus.CHECKIN_REQUESTED,
+                requested_checkin_at=fixed_time.isoformat(),
             )
             with global_lock():
                 room_booking_repo.add(booking)
@@ -739,6 +748,9 @@ class TestCheckInOut:
                 fixed_time.replace(hour=18),
             )
 
+            requested = room_service.request_check_in(user, booking.id)
+            assert requested.status == RoomBookingStatus.CHECKIN_REQUESTED
+
             room_service.check_in(admin, booking.id)
 
         # 12:00에 퇴실 (종료 시간 정각)
@@ -771,6 +783,9 @@ class TestCheckInOut:
                 fixed_time,
                 fixed_time.replace(hour=18),
             )
+
+            requested = room_service.request_check_in(user, booking.id)
+            assert requested.status == RoomBookingStatus.CHECKIN_REQUESTED
 
             room_service.check_in(admin, booking.id)
 
@@ -811,6 +826,31 @@ class TestCheckInOut:
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
+    def test_force_complete_room_checkout_applies_late_penalty(
+        self, room_service, auth_service, create_test_user, create_test_room, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            admin = create_test_user(username="admin-force", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time,
+                fixed_time.replace(hour=18),
+            )
+            room_service.request_check_in(user, booking.id)
+            room_service.check_in(admin, booking.id)
+
+        with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
+            completed, delay = room_service.force_complete_checkout(admin, booking.id)
+
+            assert completed.status == RoomBookingStatus.COMPLETED
+            assert delay == 60
+            assert auth_service.get_user(user.id).penalty_points == 2
+
 
 class TestNoShow:
     """노쇼 처리 테스트"""
@@ -823,6 +863,7 @@ class TestNoShow:
 
         with mock_now(fixed_time):
             user = create_test_user()
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
 
             booking = room_service.create_booking(
@@ -832,17 +873,18 @@ class TestNoShow:
                 fixed_time.replace(hour=18),
             )
 
-            no_show = room_service.mark_no_show(booking.id)
+            no_show = room_service.mark_no_show(booking.id, admin=admin)
 
             assert no_show.status == RoomBookingStatus.NO_SHOW
             assert room_service.user_repo.get_by_id(user.id).penalty_points == 3
 
     def test_mark_no_show_missing_user_fails(
-        self, room_service, create_test_room, room_booking_repo, mock_now
+        self, room_service, create_test_user, create_test_room, room_booking_repo, mock_now
     ):
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
             booking = RoomBooking(
                 id="room-noshow-missing-user",
@@ -856,7 +898,7 @@ class TestNoShow:
                 room_booking_repo.add(booking)
 
             with pytest.raises(RoomBookingError) as exc_info:
-                room_service.mark_no_show(booking.id)
+                room_service.mark_no_show(booking.id, admin=admin)
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
@@ -1045,6 +1087,72 @@ class TestAdminFunctions:
                 )
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
+
+
+class TestAuditLogging:
+    def test_create_room_booking_logs_audit_action(
+        self, room_service, create_test_user, create_test_room, audit_repo, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            room = create_test_room(status=ResourceStatus.AVAILABLE)
+            booking = room_service.create_booking(
+                user=user,
+                room_id=room.id,
+                start_time=fixed_time + timedelta(hours=1),
+                end_time=fixed_time + timedelta(hours=2),
+            )
+
+        logs = audit_repo.get_by_actor(user.id)
+        assert any(
+            log.action == "create_room_booking" and log.target_id == booking.id
+            for log in logs
+        )
+
+    def test_request_room_checkin_logs_audit_action(
+        self, room_service, create_test_user, create_test_room, audit_repo, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            room = create_test_room(status=ResourceStatus.AVAILABLE)
+            booking = room_service.create_booking(
+                user=user,
+                room_id=room.id,
+                start_time=fixed_time,
+                end_time=fixed_time.replace(hour=18),
+            )
+            room_service.request_check_in(user, booking.id)
+
+        logs = audit_repo.get_by_actor(user.id)
+        assert any(
+            log.action == "request_room_check_in" and log.target_id == booking.id
+            for log in logs
+        )
+
+    def test_update_room_status_logs_admin_action(
+        self,
+        room_service,
+        create_test_user,
+        create_test_room,
+        audit_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            admin = create_test_user(username="admin-audit", role=UserRole.ADMIN)
+            room = create_test_room()
+            room_service.update_room_status(admin, room.id, ResourceStatus.MAINTENANCE)
+
+        logs = audit_repo.get_by_actor(admin.id)
+        assert any(
+            log.action == "update_room_status" and log.target_id == room.id
+            for log in logs
+        )
 
 
 class TestBookingQueries:

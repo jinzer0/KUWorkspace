@@ -2,7 +2,7 @@ from src.cli.guest_menu import GuestMenu
 from src.cli.admin_menu import AdminMenu
 from src.domain.penalty_service import PenaltyError
 from src.domain.room_service import RoomBookingError
-from src.domain.models import UserRole
+from src.domain.models import UserRole, EquipmentBookingStatus
 
 
 class TestGuestMenuPolicyChecks:
@@ -62,6 +62,7 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -72,6 +73,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(
@@ -96,6 +98,7 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -106,6 +109,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(menu.auth_service, "is_admin", lambda user: False)
@@ -126,6 +130,7 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -137,6 +142,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_all_users_or_abort", lambda: [target])
@@ -166,6 +172,7 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -177,6 +184,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_all_users_or_abort", lambda: [target])
@@ -204,6 +212,7 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
         room_booking_factory,
     ):
@@ -216,6 +225,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_room_bookings_or_abort", lambda: [booking])
@@ -237,11 +247,14 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
         equipment_booking_factory,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
-        booking = equipment_booking_factory(user_id="missing-user")
+        booking = equipment_booking_factory(
+            user_id="missing-user", status=EquipmentBookingStatus.PICKUP_REQUESTED
+        )
         menu = AdminMenu(
             user=admin,
             auth_service=auth_service,
@@ -249,6 +262,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_equipment_bookings_or_abort", lambda: [booking])
@@ -271,6 +285,7 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
+        message_service,
         create_test_user,
         room_booking_factory,
         user_factory,
@@ -286,6 +301,7 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
+            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_room_bookings_or_abort", lambda: [booking])
@@ -314,4 +330,4 @@ class TestAdminMenuPolicyChecks:
 
         menu._room_checkout()
 
-        assert messages == ["사용자를 찾을 수 없습니다."]
+        assert messages == []

@@ -17,6 +17,7 @@ from src.domain.models import (
     UserRole,
     RoomBookingStatus,
     EquipmentBookingStatus,
+    MessageType,
 )
 
 
@@ -76,14 +77,16 @@ class TestBookingCompleteFlow:
 
             assert booking.status == RoomBookingStatus.RESERVED
 
-            # 4. 체크인
+            requested = room_service.request_check_in(user, booking.id)
+            assert requested.status == RoomBookingStatus.CHECKIN_REQUESTED
             checked_in = room_service.check_in(admin, booking.id)
             assert checked_in.status == RoomBookingStatus.CHECKED_IN
 
-        # 5. 정시 퇴실
         checkout_time = datetime(2024, 6, 15, 18, 0, 0)
         with mock_now(checkout_time):
-            completed, delay = room_service.check_out(admin, booking.id)
+            requested = room_service.request_checkout(user, booking.id)
+            assert requested.status == RoomBookingStatus.CHECKOUT_REQUESTED
+            completed, delay = room_service.approve_checkout_request(admin, booking.id)
 
             assert completed.status == RoomBookingStatus.COMPLETED
             assert delay == 0
@@ -117,14 +120,16 @@ class TestBookingCompleteFlow:
                 fixed_time + timedelta(days=3),
             )
 
-            # 대여
+            requested = equipment_service.request_pickup(user, booking.id)
+            assert requested.status == EquipmentBookingStatus.PICKUP_REQUESTED
             checked_out = equipment_service.checkout(admin, booking.id)
             assert checked_out.status == EquipmentBookingStatus.CHECKED_OUT
 
-        # 반납
         return_time = datetime(2024, 6, 18, 9, 0, 0)
         with mock_now(return_time):
-            returned, delay = equipment_service.return_equipment(admin, booking.id)
+            requested = equipment_service.request_return(user, booking.id)
+            assert requested.status == EquipmentBookingStatus.RETURN_REQUESTED
+            returned, delay = equipment_service.approve_return_request(admin, booking.id)
 
             assert returned.status == EquipmentBookingStatus.RETURNED
             assert delay == 0
@@ -290,6 +295,7 @@ class TestLateReturnPenaltyFlow:
                 fixed_time,
                 fixed_time.replace(hour=18),
             )
+            room_service.request_check_in(user, booking.id)
             room_service.check_in(admin, booking.id)
 
         late_time = datetime(2024, 6, 15, 18, 25, 0)
@@ -339,3 +345,184 @@ class TestMultipleBookingsFlow:
                 )
 
             assert "한도" in str(exc_info.value) or "초과" in str(exc_info.value)
+
+
+class TestInquiryReportSubmissionFlow:
+    """사용자 문의/신고 제출 E2E 테스트 - 정확한 JSON Lines 레코드 키 검증"""
+
+    def test_inquiry_submission_persists_exact_keys(
+        self,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        monkeypatch,
+    ):
+        """문의 제출이 정확히 5개 키를 가진 JSON Lines 레코드로 저장됨 (사용자 메뉴 흐름)"""
+        from src.cli.user_menu import UserMenu
+
+        user = auth_service.signup("inquiry_user", "pass123")
+        menu = UserMenu(
+            user=user,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        inputs = iter(["1", "회의실 예약 문의입니다", "y"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+
+        menu._submit_message()
+
+        saved_messages = message_service.message_repo.get_by_user(user.id)
+        assert len(saved_messages) == 1
+
+        persisted = saved_messages[0]
+        persisted_dict = persisted.to_dict()
+        expected_keys = {"id", "user_id", "created_at", "type", "content"}
+        actual_keys = set(persisted_dict.keys())
+
+        assert (
+            actual_keys == expected_keys
+        ), f"Expected keys {expected_keys}, but got {actual_keys}"
+
+        assert persisted_dict["user_id"] == user.id
+        assert persisted_dict["type"] == "inquiry"
+        assert persisted_dict["content"] == "회의실 예약 문의입니다"
+        assert persisted_dict["created_at"] is not None
+
+    def test_report_submission_persists_exact_keys(
+        self,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        monkeypatch,
+    ):
+        """신고 제출이 정확히 5개 키를 가진 JSON Lines 레코드로 저장됨 (사용자 메뉴 흐름)"""
+        from src.cli.user_menu import UserMenu
+
+        user = auth_service.signup("report_user", "pass123")
+        menu = UserMenu(
+            user=user,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        inputs = iter(["2", "부정한 예약 신고합니다", "y"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+
+        menu._submit_message()
+
+        saved_messages = message_service.message_repo.get_by_user(user.id)
+        assert len(saved_messages) == 1
+
+        persisted = saved_messages[0]
+        persisted_dict = persisted.to_dict()
+        expected_keys = {"id", "user_id", "created_at", "type", "content"}
+        actual_keys = set(persisted_dict.keys())
+
+        assert actual_keys == expected_keys
+
+        assert persisted_dict["type"] == "report"
+        assert persisted_dict["content"] == "부정한 예약 신고합니다"
+
+    def test_multiple_submissions_append_as_separate_records(
+        self,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        monkeypatch,
+    ):
+        """여러 제출이 별도의 레코드로 추가됨 (append-only, 사용자 메뉴 흐름)"""
+        from src.cli.user_menu import UserMenu
+
+        user = auth_service.signup("multi_submit_user", "pass123")
+        menu = UserMenu(
+            user=user,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+
+        inputs = iter(["1", "첫번째 문의", "y"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        menu._submit_message()
+
+        inputs = iter(["2", "첫번째 신고", "y"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        menu._submit_message()
+
+        inputs = iter(["1", "두번째 문의", "y"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        menu._submit_message()
+
+        saved_messages = message_service.message_repo.get_by_user(user.id)
+        assert len(saved_messages) == 3
+
+        assert saved_messages[0].content == "첫번째 문의"
+        assert saved_messages[0].type == MessageType.INQUIRY
+
+        assert saved_messages[1].content == "첫번째 신고"
+        assert saved_messages[1].type == MessageType.REPORT
+
+        assert saved_messages[2].content == "두번째 문의"
+        assert saved_messages[2].type == MessageType.INQUIRY
+
+        for message in saved_messages:
+            keys = set(message.to_dict().keys())
+            assert keys == {"id", "user_id", "created_at", "type", "content"}
+
+    def test_newline_content_never_persists(
+        self, auth_service, message_service, message_repo
+    ):
+        """줄바꿈이 포함된 내용은 거부되고 저장되지 않음 (regression)"""
+        user = auth_service.signup("newline_test_user", "pass123")
+
+        # 줄바꿈을 포함한 내용들 시도
+        invalid_contents = [
+            "line1\nline2",  # LF
+            "line1\rline2",  # CR
+            "line1\r\nline2",  # CRLF
+            "\n",  # 줄바꿈만
+            "content\n",  # 끝에 줄바꿈
+        ]
+
+        for invalid_content in invalid_contents:
+            with pytest.raises(Exception):
+                message_service.create_message(
+                    user_id=user.id,
+                    message_type="inquiry",
+                    content=invalid_content,
+                )
+
+        # 어떤 메시지도 저장되지 않았는지 확인
+        saved_messages = message_repo.get_by_user(user.id)
+        assert len(saved_messages) == 0

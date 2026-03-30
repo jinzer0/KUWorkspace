@@ -1,4 +1,4 @@
-{"id": "df71bfe6-356b-40bd-908e-f1f7815cca26", "name": "회의실 4A", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
+{"id": "df71bfe6-356b-40bd-908e-f1f7815cca26", "name": "회의실 4A", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2099-01-05T18:00:00"}
 {"id": "c37cc692-3d32-4c31-b5f0-b7dfbb7ec26f", "name": "회의실 4B", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
 {"id": "46ac5adc-4c9a-4820-8760-346420a79c1a", "name": "회의실 4C", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
 {"id": "90b06c85-73f4-44e4-9565-9f6728a0a4d2", "name": "회의실 6A", "capacity": 6, "location": "2층", "status": "available", "description": "6인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
