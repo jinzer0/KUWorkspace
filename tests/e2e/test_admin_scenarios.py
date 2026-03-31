@@ -434,7 +434,7 @@ class TestAdminMessageViewing:
 
         assert len(printed_tables) == 1
         table = printed_tables[0]
-        assert table["headers"] == ["유형", "사용자 ID", "등록 시각", "내용"]
+        assert table["headers"] == ["유형", "사용자명", "등록 시각", "내용"]
         assert len(table["rows"]) == 3
 
         assert table["rows"][0][0] == "문의"
@@ -450,7 +450,7 @@ class TestAdminMessageViewing:
 
         detail_texts = [f[1] for f in printed_detail_fields if f[0] == "field"]
         assert any("유형: 신고" in t for t in detail_texts)
-        assert any(user2.id in t for t in detail_texts)
+        assert any(user2.username in t for t in detail_texts)
         
         # Assert exact selected message ID
         selected_message_detail = "\n".join(detail_texts)

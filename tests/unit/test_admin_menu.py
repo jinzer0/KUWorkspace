@@ -48,81 +48,92 @@ class TestAdminMessageList:
         assert "등록된 문의/신고가 없습니다." in printed
 
     def test_show_messages_renders_latest_first(
-        self,
-        monkeypatch,
-        user_factory,
-        auth_service,
-        room_service,
-        equipment_service,
-        penalty_service,
-        policy_service,
-        message_service,
-    ):
-        """Non-empty state renders latest-first rows with Korean type labels"""
-        admin_user = user_factory(role=UserRole.ADMIN)
-        menu = AdminMenu(
-            user=admin_user,
-            auth_service=auth_service,
-            room_service=room_service,
-            equipment_service=equipment_service,
-            penalty_service=penalty_service,
-            policy_service=policy_service,
-            message_service=message_service,
-        )
+         self,
+         monkeypatch,
+         user_factory,
+         auth_service,
+         room_service,
+         equipment_service,
+         penalty_service,
+         policy_service,
+         message_service,
+     ):
+         """Non-empty state renders latest-first rows with Korean type labels"""
+         admin_user = user_factory(role=UserRole.ADMIN)
+         
+         user1 = user_factory(id="user-1", username="user1")
+         user2 = user_factory(id="user-2", username="user2")
+         user3 = user_factory(id="user-3", username="user3")
+         
+         menu = AdminMenu(
+             user=admin_user,
+             auth_service=auth_service,
+             room_service=room_service,
+             equipment_service=equipment_service,
+             penalty_service=penalty_service,
+             policy_service=policy_service,
+             message_service=message_service,
+         )
+         
+         def mock_safe_get_user(user_id):
+             users_map = {"user-1": user1, "user-2": user2, "user-3": user3}
+             return users_map.get(user_id)
+         
+         monkeypatch.setattr(menu, "_safe_get_user", mock_safe_get_user)
 
-        msg1 = Message(
-            id=generate_id(),
-            user_id="user-1",
-            type=MessageType.INQUIRY,
-            content="First message",
-            created_at="2025-01-01T10:00:00",
-        )
-        msg2 = Message(
-            id=generate_id(),
-            user_id="user-2",
-            type=MessageType.REPORT,
-            content="Second message",
-            created_at="2025-01-02T10:00:00",
-        )
-        msg3 = Message(
-            id=generate_id(),
-            user_id="user-3",
-            type=MessageType.INQUIRY,
-            content="Third message newest",
-            created_at="2025-01-03T10:00:00",
-        )
+         msg1 = Message(
+             id=generate_id(),
+             user_id="user-1",
+             type=MessageType.INQUIRY,
+             content="First message",
+             created_at="2025-01-01T10:00:00",
+         )
+         msg2 = Message(
+             id=generate_id(),
+             user_id="user-2",
+             type=MessageType.REPORT,
+             content="Second message",
+             created_at="2025-01-02T10:00:00",
+         )
+         msg3 = Message(
+             id=generate_id(),
+             user_id="user-3",
+             type=MessageType.INQUIRY,
+             content="Third message newest",
+             created_at="2025-01-03T10:00:00",
+         )
 
-        monkeypatch.setattr(message_service, "list_messages", lambda: [msg1, msg2, msg3])
-        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
-        monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda *args, **kwargs: None)
+         monkeypatch.setattr(message_service, "list_messages", lambda: [msg1, msg2, msg3])
+         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+         monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda *args, **kwargs: None)
 
-        printed_tables = []
-        
-        def capture_table(headers, rows):
-            printed_tables.append((headers, rows))
-            return "table"
-        
-        monkeypatch.setattr("src.cli.admin_menu.format_table", capture_table)
-        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
+         printed_tables = []
+         
+         def capture_table(headers, rows):
+             printed_tables.append((headers, rows))
+             return "table"
+         
+         monkeypatch.setattr("src.cli.admin_menu.format_table", capture_table)
+         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
 
-        menu._show_messages()
+         menu._show_messages()
 
-        assert len(printed_tables) == 1
-        headers, rows = printed_tables[0]
+         assert len(printed_tables) == 1
+         headers, rows = printed_tables[0]
 
-        assert headers == ["유형", "사용자 ID", "등록 시각", "내용"]
-        assert len(rows) == 3
+         assert headers == ["유형", "사용자명", "등록 시각", "내용"]
+         assert len(rows) == 3
 
-        assert rows[0][0] == "문의"
-        assert rows[0][1] == "user-3"
-        assert "2025-01-03" in rows[0][2]
-        assert rows[0][3] == "Third message newest"
+         assert rows[0][0] == "문의"
+         assert rows[0][1] == "user3"
+         assert "2025-01-03" in rows[0][2]
+         assert rows[0][3] == "Third message newest"
 
-        assert rows[1][0] == "신고"
-        assert rows[1][1] == "user-2"
+         assert rows[1][0] == "신고"
+         assert rows[1][1] == "user2"
 
-        assert rows[2][0] == "문의"
-        assert rows[2][1] == "user-1"
+         assert rows[2][0] == "문의"
+         assert rows[2][1] == "user1"
 
     def test_show_messages_truncates_content_preview(
         self,
@@ -423,65 +434,72 @@ class TestAdminMessageList:
         assert rows[0][0] == "신고"
 
     def test_show_messages_detail_view_displays_all_fields(
-        self,
-        monkeypatch,
-        user_factory,
-        auth_service,
-        room_service,
-        equipment_service,
-        penalty_service,
-        policy_service,
-        message_service,
-    ):
-        """Detail screen displays all five required fields with full content"""
-        admin_user = user_factory(role=UserRole.ADMIN)
-        menu = AdminMenu(
-            user=admin_user,
-            auth_service=auth_service,
-            room_service=room_service,
-            equipment_service=equipment_service,
-            penalty_service=penalty_service,
-            policy_service=policy_service,
-            message_service=message_service,
-        )
+         self,
+         monkeypatch,
+         user_factory,
+         auth_service,
+         room_service,
+         equipment_service,
+         penalty_service,
+         policy_service,
+         message_service,
+     ):
+         """Detail screen displays all five required fields with full content"""
+         admin_user = user_factory(role=UserRole.ADMIN)
+         
+         user_demo = user_factory(id="user-demo", username="userDemo")
+         
+         menu = AdminMenu(
+             user=admin_user,
+             auth_service=auth_service,
+             room_service=room_service,
+             equipment_service=equipment_service,
+             penalty_service=penalty_service,
+             policy_service=policy_service,
+             message_service=message_service,
+         )
+         
+         def mock_safe_get_user(user_id):
+             if user_id == "user-demo":
+                 return user_demo
+             return None
+         
+         monkeypatch.setattr(menu, "_safe_get_user", mock_safe_get_user)
 
-        msg = Message(
-            id="msg-123-456",
-            user_id="user-demo",
-            type=MessageType.INQUIRY,
-            content="This is a very long inquiry content that should not be truncated in detail view",
-            created_at="2025-01-15T14:30:00",
-        )
+         msg = Message(
+             id="msg-123-456",
+             user_id="user-demo",
+             type=MessageType.INQUIRY,
+             content="This is a very long inquiry content that should not be truncated in detail view",
+             created_at="2025-01-15T14:30:00",
+         )
 
-        monkeypatch.setattr(message_service, "list_messages", lambda: [msg])
-        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
-        monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda *args, **kwargs: msg.id)
-        monkeypatch.setattr("src.cli.admin_menu.format_table", lambda h, r: "table")
-        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
+         monkeypatch.setattr(message_service, "list_messages", lambda: [msg])
+         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+         monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda *args, **kwargs: msg.id)
+         monkeypatch.setattr("src.cli.admin_menu.format_table", lambda h, r: "table")
+         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
 
-        printed_lines = []
-        
-        def capture_print(*args, **kwargs):
-            if args:
-                printed_lines.append(str(args[0]))
-        
-        monkeypatch.setattr("builtins.print", capture_print)
-        monkeypatch.setattr("src.cli.admin_menu.print_subheader", lambda x: None)
+         printed_lines = []
+         
+         def capture_print(*args, **kwargs):
+             if args:
+                 printed_lines.append(str(args[0]))
+         
+         monkeypatch.setattr("builtins.print", capture_print)
+         monkeypatch.setattr("src.cli.admin_menu.print_subheader", lambda x: None)
 
-        menu._show_messages()
+         menu._show_messages()
 
-        # Verify all required fields are printed
-        combined_output = "\n".join(printed_lines)
-        assert "유형: 문의" in combined_output
-        assert "사용자 ID: user-demo" in combined_output
-        assert "메시지 ID: msg-123-456" in combined_output
-        
-        # Assert exact detail line with formatted created_at using same formatter as app
-        expected_detail_line = f"등록 시각: {format_datetime(msg.created_at)}"
-        assert expected_detail_line in combined_output, f"Expected detail line '{expected_detail_line}' not found in output"
-        
-        # Verify full content is shown (not truncated)
-        assert "This is a very long inquiry content that should not be truncated in detail view" in combined_output
+         combined_output = "\n".join(printed_lines)
+         assert "유형: 문의" in combined_output
+         assert "사용자명: userDemo" in combined_output
+         assert "메시지 ID: msg-123-456" in combined_output
+         
+         expected_detail_line = f"등록 시각: {format_datetime(msg.created_at)}"
+         assert expected_detail_line in combined_output, f"Expected detail line '{expected_detail_line}' not found in output"
+         
+         assert "This is a very long inquiry content that should not be truncated in detail view" in combined_output
 
     def test_show_messages_detail_view_shows_korean_type_labels(
         self,

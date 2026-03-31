@@ -1481,11 +1481,12 @@ class AdminMenu:
             "report": "신고"
         }
         
-        headers = ["유형", "사용자 ID", "등록 시각", "내용"]
+        headers = ["유형", "사용자명", "등록 시각", "내용"]
         rows = []
         for msg in displayed_messages:
             type_label = type_map.get(msg.type.value, msg.type.value)
-            user_id_display = msg.user_id
+            user = self._safe_get_user(msg.user_id)
+            user_display = user.username if user else msg.user_id
             created_display = format_datetime(msg.created_at)
             
             content_display = msg.content
@@ -1494,7 +1495,7 @@ class AdminMenu:
             
             rows.append([
                 type_label,
-                user_id_display,
+                user_display,
                 created_display,
                 content_display
             ])
@@ -1504,10 +1505,13 @@ class AdminMenu:
         if len(sorted_messages) > 30:
             print(f"\n  ... 외 {len(sorted_messages) - 30}건")
         
-        items = [
-            (msg.id, f"{type_map.get(msg.type.value, msg.type.value)} / {msg.user_id} / {format_datetime(msg.created_at)}")
-            for msg in displayed_messages
-        ]
+        items = []
+        for msg in displayed_messages:
+            type_label = type_map.get(msg.type.value, msg.type.value)
+            user = self._safe_get_user(msg.user_id)
+            user_display = user.username if user else msg.user_id
+            created_display = format_datetime(msg.created_at)
+            items.append((msg.id, f"{type_label} / {user_display} / {created_display}"))
         
         selected_id = select_from_list(items, "상세 조회할 메시지 선택")
         if not selected_id:
@@ -1526,9 +1530,11 @@ class AdminMenu:
             "report": "신고"
         }
         type_label = type_map.get(message.type.value, message.type.value)
+        user = self._safe_get_user(message.user_id)
+        user_display = user.username if user else message.user_id
         
         print(f"유형: {type_label}")
-        print(f"사용자 ID: {message.user_id}")
+        print(f"사용자명: {user_display}")
         print(f"등록 시각: {format_datetime(message.created_at)}")
         print(f"메시지 ID: {message.id}")
         print(f"내용: {message.content}")
