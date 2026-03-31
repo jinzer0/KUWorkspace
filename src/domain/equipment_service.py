@@ -962,6 +962,86 @@ class EquipmentService:
         """장비별 예약 조회"""
         return self.booking_repo.get_by_equipment(equipment_id)
 
+    def admin_reassign_active_booking(
+        self, admin, booking_id, new_equipment_id, reason
+    ):
+        """
+        진행중 예약 장비 교체 (관리자 전용)
+
+        Args:
+            admin: 관리자
+            booking_id: 예약 ID
+            new_equipment_id: 새 장비 ID
+            reason: 교체 사유
+
+        Returns:
+            교체된 예약
+
+        Raises:
+            EquipmentBookingError: 교체 불가 시
+        """
+        admin = self._get_existing_admin(admin)
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
+
+                if booking.status != EquipmentBookingStatus.CHECKED_OUT:
+                    raise EquipmentBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 장비를 교체할 수 없습니다. "
+                        "대여 중(checked_out) 상태만 교체 가능합니다."
+                    )
+
+                booking_user = self.user_repo.get_by_id(booking.user_id)
+                if booking_user is None:
+                    raise EquipmentBookingError("존재하지 않는 사용자입니다.")
+
+                if new_equipment_id == booking.equipment_id:
+                    raise EquipmentBookingError(
+                        "동일한 장비로는 교체할 수 없습니다. 다른 장비를 선택해주세요."
+                    )
+
+                new_equipment = self.equipment_repo.get_by_id(new_equipment_id)
+                if new_equipment is None:
+                    raise EquipmentBookingError("존재하지 않는 장비입니다.")
+
+                if new_equipment.status != ResourceStatus.AVAILABLE:
+                    raise EquipmentBookingError(
+                        f"교체 대상 장비가 현재 {new_equipment.status.value} 상태입니다. "
+                        "사용 가능한 장비만 선택할 수 있습니다."
+                    )
+
+                conflicts = self.booking_repo.get_conflicting(
+                    new_equipment_id,
+                    booking.start_time,
+                    booking.end_time,
+                    exclude_id=booking_id,
+                )
+                if conflicts:
+                    raise EquipmentBookingError(
+                        "교체 대상 장비가 해당 기간에 이미 예약되어 있습니다. "
+                        "다른 장비를 선택해주세요."
+                    )
+
+                old_equipment_id = booking.equipment_id
+                updated = replace(
+                    booking, equipment_id=new_equipment_id, updated_at=now_iso()
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=admin.id,
+                    action="admin_reassign_active_equipment_booking",
+                    target_type="equipment_booking",
+                    target_id=booking_id,
+                    details=f"장비 교체: {old_equipment_id} -> {new_equipment_id}, 사유: {reason}",
+                )
+
+                return updated
+
     def update_equipment_status(self, admin, equipment_id, new_status):
         """
         장비 상태 변경

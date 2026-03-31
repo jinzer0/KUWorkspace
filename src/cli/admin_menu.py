@@ -162,7 +162,7 @@ class AdminMenu:
             print("  3. 전체 회의실 예약 조회")
             print("  4. 회의실 체크인 처리")
             print("  5. 회의실 퇴실 승인 처리")
-            print("  6. 회의실 예약 변경 (관리자)")
+            print("  6. 회의실 예약 변경/교체 (관리자)")
             print("  7. 회의실 예약 취소 (관리자)")
 
             print("\n[장비 관리]")
@@ -171,7 +171,7 @@ class AdminMenu:
             print("  10. 전체 장비 예약 조회")
             print("  11. 장비 대여 시작 처리")
             print("  12. 장비 반납 승인 처리")
-            print("  13. 장비 예약 변경 (관리자)")
+            print("  13. 장비 예약 변경/교체 (관리자)")
             print("  14. 장비 예약 취소 (관리자)")
 
             print("\n[사용자 관리]")
@@ -201,7 +201,7 @@ class AdminMenu:
             elif choice == "5":
                 self._room_checkout()
             elif choice == "6":
-                self._admin_modify_room_booking()
+                self._admin_modify_or_swap_room_booking()
             elif choice == "7":
                 self._admin_cancel_room_booking()
             elif choice == "8":
@@ -215,7 +215,7 @@ class AdminMenu:
             elif choice == "12":
                 self._equipment_return()
             elif choice == "13":
-                self._admin_modify_equipment_booking()
+                self._admin_modify_or_swap_equipment_booking()
             elif choice == "14":
                 self._admin_cancel_equipment_booking()
             elif choice == "15":
@@ -535,8 +535,152 @@ class AdminMenu:
 
         pause()
 
-    def _admin_modify_room_booking(self):
-        """관리자 회의실 예약 변경"""
+    def _admin_modify_or_swap_room_booking(self):
+        """관리자 회의실 예약 변경/교체 - 서브메뉴"""
+        print_header("회의실 예약 변경/교체 (관리자)")
+        
+        print("\n선택 사항:")
+        print("  1. 예약 시간 변경")
+        print("  2. 진행중 예약 회의실 교체")
+        print("  0. 취소")
+        print("-" * 50)
+        
+        choice = input("선택: ").strip()
+        
+        if choice == "1":
+            self._admin_modify_room_booking_time()
+        elif choice == "2":
+            self._admin_reassign_active_room_booking()
+        elif choice == "0":
+            return
+        else:
+            print_error("잘못된 선택입니다.")
+            pause()
+
+    def _admin_reassign_active_room_booking(self):
+        """관리자 진행중 회의실 예약 교체"""
+        print_header("진행중 회의실 예약 교체 (관리자)")
+
+        all_bookings = self._get_room_bookings_or_abort()
+        if all_bookings is None:
+            return
+        
+        checked_in_bookings = [
+            b for b in all_bookings if b.status == RoomBookingStatus.CHECKED_IN
+        ]
+
+        if not checked_in_bookings:
+            print_info("진행중인 회의실 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in checked_in_bookings:
+            room = self.room_service.get_room(booking.room_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{room.name if room else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "교체할 예약 선택")
+        if not booking_id:
+            return
+
+        selected_booking = next(
+            (b for b in checked_in_bookings if b.id == booking_id), None
+        )
+        if selected_booking is None:
+            print_error("선택한 예약을 찾을 수 없습니다.")
+            pause()
+            return
+
+        current_room = self.room_service.get_room(selected_booking.room_id)
+        booking_user = self._get_booking_user_or_abort(selected_booking.user_id)
+        if booking_user is None:
+            return
+
+        print_subheader("예약 정보")
+        print(f"  현재 회의실: {current_room.name if current_room else '-'}")
+        print(f"  사용자: {booking_user.username}")
+        print(
+            f"  기간: {format_booking_time_range(selected_booking.start_time, selected_booking.end_time)}"
+        )
+
+        all_rooms = self.room_service.get_all_rooms()
+        eligible_rooms = []
+        
+        for room in all_rooms:
+            if room.id == selected_booking.room_id:
+                continue
+            
+            if room.status != ResourceStatus.AVAILABLE:
+                continue
+            
+            conflicts = self.room_service.booking_repo.get_conflicting(
+                room.id,
+                selected_booking.start_time,
+                selected_booking.end_time,
+                exclude_id=booking_id,
+            )
+            if not conflicts:
+                eligible_rooms.append(room)
+
+        if not eligible_rooms:
+            print_info("교체 가능한 회의실이 없습니다.")
+            pause()
+            return
+
+        room_items = [
+            (
+                r.id,
+                f"{r.name} (수용인원: {r.capacity}명, 위치: {r.location})",
+            )
+            for r in eligible_rooms
+        ]
+        new_room_id = select_from_list(room_items, "새 회의실 선택")
+        if not new_room_id:
+            return
+
+        reason = input("교체 사유: ").strip()
+        if not reason:
+            print_error("사유를 입력해야 합니다.")
+            pause()
+            return
+
+        new_room = next((r for r in eligible_rooms if r.id == new_room_id), None)
+        if new_room is None:
+            print_error("선택한 회의실을 찾을 수 없습니다.")
+            pause()
+            return
+
+        print_warning(
+            f"회의실을 '{current_room.name if current_room else '-'}'에서 '{new_room.name}'으로 교체합니다."
+        )
+        if not confirm("교체하시겠습니까?"):
+            return
+
+        try:
+            updated_booking = self.room_service.admin_reassign_active_booking(
+                admin=self.user,
+                booking_id=booking_id,
+                new_room_id=new_room_id,
+                reason=reason,
+            )
+            print_success(
+                f"회의실이 교체되었습니다: {current_room.name if current_room else '-'} → {new_room.name}"
+            )
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _admin_modify_room_booking_time(self):
+        """관리자 회의실 예약 시간 변경"""
         print_header("회의실 예약 변경 (관리자)")
 
         all_bookings = self._get_room_bookings_or_abort()
@@ -951,8 +1095,152 @@ class AdminMenu:
 
         pause()
 
-    def _admin_modify_equipment_booking(self):
-        """관리자 장비 예약 변경"""
+    def _admin_modify_or_swap_equipment_booking(self):
+        """관리자 장비 예약 변경/교체 - 서브메뉴"""
+        print_header("장비 예약 변경/교체 (관리자)")
+        
+        print("\n선택 사항:")
+        print("  1. 예약 시간 변경")
+        print("  2. 진행중 예약 장비 교체")
+        print("  0. 취소")
+        print("-" * 50)
+        
+        choice = input("선택: ").strip()
+        
+        if choice == "1":
+            self._admin_modify_equipment_booking_time()
+        elif choice == "2":
+            self._admin_reassign_active_equipment_booking()
+        elif choice == "0":
+            return
+        else:
+            print_error("잘못된 선택입니다.")
+            pause()
+
+    def _admin_reassign_active_equipment_booking(self):
+        """관리자 진행중 장비 예약 교체"""
+        print_header("진행중 장비 예약 교체 (관리자)")
+
+        all_bookings = self._get_equipment_bookings_or_abort()
+        if all_bookings is None:
+            return
+        
+        checked_out_bookings = [
+            b for b in all_bookings if b.status == EquipmentBookingStatus.CHECKED_OUT
+        ]
+
+        if not checked_out_bookings:
+            print_info("진행중인 장비 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in checked_out_bookings:
+            equip = self.equipment_service.get_equipment(booking.equipment_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{equip.name if equip else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "교체할 예약 선택")
+        if not booking_id:
+            return
+
+        selected_booking = next(
+            (b for b in checked_out_bookings if b.id == booking_id), None
+        )
+        if selected_booking is None:
+            print_error("선택한 예약을 찾을 수 없습니다.")
+            pause()
+            return
+
+        current_equipment = self.equipment_service.get_equipment(selected_booking.equipment_id)
+        booking_user = self._get_booking_user_or_abort(selected_booking.user_id)
+        if booking_user is None:
+            return
+
+        print_subheader("예약 정보")
+        print(f"  현재 장비: {current_equipment.name if current_equipment else '-'}")
+        print(f"  사용자: {booking_user.username}")
+        print(
+            f"  기간: {format_booking_time_range(selected_booking.start_time, selected_booking.end_time)}"
+        )
+
+        all_equipment = self.equipment_service.get_all_equipment()
+        eligible_equipment = []
+        
+        for equip in all_equipment:
+            if equip.id == selected_booking.equipment_id:
+                continue
+            
+            if equip.status != ResourceStatus.AVAILABLE:
+                continue
+            
+            conflicts = self.equipment_service.booking_repo.get_conflicting(
+                equip.id,
+                selected_booking.start_time,
+                selected_booking.end_time,
+                exclude_id=booking_id,
+            )
+            if not conflicts:
+                eligible_equipment.append(equip)
+
+        if not eligible_equipment:
+            print_info("교체 가능한 장비가 없습니다.")
+            pause()
+            return
+
+        equipment_items = [
+            (
+                e.id,
+                f"{e.name} (종류: {e.asset_type}, 시리얼: {e.serial_number})",
+            )
+            for e in eligible_equipment
+        ]
+        new_equipment_id = select_from_list(equipment_items, "새 장비 선택")
+        if not new_equipment_id:
+            return
+
+        reason = input("교체 사유: ").strip()
+        if not reason:
+            print_error("사유를 입력해야 합니다.")
+            pause()
+            return
+
+        new_equipment = next((e for e in eligible_equipment if e.id == new_equipment_id), None)
+        if new_equipment is None:
+            print_error("선택한 장비를 찾을 수 없습니다.")
+            pause()
+            return
+
+        print_warning(
+            f"장비를 '{current_equipment.name if current_equipment else '-'}'에서 '{new_equipment.name}'으로 교체합니다."
+        )
+        if not confirm("교체하시겠습니까?"):
+            return
+
+        try:
+            updated_booking = self.equipment_service.admin_reassign_active_booking(
+                admin=self.user,
+                booking_id=booking_id,
+                new_equipment_id=new_equipment_id,
+                reason=reason,
+            )
+            print_success(
+                f"장비가 교체되었습니다: {current_equipment.name if current_equipment else '-'} → {new_equipment.name}"
+            )
+        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+
+        pause()
+
+    def _admin_modify_equipment_booking_time(self):
+        """관리자 장비 예약 시간 변경"""
         print_header("장비 예약 변경 (관리자)")
 
         all_bookings = self._get_equipment_bookings_or_abort()

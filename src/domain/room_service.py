@@ -958,6 +958,91 @@ class RoomService:
         """회의실별 예약 조회"""
         return self.booking_repo.get_by_room(room_id)
 
+    def admin_reassign_active_booking(self, admin, booking_id, new_room_id, reason):
+        """
+        관리자 전용: 체크인 완료된 활성 예약의 회의실을 변경합니다.
+        
+        Args:
+            admin: 관리자 사용자
+            booking_id: 예약 ID
+            new_room_id: 새 회의실 ID
+            reason: 변경 사유
+        
+        Returns:
+            변경된 예약
+        
+        Raises:
+            RoomBookingError: 검증 실패 시
+        """
+        admin = self._get_existing_admin(admin)
+        with global_lock():
+            self._run_policy_checks()
+            with UnitOfWork():
+                booking = self.booking_repo.get_by_id(booking_id)
+                if booking is None:
+                    raise RoomBookingError("존재하지 않는 예약입니다.")
+
+                # 체크인 상태 확인
+                if booking.status != RoomBookingStatus.CHECKED_IN:
+                    raise RoomBookingError(
+                        f"'{booking.status.value}' 상태의 예약은 회의실 변경할 수 없습니다. "
+                        "체크인 완료(checked_in) 상태만 변경 가능합니다."
+                    )
+
+                # 사용자 확인
+                booking_user = self.user_repo.get_by_id(booking.user_id)
+                if booking_user is None:
+                    raise RoomBookingError("존재하지 않는 사용자입니다.")
+
+                # 같은 회의실 확인
+                if booking.room_id == new_room_id:
+                    raise RoomBookingError("현재 사용 중인 회의실과 동일합니다.")
+
+                # 새 회의실 존재 및 운영 상태 확인
+                new_room = self.room_repo.get_by_id(new_room_id)
+                if new_room is None:
+                    raise RoomBookingError("존재하지 않는 회의실입니다.")
+
+                if new_room.status != ResourceStatus.AVAILABLE:
+                    raise RoomBookingError(
+                        f"회의실이 현재 {new_room.status.value} 상태입니다."
+                    )
+
+                # 새 회의실에서 시간 충돌 확인 (기존 예약 시간 사용, 현재 예약 제외)
+                conflicts = self.booking_repo.get_conflicting(
+                    new_room_id,
+                    booking.start_time,
+                    booking.end_time,
+                    exclude_id=booking_id,
+                )
+                if conflicts:
+                    raise RoomBookingError(
+                        "해당 기간에 새 회의실에 이미 예약이 있습니다. 다른 회의실을 선택해주세요."
+                    )
+
+                # 기존 회의실 정보 기록 (감사 로그용)
+                old_room = self.room_repo.get_by_id(booking.room_id)
+                old_room_name = old_room.name if old_room else booking.room_id
+
+                # 회의실만 변경 (다른 필드는 보존)
+                updated = replace(
+                    booking,
+                    room_id=new_room_id,
+                    updated_at=now_iso(),
+                )
+
+                self.booking_repo.update(updated)
+
+                self.audit_repo.log_action(
+                    actor_id=admin.id,
+                    action="admin_reassign_active_booking",
+                    target_type="room_booking",
+                    target_id=booking_id,
+                    details=f"회의실 변경: {old_room_name} -> {new_room.name}, 사유: {reason}",
+                )
+
+                return updated
+
     def update_room_status(self, admin, room_id, new_status):
         admin = self._get_existing_admin(admin)
         with global_lock(), UnitOfWork():

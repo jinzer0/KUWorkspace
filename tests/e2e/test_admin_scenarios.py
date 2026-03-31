@@ -530,3 +530,421 @@ class TestAdminUserManagement:
         assert status["points"] == 3
         assert status["is_restricted"] is True
         assert status["warning_message"] is not None
+
+
+class TestAdminActiveBookingReassignment:
+    """관리자 진행중 예약 교체 E2E 시나리오"""
+
+    def test_admin_room_reassign_no_eligible_replacement_shows_warning(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        create_test_room,
+        mock_now,
+    ):
+        """교체 가능한 회의실이 없을 때 경고 메시지 출력 및 AdminMenu.run() 경로"""
+        from src.cli.admin_menu import AdminMenu
+
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("no_replacement_user", "pass")
+            admin = auth_service.signup("no_replacement_admin", "pass", role=UserRole.ADMIN)
+
+            only_room = create_test_room(name="유일한 회의실")
+
+            booking = room_service.create_booking(
+                user,
+                only_room.id,
+                fixed_time,
+                fixed_time.replace(hour=18),
+            )
+            room_service.request_check_in(user, booking.id)
+            room_service.check_in(admin, booking.id)
+
+        printed_info = []
+
+        def capture_print_info(msg):
+            printed_info.append(msg)
+
+        input_sequence = ["6", "2", "0"]
+        input_index = [0]
+
+        def mock_input(prompt):
+            if input_index[0] < len(input_sequence):
+                result = input_sequence[input_index[0]]
+                input_index[0] += 1
+                return result
+            return "0"
+
+        def mock_select(items, prompt):
+            if "교체할 예약" in prompt:
+                return booking.id
+            return None
+
+        def mock_confirm(prompt):
+            if "로그아웃" in prompt:
+                return True
+            return False
+
+        monkeypatch.setattr("src.cli.admin_menu.select_from_list", mock_select)
+        monkeypatch.setattr("builtins.input", mock_input)
+        monkeypatch.setattr("src.cli.admin_menu.confirm", mock_confirm)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_subheader", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_info", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_warning", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_success", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_error", lambda x: None)
+        monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+        admin_menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        service_called = []
+        original_reassign = room_service.admin_reassign_active_booking
+
+        def track_reassign(*args, **kwargs):
+            service_called.append(True)
+            return original_reassign(*args, **kwargs)
+
+        monkeypatch.setattr(room_service, "admin_reassign_active_booking", track_reassign)
+
+        admin_menu.run()
+
+        assert "교체 가능한 회의실이 없습니다." in printed_info
+        assert len(service_called) == 0
+
+    def test_admin_equipment_reassign_no_eligible_replacement_shows_warning(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        create_test_equipment,
+        mock_now,
+    ):
+        """교체 가능한 장비가 없을 때 경고 메시지 출력 및 AdminMenu.run() 경로"""
+        from src.cli.admin_menu import AdminMenu
+
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("no_equip_user", "pass")
+            admin = auth_service.signup("no_equip_admin", "pass", role=UserRole.ADMIN)
+
+            only_equipment = create_test_equipment(name="유일한 프로젝터")
+
+            booking = equipment_service.create_booking(
+                user,
+                only_equipment.id,
+                fixed_time,
+                fixed_time + timedelta(days=3),
+            )
+            equipment_service.request_pickup(user, booking.id)
+            equipment_service.checkout(admin, booking.id)
+
+        printed_info = []
+
+        def capture_print_info(msg):
+            printed_info.append(msg)
+
+        input_sequence = ["13", "2", "0"]
+        input_index = [0]
+
+        def mock_input(prompt):
+            if input_index[0] < len(input_sequence):
+                result = input_sequence[input_index[0]]
+                input_index[0] += 1
+                return result
+            return "0"
+
+        def mock_select(items, prompt):
+            if "교체할 예약" in prompt:
+                return booking.id
+            return None
+
+        def mock_confirm(prompt):
+            if "로그아웃" in prompt:
+                return True
+            return False
+
+        monkeypatch.setattr("src.cli.admin_menu.select_from_list", mock_select)
+        monkeypatch.setattr("builtins.input", mock_input)
+        monkeypatch.setattr("src.cli.admin_menu.confirm", mock_confirm)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_subheader", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_info", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_warning", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_success", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_error", lambda x: None)
+        monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+        admin_menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        service_called = []
+        original_reassign = equipment_service.admin_reassign_active_booking
+
+        def track_reassign(*args, **kwargs):
+            service_called.append(True)
+            return original_reassign(*args, **kwargs)
+
+        monkeypatch.setattr(equipment_service, "admin_reassign_active_booking", track_reassign)
+
+        admin_menu.run()
+
+        assert "교체 가능한 장비가 없습니다." in printed_info
+        assert len(service_called) == 0
+
+    def test_admin_room_reassign_happy_path_changes_room_and_preserves_fields(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        create_test_room,
+        mock_now,
+    ):
+        """Happy path: admin reassigns active room booking through menu, verifies room changed and fields preserved"""
+        from src.cli.admin_menu import AdminMenu
+
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("room_happy_user", "pass")
+            admin = auth_service.signup("room_happy_admin", "pass", role=UserRole.ADMIN)
+
+            room_a = create_test_room(name="회의실 A")
+            room_b = create_test_room(name="회의실 B")
+
+            booking = room_service.create_booking(
+                user,
+                room_a.id,
+                fixed_time,
+                fixed_time.replace(hour=18),
+            )
+            room_service.request_check_in(user, booking.id)
+            room_service.check_in(admin, booking.id)
+
+            original_booking = room_service.booking_repo.get_by_id(booking.id)
+            original_user_id = original_booking.user_id
+            original_start_time = original_booking.start_time
+            original_end_time = original_booking.end_time
+            original_status = original_booking.status
+
+        printed_info = []
+
+        def capture_print_info(msg):
+            printed_info.append(msg)
+
+        input_sequence = ["6", "2", "1", "고장 수리 완료"]
+        input_index = [0]
+
+        def mock_input(prompt):
+            if input_index[0] < len(input_sequence):
+                result = input_sequence[input_index[0]]
+                input_index[0] += 1
+                return result
+            return "0"
+
+        call_count = [0]
+
+        def mock_select(items, prompt):
+            call_count[0] += 1
+            if "교체할 예약" in prompt:
+                return booking.id
+            elif "새 회의실" in prompt or "회의실 선택" in prompt:
+                return room_b.id
+            return None
+
+        def mock_confirm(prompt):
+            if "로그아웃" in prompt:
+                return True
+            elif "교체하시겠습니까" in prompt:
+                return True
+            return False
+
+        monkeypatch.setattr("src.cli.admin_menu.select_from_list", mock_select)
+        monkeypatch.setattr("builtins.input", mock_input)
+        monkeypatch.setattr("src.cli.admin_menu.confirm", mock_confirm)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_subheader", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_info", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_warning", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_success", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_error", lambda x: None)
+        monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+        admin_menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        service_called = []
+        original_reassign = room_service.admin_reassign_active_booking
+
+        def track_reassign(*args, **kwargs):
+            service_called.append(True)
+            return original_reassign(*args, **kwargs)
+
+        monkeypatch.setattr(room_service, "admin_reassign_active_booking", track_reassign)
+
+        admin_menu.run()
+
+        assert len(service_called) == 1
+        assert any("교체되었습니다" in msg for msg in printed_info)
+
+        updated_booking = room_service.booking_repo.get_by_id(booking.id)
+        assert updated_booking.room_id == room_b.id
+        assert updated_booking.user_id == original_user_id
+        assert updated_booking.start_time == original_start_time
+        assert updated_booking.end_time == original_end_time
+        assert updated_booking.status == original_status
+
+    def test_admin_equipment_reassign_happy_path_changes_equipment_and_preserves_fields(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        message_service,
+        create_test_equipment,
+        mock_now,
+    ):
+        """Happy path: admin reassigns active equipment booking through menu, verifies equipment changed and fields preserved"""
+        from src.cli.admin_menu import AdminMenu
+
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = auth_service.signup("equip_happy_user", "pass")
+            admin = auth_service.signup("equip_happy_admin", "pass", role=UserRole.ADMIN)
+
+            equipment_a = create_test_equipment(name="프로젝터 1")
+            equipment_b = create_test_equipment(name="프로젝터 2")
+
+            booking = equipment_service.create_booking(
+                user,
+                equipment_a.id,
+                fixed_time,
+                fixed_time + timedelta(days=3),
+            )
+            equipment_service.request_pickup(user, booking.id)
+            equipment_service.checkout(admin, booking.id)
+
+            original_booking = equipment_service.booking_repo.get_by_id(booking.id)
+            original_user_id = original_booking.user_id
+            original_start_time = original_booking.start_time
+            original_end_time = original_booking.end_time
+            original_status = original_booking.status
+
+        printed_info = []
+
+        def capture_print_info(msg):
+            printed_info.append(msg)
+
+        input_sequence = ["13", "2", "1", "기계 오류로 교체"]
+        input_index = [0]
+
+        def mock_input(prompt):
+            if input_index[0] < len(input_sequence):
+                result = input_sequence[input_index[0]]
+                input_index[0] += 1
+                return result
+            return "0"
+
+        call_count = [0]
+
+        def mock_select(items, prompt):
+            call_count[0] += 1
+            if "교체할 예약" in prompt:
+                return booking.id
+            elif "새 장비" in prompt or "장비 선택" in prompt:
+                return equipment_b.id
+            return None
+
+        def mock_confirm(prompt):
+            if "로그아웃" in prompt:
+                return True
+            elif "교체하시겠습니까" in prompt:
+                return True
+            return False
+
+        monkeypatch.setattr("src.cli.admin_menu.select_from_list", mock_select)
+        monkeypatch.setattr("builtins.input", mock_input)
+        monkeypatch.setattr("src.cli.admin_menu.confirm", mock_confirm)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_subheader", lambda x: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_info", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_warning", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_success", capture_print_info)
+        monkeypatch.setattr("src.cli.admin_menu.print_error", lambda x: None)
+        monkeypatch.setattr("builtins.print", lambda *args, **kwargs: None)
+
+        admin_menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+            message_service=message_service,
+        )
+
+        service_called = []
+        original_reassign = equipment_service.admin_reassign_active_booking
+
+        def track_reassign(*args, **kwargs):
+            service_called.append(True)
+            return original_reassign(*args, **kwargs)
+
+        monkeypatch.setattr(equipment_service, "admin_reassign_active_booking", track_reassign)
+
+        admin_menu.run()
+
+        assert len(service_called) == 1
+        assert any("교체되었습니다" in msg for msg in printed_info)
+
+        updated_booking = equipment_service.booking_repo.get_by_id(booking.id)
+        assert updated_booking.equipment_id == equipment_b.id
+        assert updated_booking.user_id == original_user_id
+        assert updated_booking.start_time == original_start_time
+        assert updated_booking.end_time == original_end_time
+        assert updated_booking.status == original_status
