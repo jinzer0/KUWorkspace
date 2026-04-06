@@ -13,3 +13,5 @@ __pycache__/
 .venv/
 venv/
 env/
+docs/문의및신고.md
+final_plan.md

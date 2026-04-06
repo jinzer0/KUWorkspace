@@ -6,3 +6,5 @@
 {"user_id": "a344d24e-c97b-43de-89ac-a43a94bd9337", "type": "report", "content": "부정한 예약 신고합니다", "id": "c79d4cbe-d070-4c42-b062-c2bc88917378", "created_at": "2099-01-06T09:00:00"}
 {"user_id": "014d75b4-49b6-437d-b2a2-9c8e13e56218", "type": "inquiry", "content": "장비 빌리려면 어떻게 해야하나요?", "id": "4d28e3a2-0d31-42de-92cc-e588e5f49731", "created_at": "2099-01-05T18:00:00"}
 {"user_id": "014d75b4-49b6-437d-b2a2-9c8e13e56218", "type": "inquiry", "content": "장비 대여는 하나만 가능한가요", "id": "664414ae-e635-4653-9b31-615c45503360", "created_at": "2099-01-05T18:00:00"}
+{"user_id": "014d75b4-49b6-437d-b2a2-9c8e13e56218", "type": "inquiry", "content": "fsadfas", "id": "745d53c6-2ea8-4418-aab2-15db2d42fa15", "created_at": "2099-01-08T09:00:00"}
+{"user_id": "014d75b4-49b6-437d-b2a2-9c8e13e56218", "type": "report", "content": "etstestst", "id": "cf7b3212-146c-4a08-88cf-39e91cc919e9", "created_at": "2099-01-08T09:00:00"}
