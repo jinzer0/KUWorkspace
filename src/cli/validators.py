@@ -9,7 +9,6 @@ from src.config import MAX_BOOKING_DAYS, TIME_SLOT_MINUTES
 from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
     validate_username as validate_auth_username,
-    validate_password as validate_auth_password,
 )
 from src.runtime_clock import get_current_time
 
@@ -160,12 +159,256 @@ def validate_username(username):
 
 def validate_password(password):
     """
-    비밀번호 검증
-
+    비밀번호 검증 (final_plan.md 4.1.2)
+    
+    문법 규칙:
+    - 길이: 4 이상 50 이하
+    - 공백 미포함 (plan 4.1.2 명시)
+    
     Returns:
         (valid, error_message)
     """
-    return validate_auth_password(password)
+    if not isinstance(password, str):
+        return False, "비밀번호를 입력해주세요."
+    
+    # 공백 포함 확인 (plan 4.1.2: 공백 미포함, leading/trailing 포함)
+    if ' ' in password or '\t' in password or '\n' in password:
+        return False, "비밀번호에 공백을 포함할 수 없습니다."
+    
+    password_str = password.strip()
+    
+    if not password_str:
+        return False, "비밀번호를 입력해주세요."
+    
+    if len(password_str) < 4:
+        return False, "비밀번호는 4자 이상이어야 합니다."
+    
+    if len(password_str) > 50:
+        return False, "비밀번호는 50자 이하여야 합니다."
+    
+    return True, ""
+
+
+def validate_date_plan(date_str):
+    """
+    날짜 검증 (final_plan.md 4.2.1)
+    
+    문법 규칙:
+    - 형식: YYYY-MM-DD, YYYY.MM.DD, YYYY MM DD
+    - 연도: 2026~2100 사이 정수
+    - 월: 1~12 사이 정수
+    - 일: 1~31 사이 정수
+    - 구분자 혼합 불가 (e.g., "2026-04.03" 거절)
+    - 월, 일은 0 패딩 필수 (e.g., "2026.4.3" → "2026.04.03")
+    - 문자열 선후 공백 미포함
+    
+    의미 규칙:
+    - 실제 해당 월에 존재하는 날짜 (e.g., 2월 31일 거절)
+    
+    Returns:
+        (valid, datetime_obj, error_message)
+    """
+    if not isinstance(date_str, str):
+        return False, None, "날짜는 텍스트여야 합니다."
+    
+    date_str = date_str.strip()
+    
+    if not date_str:
+        return False, None, "날짜를 입력해주세요."
+    
+    # 구분자 선택 및 일관성 확인
+    separator = None
+    if '-' in date_str:
+        separator = '-'
+    elif '.' in date_str:
+        separator = '.'
+    elif ' ' in date_str:
+        separator = ' '
+    else:
+        return False, None, "날짜 형식이 올바르지 않습니다. (예: 2026-04-03, 2026.04.03, 2026 04 03)"
+    
+    # 구분자 혼합 확인
+    other_seps = [s for s in ['-', '.', ' '] if s != separator]
+    for sep in other_seps:
+        if sep in date_str:
+            return False, None, "날짜에 여러 구분자를 혼합할 수 없습니다."
+    
+    # 분할
+    parts = date_str.split(separator)
+    if len(parts) != 3:
+        return False, None, "날짜 형식이 올바르지 않습니다. (예: 2026-04-03)"
+    
+    try:
+        year_str, month_str, day_str = parts
+        
+        # 0 패딩 확인 (월, 일은 2자리 필수)
+        if len(month_str) != 2 or len(day_str) != 2:
+            return False, None, "월과 일은 0을 포함한 2자리여야 합니다. (예: 2026-04-03)"
+        
+        year = int(year_str)
+        month = int(month_str)
+        day = int(day_str)
+        
+        # 범위 확인
+        if year < 2026 or year > 2100:
+            return False, None, "연도는 2026~2100 사이여야 합니다."
+        
+        if month < 1 or month > 12:
+            return False, None, "월은 1~12 사이여야 합니다."
+        
+        if day < 1 or day > 31:
+            return False, None, "일은 1~31 사이여야 합니다."
+        
+        # 실제 유효한 날짜 확인 (leap year 포함)
+        date_obj = datetime(year, month, day).date()
+        return True, date_obj, ""
+    
+    except ValueError as e:
+        if "month must be in" in str(e):
+            return False, None, "유효한 월을 입력해주세요. (1~12)"
+        elif "day is out of range" in str(e):
+            return False, None, "유효한 날짜를 입력해주세요."
+        else:
+            return False, None, "유효하지 않은 날짜입니다."
+    except (TypeError, IndexError):
+        return False, None, "날짜 형식이 올바르지 않습니다."
+
+
+def validate_time_plan(time_str):
+    """
+    시간 검증 (final_plan.md 4.2.2)
+    
+    문법 규칙:
+    - 형식: HH:MM, HHMM
+    - 시: 09 또는 18
+    - 분: 00
+    - 구분자 혼합 불가 (e.g., "09:00MM" 거절)
+    - 공백 미포함
+    
+    의미 규칙:
+    - 실존하는 시각 (09:00 또는 18:00만 예약 처리에 영향)
+    
+    Returns:
+        (valid, time_obj, error_message)
+    """
+    if not isinstance(time_str, str):
+        return False, None, "시간은 텍스트여야 합니다."
+    
+    time_str = time_str.strip()
+    
+    if not time_str:
+        return False, None, "시간을 입력해주세요."
+    
+    # 공백 확인
+    if ' ' in time_str or '\t' in time_str or '\n' in time_str:
+        return False, None, "시간에 공백을 포함할 수 없습니다."
+    
+    # 형식 선택: HH:MM 또는 HHMM
+    if ':' in time_str:
+        # HH:MM 형식
+        parts = time_str.split(':')
+        if len(parts) != 2:
+            return False, None, "시간 형식이 올바르지 않습니다. (예: 09:00 또는 1800)"
+        hour_str, minute_str = parts
+    else:
+        # HHMM 형식
+        if len(time_str) != 4 or not time_str.isdigit():
+            return False, None, "시간 형식이 올바르지 않습니다. (예: 09:00 또는 1800)"
+        hour_str = time_str[:2]
+        minute_str = time_str[2:]
+    
+    try:
+        hour = int(hour_str)
+        minute = int(minute_str)
+        
+        # 유효한 시각 확인
+        if hour not in (9, 18):
+            return False, None, "시간은 09 또는 18만 가능합니다."
+        
+        if minute != 0:
+            return False, None, "분은 00만 가능합니다."
+        
+        time_obj = datetime(2000, 1, 1, hour, minute, 0).time()
+        return True, time_obj, ""
+    
+    except ValueError:
+        return False, None, "유효한 시간을 입력해주세요. (09:00 또는 18:00)"
+
+
+def validate_equipment_serial(serial_str):
+    """
+    장비 시리얼 번호 검증 (final_plan.md 4.3.2)
+    
+    문법 규칙:
+    - 형식: [장비 영문 대문자 약어]-[고유번호]
+    - 유효한 약어: NB (노트북), PJ (프로젝터), WC (웹캠), CB (케이블)
+    - 고유번호: 001, 002, 003 (형식: 3자리 0 패딩)
+    - 예: PJ-001, NB-002, CB-003, WC-001
+    
+    Returns:
+        (valid, error_message)
+    """
+    if not isinstance(serial_str, str):
+        return False, "시리얼 번호는 텍스트여야 합니다."
+    
+    serial_str = serial_str.strip()
+    
+    if not serial_str:
+        return False, "시리얼 번호를 입력해주세요."
+    
+    # 형식 확인: [TYPE]-[NUMBER]
+    if '-' not in serial_str:
+        return False, "시리얼 번호 형식이 올바르지 않습니다. (예: PJ-001)"
+    
+    parts = serial_str.split('-')
+    if len(parts) != 2:
+        return False, "시리얼 번호 형식이 올바르지 않습니다. (예: PJ-001)"
+    
+    type_part, number_part = parts
+    
+    # 장비 유형 확인
+    valid_types = {'NB', 'PJ', 'WC', 'CB'}
+    if type_part not in valid_types:
+        return False, f"유효한 장비 종류는 {', '.join(sorted(valid_types))}입니다."
+    
+    # 고유번호 확인
+    if not number_part.isdigit() or len(number_part) != 3:
+        return False, "고유번호는 3자리 숫자여야 합니다. (예: 001)"
+    
+    number = int(number_part)
+    if number < 1 or number > 3:
+        return False, f"각 장비는 3개씩만 존재합니다. (001~003 범위)"
+    
+    return True, ""
+
+
+def validate_reason(reason_str):
+    """
+    사유(메모) 검증 (final_plan.md 4.4)
+    
+    문법 규칙:
+    - 빈 문자열 "" 가능
+    - 줄바꿈 문자 미포함
+    - 길이: 0~20자
+    
+    Returns:
+        (valid, error_message)
+    """
+    if not isinstance(reason_str, str):
+        return False, "사유는 텍스트여야 합니다."
+    
+    # 앞뒤 공백 제거 (입력 후 strip 일반적 관례)
+    reason_str = reason_str.strip()
+    
+    # 줄바꿈 문자 확인
+    if '\n' in reason_str or '\r' in reason_str:
+        return False, "사유에 줄바꿈을 포함할 수 없습니다."
+    
+    # 길이 확인
+    if len(reason_str) > 20:
+        return False, "사유는 20자 이하여야 합니다."
+    
+    return True, ""
 
 
 def get_date_input(prompt="날짜 (YYYY-MM-DD)"):
