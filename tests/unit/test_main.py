@@ -7,32 +7,54 @@ from src.domain.models import UserRole
 
 
 def test_prompt_initial_clock_retries_on_invalid_date(monkeypatch, capsys):
-    inputs = iter(["2024/06/15", "09:00", "2024-06-15", "09:00"])
+    inputs = iter(["2026/06/15", "09:00", "2026-06-15", "09:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
 
-    assert clock.now() == datetime(2024, 6, 15, 9, 0, 0)
+    assert clock.now() == datetime(2026, 6, 15, 9, 0, 0)
     assert "날짜 형식이 올바르지 않습니다." in capsys.readouterr().out
 
 
-def test_prompt_initial_clock_retries_on_invalid_slot(monkeypatch, capsys):
-    inputs = iter(["2024-06-15", "10:00", "2024-06-15", "18:00"])
+def test_prompt_initial_clock_accepts_dot_separated_date(monkeypatch):
+    inputs = iter(["2026.06.15", "09:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
 
-    assert clock.now() == datetime(2024, 6, 15, 18, 0, 0)
+    assert clock.now() == datetime(2026, 6, 15, 9, 0, 0)
+
+
+def test_prompt_initial_clock_accepts_space_separated_date(monkeypatch):
+    inputs = iter(["2026 06 15", "18:00"])
+
+    monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    clock = prompt_initial_clock()
+
+    assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
+
+
+def test_prompt_initial_clock_retries_on_invalid_slot(monkeypatch, capsys):
+    inputs = iter(["2026-06-15", "10:00", "2026-06-15", "18:00"])
+
+    monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    clock = prompt_initial_clock()
+
+    assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
     assert "시작 슬롯은 09:00 또는 18:00만 가능합니다." in capsys.readouterr().out
 
 
 def test_prompt_initial_clock_retries_when_earlier_than_latest_data(monkeypatch, capsys):
-    latest = datetime(2024, 6, 15, 18, 0, 0)
-    inputs = iter(["2024-06-15", "09:00", "2024-06-15", "18:00"])
+    latest = datetime(2026, 6, 15, 18, 0, 0)
+    inputs = iter(["2026-06-15", "09:00", "2026-06-15", "18:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: latest)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))

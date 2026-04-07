@@ -15,6 +15,8 @@ PLAN2.md 쓰기 절차:
 import os
 import tempfile
 
+from src.storage.jsonl_handler import encode_record
+
 
 def atomic_write(file_path, content):
     """
@@ -61,7 +63,7 @@ def atomic_write_jsonl(file_path, records, to_json):
         records: 저장할 객체 리스트
         to_json: 객체를 JSON 문자열로 변환하는 함수
     """
-    lines = [to_json(record) for record in records]
+    lines = [encode_record(to_json(record)) for record in records]
     content = "\n".join(lines) + "\n" if lines else ""
     atomic_write(file_path, content)
 
@@ -197,14 +199,14 @@ def _rollback_replaced_files(replaced_files, backup_files, staged_files):
 
 def staged_atomic_write_jsonl_multi(file_records):
     """
-    여러 JSONL 파일을 단계적으로 원자적 쓰기
+    여러 파이프 구분 텍스트 파일을 단계적으로 원자적 쓰기
 
     Args:
         file_records: {파일경로: (레코드리스트, to_json함수)} 딕셔너리
     """
     file_contents = {}
     for file_path, (records, to_json) in file_records.items():
-        lines = [to_json(record) for record in records]
+        lines = [encode_record(to_json(record)) for record in records]
         content = "\n".join(lines) + "\n" if lines else ""
         file_contents[file_path] = content
 

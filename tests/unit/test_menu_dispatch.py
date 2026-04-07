@@ -23,7 +23,7 @@ from src.domain.models import UserRole
         ("13", "_request_equipment_pickup"),
         ("14", "_request_equipment_return"),
         ("15", "_show_my_status"),
-        ("16", "_submit_message"),
+        ("16", "_open_clock"),
     ],
 )
 def test_user_menu_dispatches_actions(
@@ -33,7 +33,6 @@ def test_user_menu_dispatches_actions(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
     choice,
     method_name,
@@ -46,7 +45,6 @@ def test_user_menu_dispatches_actions(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     calls = []
     inputs = iter([choice, "0"])
@@ -58,7 +56,13 @@ def test_user_menu_dispatches_actions(
     monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
     monkeypatch.setattr("src.cli.user_menu.confirm", lambda _msg: True)
     monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
-    monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
+    if method_name == "_open_clock":
+        monkeypatch.setattr(
+            "src.cli.user_menu.ClockMenu",
+            lambda *_args, **_kwargs: type("FakeClock", (), {"run": lambda _self: calls.append(method_name)})(),
+        )
+    else:
+        monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
 
     assert menu.run() is True
     assert calls == [method_name]
@@ -71,7 +75,6 @@ def test_user_menu_opens_clock_with_user_actor(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
 ):
     user = create_test_user()
@@ -82,10 +85,9 @@ def test_user_menu_opens_clock_with_user_actor(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     created = {}
-    inputs = iter(["17", "0"])
+    inputs = iter(["16", "0"])
 
     class FakeClockMenu:
         def __init__(self, policy_service, actor_id="system", allow_advance=True):
@@ -134,11 +136,10 @@ def test_user_menu_opens_clock_with_user_actor(
         ("15", "_show_users"),
         ("16", "_show_user_detail"),
         ("17", "_apply_damage_penalty"),
-        ("18", "_mark_room_no_show"),
-        ("19", "_mark_equipment_no_show"),
-        ("20", "_force_room_late_checkout"),
-        ("21", "_force_equipment_late_return"),
-        ("22", "_show_messages"),
+        ("18", "_force_late_cancel_penalty"),
+        ("19", "_force_room_late_checkout"),
+        ("20", "_force_equipment_late_return"),
+        ("21", "_open_clock"),
     ],
 )
 def test_admin_menu_dispatches_actions(
@@ -148,7 +149,6 @@ def test_admin_menu_dispatches_actions(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
     choice,
     method_name,
@@ -161,7 +161,6 @@ def test_admin_menu_dispatches_actions(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     calls = []
     inputs = iter([choice, "0"])
@@ -172,7 +171,13 @@ def test_admin_menu_dispatches_actions(
     monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
     monkeypatch.setattr("src.cli.admin_menu.confirm", lambda _msg: True)
     monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
-    monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
+    if method_name == "_open_clock":
+        monkeypatch.setattr(
+            "src.cli.admin_menu.ClockMenu",
+            lambda *_args, **_kwargs: type("FakeClock", (), {"run": lambda _self: calls.append(method_name)})(),
+        )
+    else:
+        monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
 
     assert menu.run() is True
     assert calls == [method_name]
@@ -185,7 +190,6 @@ def test_admin_menu_room_modify_submenu_routes_to_time_change(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
 ):
     """Admin menu choice 6 (room modify) with submenu choice 1 routes to time change"""
@@ -197,7 +201,6 @@ def test_admin_menu_room_modify_submenu_routes_to_time_change(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     calls = []
     inputs = iter(["6", "1", "0"])
@@ -223,7 +226,6 @@ def test_admin_menu_room_modify_submenu_cancel_returns_cleanly(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
 ):
     """Admin menu choice 6 (room modify) with submenu choice 0 (cancel) returns without service calls"""
@@ -235,7 +237,6 @@ def test_admin_menu_room_modify_submenu_cancel_returns_cleanly(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     calls = []
     inputs = iter(["6", "0", "0"])
@@ -260,7 +261,6 @@ def test_admin_menu_equipment_modify_submenu_routes_to_time_change(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
 ):
     """Admin menu choice 13 (equipment modify) with submenu choice 1 routes to time change"""
@@ -272,7 +272,6 @@ def test_admin_menu_equipment_modify_submenu_routes_to_time_change(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     calls = []
     inputs = iter(["13", "1", "0"])
@@ -298,7 +297,6 @@ def test_admin_menu_equipment_modify_submenu_cancel_returns_cleanly(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
 ):
     """Admin menu choice 13 (equipment modify) with submenu choice 0 (cancel) returns without service calls"""
@@ -310,7 +308,6 @@ def test_admin_menu_equipment_modify_submenu_cancel_returns_cleanly(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     calls = []
     inputs = iter(["13", "0", "0"])
@@ -335,7 +332,6 @@ def test_admin_menu_opens_clock_with_admin_actor(
     equipment_service,
     penalty_service,
     policy_service,
-    message_service,
     create_test_user,
 ):
     admin = create_test_user(role=UserRole.ADMIN)
@@ -346,10 +342,9 @@ def test_admin_menu_opens_clock_with_admin_actor(
         equipment_service=equipment_service,
         penalty_service=penalty_service,
         policy_service=policy_service,
-        message_service=message_service,
     )
     created = {}
-    inputs = iter(["23", "0"])
+    inputs = iter(["21", "0"])
 
     class FakeClockMenu:
         def __init__(self, policy_service, actor_id="system", allow_advance=True):

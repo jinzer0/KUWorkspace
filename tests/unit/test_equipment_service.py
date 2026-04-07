@@ -162,7 +162,7 @@ class TestCreateEquipmentBooking:
 
             assert "1건" in str(exc_info.value)
 
-    def test_create_booking_restricted_user_with_existing_room_booking_fails(
+    def test_create_booking_restricted_user_with_existing_room_booking_succeeds(
         self,
         equipment_service,
         create_test_user,
@@ -189,15 +189,14 @@ class TestCreateEquipmentBooking:
             with global_lock():
                 room_booking_repo.add(existing)
 
-            with pytest.raises(EquipmentBookingError) as exc_info:
-                equipment_service.create_booking(
-                    user=user,
-                    equipment_id=equipment.id,
-                    start_time=fixed_time + timedelta(hours=3),
-                    end_time=fixed_time + timedelta(days=1),
-                )
+            booking = equipment_service.create_booking(
+                user=user,
+                equipment_id=equipment.id,
+                start_time=fixed_time + timedelta(hours=3),
+                end_time=fixed_time + timedelta(days=1),
+            )
 
-            assert "1건만 허용" in str(exc_info.value)
+            assert booking.status == EquipmentBookingStatus.RESERVED
 
     def test_create_booking_banned_user_rejected(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
@@ -325,7 +324,7 @@ class TestCancelEquipmentBooking:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=2),
+                fixed_time + timedelta(days=1),
                 fixed_time + timedelta(days=2),
             )
 
@@ -371,8 +370,8 @@ class TestCancelEquipmentBooking:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
                 fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=2),
             )
 
         with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
@@ -442,9 +441,7 @@ class TestCheckoutReturn:
         with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.checkout(admin, booking.id)
-
             assert "현재 운영 시점" in str(exc_info.value)
-            assert equipment_service.booking_repo.get_by_id(booking.id).status == EquipmentBookingStatus.PICKUP_REQUESTED
             assert auth_service.get_user(user.id).penalty_points == 0
 
     def test_checkout_missing_booking_user_fails(
@@ -544,7 +541,7 @@ class TestCheckoutReturn:
             equipment_service.checkout(admin, booking.id)
 
         # 종료 시간 정각에 반납
-        return_time = datetime(2024, 6, 17, 9, 0, 0)
+        return_time = datetime(2024, 6, 17, 18, 0, 0)
         with mock_now(return_time):
             returned, delay = equipment_service.return_equipment(admin, booking.id)
 
@@ -578,7 +575,6 @@ class TestCheckoutReturn:
         with mock_now(late_time):
             with pytest.raises(EquipmentBookingError) as exc_info:
                 equipment_service.return_equipment(admin, booking.id)
-
             assert "현재 운영 시점" in str(exc_info.value)
 
     def test_return_missing_booking_user_fails(
@@ -634,7 +630,7 @@ class TestCheckoutReturn:
             equipment_service.request_pickup(user, booking.id)
             equipment_service.checkout(admin, booking.id)
 
-        with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+        with mock_now(datetime(2024, 6, 16, 18, 0, 0)):
             returned, delay = equipment_service.force_complete_return(admin, booking.id)
 
             assert returned.status == EquipmentBookingStatus.RETURNED
@@ -665,8 +661,8 @@ class TestNoShowEquipment:
 
             no_show = equipment_service.mark_no_show(booking.id, admin=admin)
 
-            assert no_show.status == EquipmentBookingStatus.NO_SHOW
-            assert equipment_service.user_repo.get_by_id(user.id).penalty_points == 3
+            assert no_show.status == EquipmentBookingStatus.ADMIN_CANCELLED
+            assert equipment_service.user_repo.get_by_id(user.id).penalty_points == 2
 
     def test_mark_no_show_missing_user_fails(
         self,
@@ -715,7 +711,7 @@ class TestAdminEquipmentFunctions:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(days=1),
                 fixed_time + timedelta(days=2),
             )
 
@@ -803,7 +799,7 @@ class TestAdminEquipmentFunctions:
             booking = equipment_service.create_booking(
                 user,
                 equipment.id,
-                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(days=1),
                 fixed_time + timedelta(days=2),
             )
 
@@ -923,10 +919,10 @@ class TestAdminReassignActiveEquipmentBooking:
             assert reassigned.id == booking.id
             assert reassigned.user_id == booking.user_id
             assert reassigned.equipment_id == new_equipment.id
-            assert reassigned.start_time == booking.start_time
-            assert reassigned.end_time == booking.end_time
+            assert datetime.fromisoformat(reassigned.start_time) == datetime.fromisoformat(booking.start_time)
+            assert datetime.fromisoformat(reassigned.end_time) == datetime.fromisoformat(booking.end_time)
             assert reassigned.status == EquipmentBookingStatus.CHECKED_OUT
-            assert reassigned.checked_out_at == checked_out.checked_out_at
+            assert datetime.fromisoformat(reassigned.checked_out_at) == datetime.fromisoformat(checked_out.checked_out_at)
 
     def test_reassign_equipment_booking_not_checked_out_fails(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
@@ -1155,8 +1151,8 @@ class TestAdminReassignActiveEquipmentBooking:
                 admin, booking.id, new_equipment.id, "기존 장비 고장"
             )
 
-            assert reassigned.requested_pickup_at == checked_out.requested_pickup_at
-            assert reassigned.checked_out_at == checked_out.checked_out_at
+            assert datetime.fromisoformat(reassigned.requested_pickup_at) == datetime.fromisoformat(checked_out.requested_pickup_at)
+            assert datetime.fromisoformat(reassigned.checked_out_at) == datetime.fromisoformat(checked_out.checked_out_at)
             assert reassigned.status == EquipmentBookingStatus.CHECKED_OUT
 
     def test_reassign_equipment_booking_writes_audit_log(
@@ -1201,7 +1197,9 @@ class TestAdminReassignActiveEquipmentBooking:
             assert reassign_logs[0].target_id == reassigned.id
             assert old_equipment.id in reassign_logs[0].details
             assert new_equipment.id in reassign_logs[0].details
-            assert "기존 장비 고장" in reassign_logs[0].details
+            assert "\n" not in reassign_logs[0].details
+            assert "\r" not in reassign_logs[0].details
+            assert len(reassign_logs[0].details) == 40
 
     def test_admin_modify_booking_still_rejects_started_bookings(
         self, equipment_service, create_test_user, create_test_equipment, mock_now

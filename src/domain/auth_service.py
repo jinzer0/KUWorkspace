@@ -2,7 +2,7 @@
 인증 서비스 - 회원가입, 로그인 처리
 """
 
-from src.domain.models import User, UserRole, generate_id
+from src.domain.models import User, UserRole
 from src.domain.auth_rules import (
     normalize_credential,
     validate_username,
@@ -55,7 +55,7 @@ class AuthService:
 
             # 사용자 생성
             user = User(
-                id=generate_id(), username=username, password=password, role=role
+                id=username, username=username, password=password, role=role
             )
 
             self.user_repo.add(user)

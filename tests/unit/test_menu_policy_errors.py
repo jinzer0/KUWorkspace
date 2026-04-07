@@ -62,7 +62,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -73,7 +72,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(
@@ -98,7 +96,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -109,7 +106,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(menu.auth_service, "is_admin", lambda user: False)
@@ -130,7 +126,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -142,7 +137,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_all_users_or_abort", lambda: [target])
@@ -172,7 +166,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
@@ -184,7 +177,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_all_users_or_abort", lambda: [target])
@@ -212,7 +204,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
         room_booking_factory,
     ):
@@ -225,7 +216,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_room_bookings_or_abort", lambda: [booking])
@@ -247,7 +237,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
         equipment_booking_factory,
     ):
@@ -262,7 +251,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_equipment_bookings_or_abort", lambda: [booking])
@@ -285,7 +273,6 @@ class TestAdminMenuPolicyChecks:
         equipment_service,
         penalty_service,
         policy_service,
-        message_service,
         create_test_user,
         room_booking_factory,
         user_factory,
@@ -301,7 +288,6 @@ class TestAdminMenuPolicyChecks:
             equipment_service=equipment_service,
             penalty_service=penalty_service,
             policy_service=policy_service,
-            message_service=message_service,
         )
 
         monkeypatch.setattr(menu, "_get_room_bookings_or_abort", lambda: [booking])

@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 import uuid
 import json
 
@@ -38,7 +38,6 @@ class RoomBookingStatus(str, Enum):
     CHECKOUT_REQUESTED = "checkout_requested"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
-    NO_SHOW = "no_show"
     ADMIN_CANCELLED = "admin_cancelled"
 
 
@@ -51,26 +50,17 @@ class EquipmentBookingStatus(str, Enum):
     RETURN_REQUESTED = "return_requested"
     RETURNED = "returned"
     CANCELLED = "cancelled"
-    NO_SHOW = "no_show"
     ADMIN_CANCELLED = "admin_cancelled"
 
 
 class PenaltyReason(str, Enum):
     """패널티 사유"""
 
-    NO_SHOW = "no_show"
     LATE_CANCEL = "late_cancel"
     LATE_RETURN = "late_return"
     DAMAGE = "damage"
     CONTAMINATION = "contamination"
     OTHER = "other"
-
-
-class MessageType(str, Enum):
-    """사용자 메시지 유형"""
-
-    INQUIRY = "inquiry"
-    REPORT = "report"
 
 
 # ===== Helper Functions =====
@@ -91,6 +81,22 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     if dt_str is None:
         return None
     return datetime.fromisoformat(dt_str)
+
+
+def normalize_datetime_string(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt.replace(second=0, microsecond=0).isoformat(timespec="minutes")
+    except ValueError:
+        return value
+
+
+def normalize_persisted_text(value: Optional[str], max_length: int = 40) -> str:
+    if value is None:
+        return ""
+    return value.replace("\r", " ").replace("\n", " ")[:max_length]
 
 
 # ===== Dataclasses =====
@@ -132,6 +138,40 @@ class User:
         """JSON 문자열에서 생성"""
         return cls.from_dict(json.loads(json_str))
 
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.username,
+            self.password,
+            self.role.value,
+            str(self.penalty_points),
+            str(self.normal_use_streak),
+            normalize_datetime_string(self.restriction_until),
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "User":
+        if len(record) == 8:
+            user_id = record[0] or ""
+            username, password, role, points, streak, restriction_until, created_at, updated_at = record
+            if not user_id:
+                user_id = username or ""
+        else:
+            user_id, username, password, role, points, streak, restriction_until, created_at, updated_at = record
+        user_key = username or user_id or ""
+        return cls(
+            id=user_id or user_key,
+            username=user_key,
+            password=password or "",
+            role=UserRole(role),
+            penalty_points=int(points or "0"),
+            normal_use_streak=int(streak or "0"),
+            restriction_until=normalize_datetime_string(restriction_until),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+        )
+
 
 @dataclass
 class Room:
@@ -164,6 +204,38 @@ class Room:
     def from_json(cls, json_str: str) -> "Room":
         return cls.from_dict(json.loads(json_str))
 
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.name,
+            str(self.capacity),
+            self.location,
+            self.status.value,
+            self.description,
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "Room":
+        if len(record) == 7:
+            room_id = record[0] or ""
+            name, capacity, location, status, description, created_at, updated_at = record
+            if not room_id:
+                room_id = name or ""
+        else:
+            room_id, name, capacity, location, status, description, created_at, updated_at = record
+        room_key = name or room_id or ""
+        return cls(
+            id=room_id or room_key,
+            name=room_key,
+            capacity=int(capacity or "0"),
+            location=location or "",
+            status=ResourceStatus(status),
+            description=description or "",
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+        )
+
 
 @dataclass
 class EquipmentAsset:
@@ -195,6 +267,38 @@ class EquipmentAsset:
     @classmethod
     def from_json(cls, json_str: str) -> "EquipmentAsset":
         return cls.from_dict(json.loads(json_str))
+
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.name,
+            self.asset_type,
+            self.serial_number,
+            self.status.value,
+            self.description,
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "EquipmentAsset":
+        if len(record) == 7:
+            equipment_id = record[2] or ""
+            name, asset_type, serial_number, status, description, created_at, updated_at = record
+            if not equipment_id:
+                equipment_id = serial_number or ""
+        else:
+            equipment_id, name, asset_type, serial_number, status, description, created_at, updated_at = record
+        serial_key = serial_number or equipment_id or ""
+        return cls(
+            id=equipment_id or serial_key,
+            name=name or "",
+            asset_type=asset_type or "",
+            serial_number=serial_key,
+            status=ResourceStatus(status),
+            description=description or "",
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+        )
 
 
 @dataclass
@@ -233,6 +337,56 @@ class RoomBooking:
     def from_json(cls, json_str: str) -> "RoomBooking":
         return cls.from_dict(json.loads(json_str))
 
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.id,
+            self.user_id,
+            self.room_id,
+            normalize_datetime_string(self.start_time),
+            normalize_datetime_string(self.end_time),
+            self.status.value,
+            normalize_datetime_string(self.checked_in_at),
+            normalize_datetime_string(self.requested_checkin_at),
+            normalize_datetime_string(self.requested_checkout_at),
+            normalize_datetime_string(self.completed_at),
+            normalize_datetime_string(self.cancelled_at),
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "RoomBooking":
+        (
+            booking_id,
+            user_id,
+            room_id,
+            start_time,
+            end_time,
+            status,
+            checked_in_at,
+            requested_checkin_at,
+            requested_checkout_at,
+            completed_at,
+            cancelled_at,
+            created_at,
+            updated_at,
+        ) = record
+        return cls(
+            id=booking_id or generate_id(),
+            user_id=user_id or "",
+            room_id=room_id or "",
+            start_time=normalize_datetime_string(start_time) or now_iso(),
+            end_time=normalize_datetime_string(end_time) or now_iso(),
+            status=RoomBookingStatus(status),
+            checked_in_at=normalize_datetime_string(checked_in_at),
+            requested_checkin_at=normalize_datetime_string(requested_checkin_at),
+            requested_checkout_at=normalize_datetime_string(requested_checkout_at),
+            completed_at=normalize_datetime_string(completed_at),
+            cancelled_at=normalize_datetime_string(cancelled_at),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+        )
+
 
 @dataclass
 class EquipmentBooking:
@@ -270,6 +424,56 @@ class EquipmentBooking:
     def from_json(cls, json_str: str) -> "EquipmentBooking":
         return cls.from_dict(json.loads(json_str))
 
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.id,
+            self.user_id,
+            self.equipment_id,
+            normalize_datetime_string(self.start_time),
+            normalize_datetime_string(self.end_time),
+            self.status.value,
+            normalize_datetime_string(self.checked_out_at),
+            normalize_datetime_string(self.requested_pickup_at),
+            normalize_datetime_string(self.requested_return_at),
+            normalize_datetime_string(self.returned_at),
+            normalize_datetime_string(self.cancelled_at),
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "EquipmentBooking":
+        (
+            booking_id,
+            user_id,
+            equipment_id,
+            start_time,
+            end_time,
+            status,
+            checked_out_at,
+            requested_pickup_at,
+            requested_return_at,
+            returned_at,
+            cancelled_at,
+            created_at,
+            updated_at,
+        ) = record
+        return cls(
+            id=booking_id or generate_id(),
+            user_id=user_id or "",
+            equipment_id=equipment_id or "",
+            start_time=normalize_datetime_string(start_time) or now_iso(),
+            end_time=normalize_datetime_string(end_time) or now_iso(),
+            status=EquipmentBookingStatus(status),
+            checked_out_at=normalize_datetime_string(checked_out_at),
+            requested_pickup_at=normalize_datetime_string(requested_pickup_at),
+            requested_return_at=normalize_datetime_string(requested_return_at),
+            returned_at=normalize_datetime_string(returned_at),
+            cancelled_at=normalize_datetime_string(cancelled_at),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+        )
+
 
 @dataclass
 class Penalty:
@@ -303,6 +507,34 @@ class Penalty:
     def from_json(cls, json_str: str) -> "Penalty":
         return cls.from_dict(json.loads(json_str))
 
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.id,
+            self.user_id,
+            self.reason.value,
+            str(self.points),
+            self.related_type,
+            self.related_id,
+            normalize_persisted_text(self.memo),
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "Penalty":
+        penalty_id, user_id, reason, points, related_type, related_id, memo, created_at, updated_at = record
+        return cls(
+            id=penalty_id or generate_id(),
+            user_id=user_id or "",
+            reason=PenaltyReason(reason),
+            points=int(points or "0"),
+            related_type=related_type or "",
+            related_id=related_id or "",
+            memo=normalize_persisted_text(memo),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at),
+        )
+
 
 @dataclass
 class AuditLog:
@@ -331,31 +563,28 @@ class AuditLog:
     def from_json(cls, json_str: str) -> "AuditLog":
         return cls.from_dict(json.loads(json_str))
 
-
-@dataclass
-class Message:
-    """사용자 문의/신고 메시지"""
-
-    user_id: str
-    type: MessageType
-    content: str
-    id: str = field(default_factory=generate_id)
-    created_at: str = field(default_factory=now_iso)
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["type"] = self.type.value
-        return d
+    def to_record(self) -> List[Optional[str]]:
+        return [
+            self.id,
+            self.actor_id,
+            self.action,
+            self.target_type,
+            self.target_id,
+            normalize_persisted_text(self.details),
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Message":
-        data = data.copy()
-        data["type"] = MessageType(data["type"])
-        return cls(**data)
-
-    def to_json(self) -> str:
-        return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "Message":
-        return cls.from_dict(json.loads(json_str))
+    def from_record(cls, record: List[Optional[str]]) -> "AuditLog":
+        log_id, actor_id, action, target_type, target_id, details, created_at, updated_at = record
+        return cls(
+            id=log_id or generate_id(),
+            actor_id=actor_id or "",
+            action=action or "",
+            target_type=target_type or "",
+            target_id=target_id or "",
+            details=normalize_persisted_text(details),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at),
+        )

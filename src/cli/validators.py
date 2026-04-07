@@ -466,25 +466,20 @@ def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 
         if end_str.lower() in ("q", "quit", "취소"):
             return None, None
 
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", start_str):
-            print("  ✗ 날짜 형식이 올바르지 않습니다. (예: 2024-01-15)")
+        start_valid, start_date, start_error = validate_date_plan(start_str)
+        if not start_valid or start_date is None:
+            print(f"  ✗ {start_error}")
             continue
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", end_str):
-            print("  ✗ 날짜 형식이 올바르지 않습니다. (예: 2024-01-15)")
-            continue
-
-        try:
-            start_date = datetime.strptime(start_str, "%Y-%m-%d")
-            end_date = datetime.strptime(end_str, "%Y-%m-%d")
-        except ValueError:
-            print("  ✗ 유효하지 않은 날짜입니다.")
+        end_valid, end_date, end_error = validate_date_plan(end_str)
+        if not end_valid or end_date is None:
+            print(f"  ✗ {end_error}")
             continue
 
         valid, error, _ = validate_daily_booking_dates(
-            start_date.date(), end_date.date(), get_current_time()
+            start_date, end_date, get_current_time()
         )
         if valid:
-            return start_date.date(), end_date.date()
+            return start_date, end_date
         print(f"  ✗ {error}")
 
 

@@ -26,8 +26,6 @@ from src.domain.models import (
     RoomBooking,
     EquipmentBooking,
     Penalty,
-    Message,
-    MessageType,
     RoomBookingStatus,
     EquipmentBookingStatus,
     ResourceStatus,
@@ -177,12 +175,11 @@ def temp_data_dir(tmp_path):
     # Data files (will be created as needed)
     users_file = data_dir / "users.txt"
     rooms_file = data_dir / "rooms.txt"
-    equipment_file = data_dir / "equipment_assets.txt"
+    equipment_file = data_dir / "equipments.txt"
     room_bookings_file = data_dir / "room_bookings.txt"
-    equipment_bookings_file = data_dir / "equipment_bookings.txt"
+    equipment_bookings_file = data_dir / "equipment_booking.txt"
     penalties_file = data_dir / "penalties.txt"
     audit_log_file = data_dir / "audit_log.txt"
-    message_file = data_dir / "message.txt"
 
     # Patch config paths AND the DATA_FILES list itself (critical for ensure_data_dir)
     isolated_data_files = [
@@ -193,7 +190,6 @@ def temp_data_dir(tmp_path):
         equipment_bookings_file,
         penalties_file,
         audit_log_file,
-        message_file,
     ]
 
     with patch("src.config.DATA_DIR", data_dir), patch(
@@ -203,17 +199,15 @@ def temp_data_dir(tmp_path):
     ), patch("src.config.USERS_FILE", users_file), patch(
         "src.config.ROOMS_FILE", rooms_file
     ), patch(
-        "src.config.EQUIPMENT_ASSETS_FILE", equipment_file
+        "src.config.EQUIPMENTS_FILE", equipment_file
     ), patch(
         "src.config.ROOM_BOOKINGS_FILE", room_bookings_file
     ), patch(
-        "src.config.EQUIPMENT_BOOKINGS_FILE", equipment_bookings_file
+        "src.config.EQUIPMENT_BOOKING_FILE", equipment_bookings_file
     ), patch(
         "src.config.PENALTIES_FILE", penalties_file
     ), patch(
         "src.config.AUDIT_LOG_FILE", audit_log_file
-    ), patch(
-        "src.config.MESSAGE_FILE", message_file
     ), patch(
         "src.storage.file_lock.DATA_DIR", data_dir
     ), patch(
@@ -223,11 +217,11 @@ def temp_data_dir(tmp_path):
     ), patch(
         "src.storage.repositories.ROOMS_FILE", rooms_file
     ), patch(
-        "src.storage.repositories.EQUIPMENT_ASSETS_FILE", equipment_file
+        "src.storage.repositories.EQUIPMENTS_FILE", equipment_file
     ), patch(
         "src.storage.repositories.ROOM_BOOKINGS_FILE", room_bookings_file
     ), patch(
-        "src.storage.repositories.EQUIPMENT_BOOKINGS_FILE", equipment_bookings_file
+        "src.storage.repositories.EQUIPMENT_BOOKING_FILE", equipment_bookings_file
     ), patch(
         "src.storage.repositories.PENALTIES_FILE", penalties_file
     ), patch(
@@ -257,9 +251,10 @@ def user_factory():
         **overrides,
     ):
         _counter[0] += 1
+        resolved_username = username or f"testuser{_counter[0]}"
         return User(
-            id=id or generate_id(),
-            username=username or f"testuser{_counter[0]}",
+            id=id or resolved_username,
+            username=resolved_username,
             password=password,
             role=role,
             penalty_points=penalty_points,
@@ -286,9 +281,10 @@ def room_factory():
         **overrides,
     ):
         _counter[0] += 1
+        resolved_name = name or f"Room {_counter[0]}"
         return Room(
-            id=id or generate_id(),
-            name=name or f"Room {_counter[0]}",
+            id=id or resolved_name,
+            name=resolved_name,
             capacity=capacity,
             location=location,
             status=status,
@@ -314,11 +310,12 @@ def equipment_factory():
         **overrides,
     ):
         _counter[0] += 1
+        resolved_serial = serial_number or f"SN-{_counter[0]:05d}"
         return EquipmentAsset(
-            id=id or generate_id(),
+            id=id or resolved_serial,
             name=name or f"Equipment {_counter[0]}",
             asset_type=asset_type,
-            serial_number=serial_number or f"SN-{_counter[0]:05d}",
+            serial_number=resolved_serial,
             status=status,
             description=description,
             **overrides,
@@ -411,8 +408,8 @@ def penalty_factory():
     def _create(
         id=None,
         user_id=None,
-        reason=PenaltyReason.NO_SHOW,
-        points=3,
+        reason=PenaltyReason.OTHER,
+        points=2,
         related_type="room_booking",
         related_id=None,
         memo="",
@@ -429,35 +426,6 @@ def penalty_factory():
             memo=memo,
             **overrides,
         )
-
-    return _create
-
-
-@pytest.fixture
-def message_factory():
-    """Factory for creating Message instances with sensible defaults."""
-    _counter = [0]
-
-    def _create(
-        user_id=None,
-        type=MessageType.INQUIRY,
-        content="",
-        id=None,
-        created_at=None,
-        **overrides,
-    ):
-        _counter[0] += 1
-        msg = Message(
-            user_id=user_id or generate_id(),
-            type=type,
-            content=content or f"Test message {_counter[0]}",
-            **overrides,
-        )
-        if id:
-            object.__setattr__(msg, "id", id)
-        if created_at:
-            object.__setattr__(msg, "created_at", created_at)
-        return msg
 
     return _create
 
@@ -488,7 +456,7 @@ def equipment_repo(temp_data_dir):
     """EquipmentAssetRepository with isolated temp directory."""
     from src.storage.repositories import EquipmentAssetRepository
 
-    return EquipmentAssetRepository(file_path=temp_data_dir / "equipment_assets.txt")
+    return EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt")
 
 
 @pytest.fixture
@@ -504,9 +472,7 @@ def equipment_booking_repo(temp_data_dir):
     """EquipmentBookingRepository with isolated temp directory."""
     from src.storage.repositories import EquipmentBookingRepository
 
-    return EquipmentBookingRepository(
-        file_path=temp_data_dir / "equipment_bookings.txt"
-    )
+    return EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt")
 
 
 @pytest.fixture
@@ -523,14 +489,6 @@ def audit_repo(temp_data_dir):
     from src.storage.repositories import AuditLogRepository
 
     return AuditLogRepository(file_path=temp_data_dir / "audit_log.txt")
-
-
-@pytest.fixture
-def message_repo(temp_data_dir):
-    """MessageRepository with isolated temp directory."""
-    from src.storage.repositories import MessageRepository
-
-    return MessageRepository(file_path=temp_data_dir / "message.txt")
 
 
 # =============================================================================
@@ -620,14 +578,6 @@ def policy_service(
         audit_repo=audit_repo,
         penalty_service=penalty_service,
     )
-
-
-@pytest.fixture
-def message_service(message_repo):
-    """MessageService with isolated repository."""
-    from src.domain.message_service import MessageService
-
-    return MessageService(message_repo=message_repo)
 
 
 # =============================================================================

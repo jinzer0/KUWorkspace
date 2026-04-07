@@ -1,9 +1,9 @@
-{"id": "df71bfe6-356b-40bd-908e-f1f7815cca26", "name": "회의실 4A", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2099-01-05T18:00:00"}
-{"id": "c37cc692-3d32-4c31-b5f0-b7dfbb7ec26f", "name": "회의실 4B", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "46ac5adc-4c9a-4820-8760-346420a79c1a", "name": "회의실 4C", "capacity": 4, "location": "1층", "status": "available", "description": "4인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "90b06c85-73f4-44e4-9565-9f6728a0a4d2", "name": "회의실 6A", "capacity": 6, "location": "2층", "status": "available", "description": "6인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "8b71d276-6e34-46f3-b8a9-4681899003dd", "name": "회의실 6B", "capacity": 6, "location": "2층", "status": "available", "description": "6인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "d27b5d35-dab1-45ee-b594-6eda435f2948", "name": "회의실 6C", "capacity": 6, "location": "2층", "status": "available", "description": "6인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "86abd567-e1de-4188-bec6-22fdfcfd40e6", "name": "회의실 8A", "capacity": 8, "location": "3층", "status": "available", "description": "8인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "1f2b9444-aa0a-434c-b476-89d9f7f4726d", "name": "회의실 8B", "capacity": 8, "location": "3층", "status": "available", "description": "8인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
-{"id": "c645b356-f48f-47a5-b960-1da209ed6ac9", "name": "회의실 8C", "capacity": 8, "location": "3층", "status": "available", "description": "8인 회의실", "created_at": "2026-03-24T20:34:39", "updated_at": "2026-03-24T20:34:39"}
+회의실 4A|4|1층|available|4인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 4B|4|1층|available|4인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 4C|4|1층|available|4인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 6A|6|2층|available|6인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 6B|6|2층|available|6인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 6C|6|2층|available|6인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 8A|8|3층|available|8인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 8B|8|3층|available|8인 회의실|2026-04-07T12:56|2026-04-07T12:56
+회의실 8C|8|3층|available|8인 회의실|2026-04-07T12:56|2026-04-07T12:56

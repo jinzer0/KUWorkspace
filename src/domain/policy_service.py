@@ -86,6 +86,7 @@ class PolicyService:
     def advance_time(self, actor_id="system"):
         with global_lock(), UnitOfWork():
             current_time = self.clock.now()
+            auto_events = self._handle_boundary_automation(current_time)
             state = self._build_advance_state(current_time)
             if not state["can_advance"]:
                 self.audit_repo.log_action(
@@ -100,6 +101,7 @@ class PolicyService:
             next_time = self.clock.advance()
             maintenance = self._run_checks_locked(next_time)
             events = list(state["events"])
+            events.extend(auto_events)
             events.extend(self._build_post_advance_events(next_time, maintenance))
 
             self.audit_repo.log_action(
@@ -114,6 +116,161 @@ class PolicyService:
             state["events"] = events
             state["maintenance"] = maintenance
             return state
+
+    def _handle_boundary_automation(self, current_time):
+        if current_time.hour == 9:
+            return self._auto_handle_start_slot(current_time)
+        if current_time.hour == 18:
+            return self._auto_handle_end_slot(current_time)
+        return []
+
+    def _auto_handle_start_slot(self, current_time):
+        events = []
+        now = now_iso()
+
+        for booking in self.room_booking_repo.get_all():
+            if datetime.fromisoformat(booking.start_time) != current_time:
+                continue
+            if booking.status == RoomBookingStatus.CHECKIN_REQUESTED:
+                self.room_booking_repo.update(
+                    replace(
+                        booking,
+                        status=RoomBookingStatus.CHECKED_IN,
+                        checked_in_at=now,
+                        updated_at=now,
+                    )
+                )
+                events.append(f"회의실 예약 {booking.id[:8]} 자동 체크인 승인")
+            elif booking.status == RoomBookingStatus.RESERVED:
+                self.room_booking_repo.update(
+                    replace(
+                        booking,
+                        status=RoomBookingStatus.ADMIN_CANCELLED,
+                        cancelled_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.apply_no_show(
+                        user=user,
+                        booking_type="room_booking",
+                        booking_id=booking.id,
+                        actor_id="system",
+                    )
+                events.append(f"회의실 예약 {booking.id[:8]} 노쇼 자동 처리")
+
+        for booking in self.equipment_booking_repo.get_all():
+            if datetime.fromisoformat(booking.start_time) != current_time:
+                continue
+            if booking.status == EquipmentBookingStatus.PICKUP_REQUESTED:
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.CHECKED_OUT,
+                        checked_out_at=now,
+                        updated_at=now,
+                    )
+                )
+                events.append(f"장비 예약 {booking.id[:8]} 자동 픽업 승인")
+            elif booking.status == EquipmentBookingStatus.RESERVED:
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.ADMIN_CANCELLED,
+                        cancelled_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.apply_no_show(
+                        user=user,
+                        booking_type="equipment_booking",
+                        booking_id=booking.id,
+                        actor_id="system",
+                    )
+                events.append(f"장비 예약 {booking.id[:8]} 노쇼 자동 처리")
+
+        return events
+
+    def _auto_handle_end_slot(self, current_time):
+        events = []
+        now = now_iso()
+
+        for booking in self.room_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != current_time:
+                continue
+            if booking.status == RoomBookingStatus.CHECKOUT_REQUESTED:
+                self.room_booking_repo.update(
+                    replace(
+                        booking,
+                        status=RoomBookingStatus.COMPLETED,
+                        completed_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.record_normal_use(user)
+                events.append(f"회의실 예약 {booking.id[:8]} 자동 퇴실 승인")
+            elif booking.status == RoomBookingStatus.CHECKED_IN:
+                self.room_booking_repo.update(
+                    replace(
+                        booking,
+                        status=RoomBookingStatus.COMPLETED,
+                        completed_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.apply_late_return(
+                        user=user,
+                        booking_type="room_booking",
+                        booking_id=booking.id,
+                        delay_minutes=60,
+                        actor_id="system",
+                    )
+                events.append(f"회의실 예약 {booking.id[:8]} 지연 퇴실 자동 패널티")
+
+        for booking in self.equipment_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != current_time:
+                continue
+            if booking.status == EquipmentBookingStatus.RETURN_REQUESTED:
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.RETURNED,
+                        returned_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.record_normal_use(user)
+                events.append(f"장비 예약 {booking.id[:8]} 자동 반납 승인")
+            elif booking.status == EquipmentBookingStatus.CHECKED_OUT:
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.RETURNED,
+                        returned_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.apply_late_return(
+                        user=user,
+                        booking_type="equipment_booking",
+                        booking_id=booking.id,
+                        delay_minutes=60,
+                        actor_id="system",
+                    )
+                events.append(f"장비 예약 {booking.id[:8]} 지연 반납 자동 패널티")
+
+        return events
 
     def _build_advance_state(self, current_time):
         next_time = self.clock.next_slot()
@@ -383,21 +540,22 @@ class PolicyService:
             )
 
         if status.get("is_restricted"):
-            # 3~5점: 전체 활성 예약 1건만 허용
             room_active = len(self.room_booking_repo.get_active_by_user(user.id))
             equipment_active = len(
                 self.equipment_booking_repo.get_active_by_user(user.id)
             )
-            total_active = room_active + equipment_active
 
-            if total_active >= 1:
+            if room_active >= MAX_ACTIVE_ROOM_BOOKINGS and equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS:
                 return (
                     False,
-                    1,
-                    f"패널티로 인해 활성 예약 1건만 허용됩니다. "
-                    f"현재 활성 예약: {total_active}건",
+                    MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+                    "패널티로 인해 추가 예약이 불가합니다.",
                 )
-            return (True, 1, "패널티로 인해 활성 예약 1건만 허용됩니다.")
+            return (
+                True,
+                MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+                "패널티로 인해 각 예약 유형별 1건까지만 유지할 수 있습니다.",
+            )
 
         return (
             True,
@@ -417,18 +575,15 @@ class PolicyService:
         if not can_book:
             return (0, 0)
 
-        if max_total == 1:
-            # 제한 상태: 전체 1건
+        if max_total == MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS:
             room_active = len(self.room_booking_repo.get_active_by_user(user.id))
             equipment_active = len(
                 self.equipment_booking_repo.get_active_by_user(user.id)
             )
-
-            if room_active >= 1:
-                return (0, 0)
-            if equipment_active >= 1:
-                return (0, 0)
-            return (1, 1)  # 둘 중 하나만 가능
+            return (
+                0 if room_active >= MAX_ACTIVE_ROOM_BOOKINGS else MAX_ACTIVE_ROOM_BOOKINGS,
+                0 if equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS else MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+            )
 
         return (MAX_ACTIVE_ROOM_BOOKINGS, MAX_ACTIVE_EQUIPMENT_BOOKINGS)
 
@@ -447,18 +602,20 @@ class PolicyService:
             }
 
         if status.get("is_restricted"):
-            if total_active >= 1:
+            room_limit = 0 if room_active >= MAX_ACTIVE_ROOM_BOOKINGS else MAX_ACTIVE_ROOM_BOOKINGS
+            equipment_limit = 0 if equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS else MAX_ACTIVE_EQUIPMENT_BOOKINGS
+            if room_limit == 0 and equipment_limit == 0:
                 return {
                     "can_book": False,
-                    "room_limit": 0,
-                    "equipment_limit": 0,
-                    "message": f"패널티로 인해 활성 예약 1건만 허용됩니다. 현재 활성 예약: {total_active}건",
+                    "room_limit": room_limit,
+                    "equipment_limit": equipment_limit,
+                    "message": "패널티로 인해 추가 예약이 불가합니다.",
                 }
             return {
                 "can_book": True,
-                "room_limit": 1,
-                "equipment_limit": 1,
-                "message": "패널티로 인해 활성 예약 1건만 허용됩니다.",
+                "room_limit": room_limit,
+                "equipment_limit": equipment_limit,
+                "message": "패널티로 인해 각 예약 유형별 1건까지만 유지할 수 있습니다.",
             }
 
         return {

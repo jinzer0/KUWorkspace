@@ -42,7 +42,7 @@ def test_room_daily_booking_blocks_same_day(room_service, create_test_user, crea
                 attendee_count=4,
             )
 
-        assert "당일 예약" in str(exc_info.value)
+        assert "당일 예약은 불가" in str(exc_info.value)
 
 
 def test_daily_booking_blocks_over_6_month_window(
@@ -63,7 +63,7 @@ def test_daily_booking_blocks_over_6_month_window(
                 attendee_count=4,
             )
 
-        assert "6개월" in str(exc_info.value)
+        assert "180일" in str(exc_info.value)
 
 
 def test_daily_booking_blocks_over_14_days(
@@ -98,7 +98,10 @@ def test_policy_allows_one_room_and_one_equipment_separately(
     fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
     with mock_now(fixed_time):
-        user = create_test_user()
+        user = create_test_user(
+            penalty_points=3,
+            restriction_until=(fixed_time + timedelta(days=7)).isoformat(),
+        )
         room = create_test_room(capacity=6)
         equipment = create_test_equipment()
 

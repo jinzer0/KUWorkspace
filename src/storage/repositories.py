@@ -10,12 +10,11 @@ from datetime import datetime
 from src.config import (
     USERS_FILE,
     ROOMS_FILE,
-    EQUIPMENT_ASSETS_FILE,
+    EQUIPMENTS_FILE,
     ROOM_BOOKINGS_FILE,
-    EQUIPMENT_BOOKINGS_FILE,
+    EQUIPMENT_BOOKING_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
-    MESSAGE_FILE,
 )
 from src.domain.models import (
     User,
@@ -25,7 +24,6 @@ from src.domain.models import (
     EquipmentBooking,
     Penalty,
     AuditLog,
-    Message,
     generate_id,
     now_iso,
 )
@@ -200,8 +198,8 @@ class UserRepository(BaseRepository):
         super().__init__(
             file_path=file_path,
             model_class=User,
-            from_json=User.from_json,
-            to_json=lambda u: u.to_json(),
+            from_json=User.from_record,
+            to_json=lambda u: u.to_record(),
         )
 
     def get_by_username(self, username):
@@ -223,8 +221,8 @@ class RoomRepository(BaseRepository):
         super().__init__(
             file_path=file_path,
             model_class=Room,
-            from_json=Room.from_json,
-            to_json=lambda r: r.to_json(),
+            from_json=Room.from_record,
+            to_json=lambda r: r.to_record(),
         )
 
     def get_available(self):
@@ -237,12 +235,12 @@ class RoomRepository(BaseRepository):
 class EquipmentAssetRepository(BaseRepository):
     """장비 자산 Repository"""
 
-    def __init__(self, file_path=EQUIPMENT_ASSETS_FILE):
+    def __init__(self, file_path=EQUIPMENTS_FILE):
         super().__init__(
             file_path=file_path,
             model_class=EquipmentAsset,
-            from_json=EquipmentAsset.from_json,
-            to_json=lambda e: e.to_json(),
+            from_json=EquipmentAsset.from_record,
+            to_json=lambda e: e.to_record(),
         )
 
     def get_available(self):
@@ -263,8 +261,8 @@ class RoomBookingRepository(BaseRepository):
         super().__init__(
             file_path=file_path,
             model_class=RoomBooking,
-            from_json=RoomBooking.from_json,
-            to_json=lambda b: b.to_json(),
+            from_json=RoomBooking.from_record,
+            to_json=lambda b: b.to_record(),
         )
 
     def get_by_user(self, user_id):
@@ -289,6 +287,7 @@ class RoomBookingRepository(BaseRepository):
     def get_conflicting(self, room_id, start_time, end_time, exclude_id=None):
         """충돌하는 예약 조회"""
         from src.domain.models import RoomBookingStatus
+        from datetime import datetime
 
         active_statuses = {
             RoomBookingStatus.RESERVED,
@@ -297,6 +296,9 @@ class RoomBookingRepository(BaseRepository):
             RoomBookingStatus.CHECKOUT_REQUESTED,
         }
 
+        requested_start = datetime.fromisoformat(start_time)
+        requested_end = datetime.fromisoformat(end_time)
+
         conflicts = []
         for booking in self.get_by_room(room_id):
             if booking.status not in active_statuses:
@@ -304,8 +306,9 @@ class RoomBookingRepository(BaseRepository):
             if exclude_id and booking.id == exclude_id:
                 continue
 
-            # 시간 겹침 확인
-            if not (end_time <= booking.start_time or start_time >= booking.end_time):
+            booking_start = datetime.fromisoformat(booking.start_time)
+            booking_end = datetime.fromisoformat(booking.end_time)
+            if not (requested_end <= booking_start or requested_start >= booking_end):
                 conflicts.append(booking)
 
         return conflicts
@@ -313,12 +316,12 @@ class RoomBookingRepository(BaseRepository):
 class EquipmentBookingRepository(BaseRepository):
     """장비 예약 Repository"""
 
-    def __init__(self, file_path=EQUIPMENT_BOOKINGS_FILE):
+    def __init__(self, file_path=EQUIPMENT_BOOKING_FILE):
         super().__init__(
             file_path=file_path,
             model_class=EquipmentBooking,
-            from_json=EquipmentBooking.from_json,
-            to_json=lambda b: b.to_json(),
+            from_json=EquipmentBooking.from_record,
+            to_json=lambda b: b.to_record(),
         )
 
     def get_by_user(self, user_id):
@@ -343,6 +346,7 @@ class EquipmentBookingRepository(BaseRepository):
     def get_conflicting(self, equipment_id, start_time, end_time, exclude_id=None):
         """충돌하는 예약 조회"""
         from src.domain.models import EquipmentBookingStatus
+        from datetime import datetime
 
         active_statuses = {
             EquipmentBookingStatus.RESERVED,
@@ -351,6 +355,9 @@ class EquipmentBookingRepository(BaseRepository):
             EquipmentBookingStatus.RETURN_REQUESTED,
         }
 
+        requested_start = datetime.fromisoformat(start_time)
+        requested_end = datetime.fromisoformat(end_time)
+
         conflicts = []
         for booking in self.get_by_equipment(equipment_id):
             if booking.status not in active_statuses:
@@ -358,8 +365,9 @@ class EquipmentBookingRepository(BaseRepository):
             if exclude_id and booking.id == exclude_id:
                 continue
 
-            # 시간 겹침 확인
-            if not (end_time <= booking.start_time or start_time >= booking.end_time):
+            booking_start = datetime.fromisoformat(booking.start_time)
+            booking_end = datetime.fromisoformat(booking.end_time)
+            if not (requested_end <= booking_start or requested_start >= booking_end):
                 conflicts.append(booking)
 
         return conflicts
@@ -369,14 +377,14 @@ class PenaltyRepository:
 
     def __init__(self, file_path=PENALTIES_FILE):
         self.file_path = file_path
-        self.to_json = lambda p: p.to_json()
+        self.to_json = lambda p: p.to_record()
 
     def get_all(self):
         """모든 패널티 조회"""
         uow = get_current_uow()
         if uow and self.file_path in uow._staged:
             return list(uow._staged[self.file_path][0])
-        return read_jsonl(self.file_path, Penalty.from_json)
+        return read_jsonl(self.file_path, Penalty.from_record)
 
     def get_by_user(self, user_id):
         """사용자별 패널티 조회"""
@@ -407,20 +415,31 @@ class PenaltyRepository:
         latest = max(penalties, key=lambda p: p.created_at)
         return datetime.fromisoformat(latest.created_at)
 
+    def exists(self, user_id, reason, related_type, related_id, memo=None):
+        for penalty in self.get_by_user(user_id):
+            if penalty.reason != reason:
+                continue
+            if penalty.related_type != related_type or penalty.related_id != related_id:
+                continue
+            if memo is not None and penalty.memo != memo:
+                continue
+            return True
+        return False
+
 
 class AuditLogRepository:
     """감사 로그 Repository (append-only, UnitOfWork 지원)"""
 
     def __init__(self, file_path=AUDIT_LOG_FILE):
         self.file_path = file_path
-        self.to_json = lambda l: l.to_json()
+        self.to_json = lambda l: l.to_record()
 
     def get_all(self):
         """모든 로그 조회"""
         uow = get_current_uow()
         if uow and self.file_path in uow._staged:
             return list(uow._staged[self.file_path][0])
-        return read_jsonl(self.file_path, AuditLog.from_json)
+        return read_jsonl(self.file_path, AuditLog.from_record)
 
     def add(self, log):
         """로그 추가 (UnitOfWork 활성 시 스테이징)"""
@@ -458,34 +477,3 @@ class AuditLogRepository:
             for l in self.get_all()
             if l.target_type == target_type and l.target_id == target_id
         ]
-
-
-class MessageRepository:
-    """메시지 Repository (append-only, UnitOfWork 지원)"""
-
-    def __init__(self, file_path=MESSAGE_FILE):
-        self.file_path = file_path
-        self.to_json = lambda m: m.to_json()
-
-    def get_all(self):
-        """모든 메시지 조회"""
-        uow = get_current_uow()
-        if uow and self.file_path in uow._staged:
-            return list(uow._staged[self.file_path][0])
-        return read_jsonl(self.file_path, Message.from_json)
-
-    def get_by_user(self, user_id):
-        """사용자별 메시지 조회"""
-        return [m for m in self.get_all() if m.user_id == user_id]
-
-    def add(self, message):
-        """메시지 추가 (UnitOfWork 활성 시 스테이징)"""
-        records = self.get_all()
-        records.append(message)
-        uow = get_current_uow()
-        if uow:
-            uow.stage(self, records)
-        else:
-            require_write_lock()
-            atomic_write_jsonl(self.file_path, records, self.to_json)
-        return message

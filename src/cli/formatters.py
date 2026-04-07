@@ -90,7 +90,6 @@ def format_status_badge(status):
         "checkout_requested": "[퇴실승인대기]",
         "completed": "[완료]",
         "cancelled": "[취소]",
-        "no_show": "[노쇼]",
         "admin_cancelled": "[관리자취소]",
         # 장비 예약 상태
         "pickup_requested": "[픽업요청]",

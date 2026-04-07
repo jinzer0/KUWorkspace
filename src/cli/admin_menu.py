@@ -25,7 +25,6 @@ from src.domain.penalty_service import (
     AdminRequiredError,
 )
 from src.domain.policy_service import PolicyService
-from src.domain.message_service import MessageService
 from src.config import (
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
@@ -64,7 +63,6 @@ class AdminMenu:
         equipment_service=None,
         penalty_service=None,
         policy_service=None,
-        message_service=None,
     ):
         self.user = user
         self.auth_service = auth_service or AuthService()
@@ -76,7 +74,6 @@ class AdminMenu:
             penalty_service=self.penalty_service
         )
         self.policy_service = policy_service or PolicyService()
-        self.message_service = message_service or MessageService()
 
     def _safe_get_user(self, user_id):
         try:
@@ -104,7 +101,7 @@ class AdminMenu:
         print(
             f"  이용 시간은 매일 {FIXED_BOOKING_START_HOUR:02d}:{FIXED_BOOKING_START_MINUTE:02d} ~ {FIXED_BOOKING_END_HOUR:02d}:{FIXED_BOOKING_END_MINUTE:02d}로 고정됩니다."
         )
-        print("  예약 시작일은 내일부터 최대 6개월, 예약 기간은 최대 14일입니다.")
+        print("  예약 시작일은 내일부터 최대 180일, 예약 기간은 최대 14일입니다.")
 
     def _refresh_admin(self):
         try:
@@ -178,12 +175,10 @@ class AdminMenu:
             print("  15. 사용자 목록")
             print("  16. 사용자 상세 조회")
             print("  17. 파손/오염 패널티 부여")
-            print("  18. 회의실 노쇼 처리")
-            print("  19. 장비 노쇼 처리")
-            print("  20. 회의실 퇴실 지연 처리")
-            print("  21. 장비 반납 지연 처리")
-            print("  22. 문의/신고 조회")
-            print("  23. 운영 시계")
+            print("  18. 예약 직전 취소 패널티 부여")
+            print("  19. 회의실 퇴실 지연 처리")
+            print("  20. 장비 반납 지연 처리")
+            print("  21. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -225,16 +220,12 @@ class AdminMenu:
             elif choice == "17":
                 self._apply_damage_penalty()
             elif choice == "18":
-                self._mark_room_no_show()
+                self._force_late_cancel_penalty()
             elif choice == "19":
-                self._mark_equipment_no_show()
-            elif choice == "20":
                 self._force_room_late_checkout()
-            elif choice == "21":
+            elif choice == "20":
                 self._force_equipment_late_return()
-            elif choice == "22":
-                self._show_messages()
-            elif choice == "23":
+            elif choice == "21":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
@@ -491,46 +482,64 @@ class AdminMenu:
 
         pause()
 
-    def _mark_room_no_show(self):
-        print_header("회의실 노쇼 처리")
+    def _force_late_cancel_penalty(self):
+        print_header("예약 직전 취소 패널티 부여")
 
-        all_bookings = self._get_room_bookings_or_abort()
-        if all_bookings is None:
-            return
-
-        current_time = self.policy_service.clock.now().isoformat()
-        candidates = [
-            b
-            for b in all_bookings
-            if b.status == RoomBookingStatus.RESERVED and b.start_time == current_time
-        ]
-
-        if not candidates:
-            print_info("현재 시점에 노쇼 처리 가능한 회의실 예약이 없습니다.")
+        users = [u for u in (self._get_all_users_or_abort() or []) if u.role == UserRole.USER]
+        if not users:
+            print_info("일반 사용자가 없습니다.")
             pause()
             return
 
-        items = []
-        for booking in candidates:
-            room = self.room_service.get_room(booking.room_id)
-            user = self._get_booking_user_or_abort(booking.user_id)
-            if user is None:
-                return
-            items.append(
-                (
-                    booking.id,
-                    f"{room.name if room else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
-                )
-            )
+        user_id = select_from_list([(u.id, u.username) for u in users], "사용자 선택")
+        if not user_id:
+            return
+        user = self._safe_get_user(user_id)
+        if user is None:
+            print_error("사용자를 찾을 수 없습니다.")
+            pause()
+            return
 
-        booking_id = select_from_list(items, "노쇼 처리할 예약 선택")
+        room_bookings = [
+            b
+            for b in (self.room_service.get_user_bookings(user.id) or [])
+            if b.status == RoomBookingStatus.CANCELLED
+        ]
+        equip_bookings = [
+            b
+            for b in (self.equipment_service.get_user_bookings(user.id) or [])
+            if b.status == EquipmentBookingStatus.CANCELLED
+        ]
+
+        items = [(b.id, f"회의실 / {format_booking_time_range(b.start_time, b.end_time)}") for b in room_bookings]
+        items.extend(
+            (b.id, f"장비 / {format_booking_time_range(b.start_time, b.end_time)}")
+            for b in equip_bookings
+        )
+        if not items:
+            print_info("직전 취소 패널티를 수동 부과할 취소 예약이 없습니다.")
+            pause()
+            return
+
+        booking_id = select_from_list(items, "관련 예약 선택")
         if not booking_id:
             return
 
+        booking_type = (
+            "room_booking" if any(b.id == booking_id for b in room_bookings) else "equipment_booking"
+        )
+        if not confirm(f"{user.username}에게 직전 취소 패널티 2점을 부여하시겠습니까?"):
+            return
+
         try:
-            self.room_service.mark_no_show(booking_id, actor_id=self.user.id)
-            print_success("회의실 예약을 노쇼 처리했습니다.")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            self.penalty_service.apply_late_cancel(
+                user=user,
+                booking_type=booking_type,
+                booking_id=booking_id,
+                actor_id=self.user.id,
+            )
+            print_success("직전 취소 패널티가 부여되었습니다. (+2점)")
+        except (PenaltyError, AuthError) as e:
             print_error(str(e))
 
         pause()
@@ -1046,55 +1055,6 @@ class AdminMenu:
 
         pause()
 
-    def _mark_equipment_no_show(self):
-        print_header("장비 노쇼 처리")
-
-        all_bookings = self._get_equipment_bookings_or_abort()
-        if all_bookings is None:
-            return
-
-        current_time = self.policy_service.clock.now().isoformat()
-        candidates = [
-            b
-            for b in all_bookings
-            if b.status == EquipmentBookingStatus.RESERVED and b.start_time == current_time
-        ]
-
-        if not candidates:
-            print_info("현재 시점에 노쇼 처리 가능한 장비 예약이 없습니다.")
-            pause()
-            return
-
-        items = []
-        for booking in candidates:
-            equip = self.equipment_service.get_equipment(booking.equipment_id)
-            user = self._get_booking_user_or_abort(booking.user_id)
-            if user is None:
-                return
-            items.append(
-                (
-                    booking.id,
-                    f"{equip.name if equip else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
-                )
-            )
-
-        booking_id = select_from_list(items, "노쇼 처리할 예약 선택")
-        if not booking_id:
-            return
-
-        try:
-            self.equipment_service.mark_no_show(booking_id, actor_id=self.user.id)
-            print_success("장비 예약을 노쇼 처리했습니다.")
-        except (
-            EquipmentBookingError,
-            EquipmentAdminRequiredError,
-            AuthError,
-            PenaltyError,
-        ) as e:
-            print_error(str(e))
-
-        pause()
-
     def _admin_modify_or_swap_equipment_booking(self):
         """관리자 장비 예약 변경/교체 - 서브메뉴"""
         print_header("장비 예약 변경/교체 (관리자)")
@@ -1460,85 +1420,6 @@ class AdminMenu:
         except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
             print_error(str(e))
 
-        pause()
-
-    def _show_messages(self):
-        """문의/신고 조회 (메시지 뷰 핸들러)"""
-        print_header("문의/신고 조회")
-
-        messages = self.message_service.list_messages()
-        
-        if not messages:
-            print("등록된 문의/신고가 없습니다.")
-            pause()
-            return
-        
-        sorted_messages = sorted(messages, key=lambda m: m.created_at, reverse=True)
-        displayed_messages = sorted_messages[:30]
-        
-        type_map = {
-            "inquiry": "문의",
-            "report": "신고"
-        }
-        
-        headers = ["유형", "사용자명", "등록 시각", "내용"]
-        rows = []
-        for msg in displayed_messages:
-            type_label = type_map.get(msg.type.value, msg.type.value)
-            user = self._safe_get_user(msg.user_id)
-            user_display = user.username if user else msg.user_id
-            created_display = format_datetime(msg.created_at)
-            
-            content_display = msg.content
-            if len(content_display) > 30:
-                content_display = content_display[:30] + "..."
-            
-            rows.append([
-                type_label,
-                user_display,
-                created_display,
-                content_display
-            ])
-        
-        print(format_table(headers, rows))
-        
-        if len(sorted_messages) > 30:
-            print(f"\n  ... 외 {len(sorted_messages) - 30}건")
-        
-        items = []
-        for msg in displayed_messages:
-            type_label = type_map.get(msg.type.value, msg.type.value)
-            user = self._safe_get_user(msg.user_id)
-            user_display = user.username if user else msg.user_id
-            created_display = format_datetime(msg.created_at)
-            items.append((msg.id, f"{type_label} / {user_display} / {created_display}"))
-        
-        selected_id = select_from_list(items, "상세 조회할 메시지 선택")
-        if not selected_id:
-            return
-        
-        selected_message = next((m for m in displayed_messages if m.id == selected_id), None)
-        if selected_message:
-            self._show_message_detail(selected_message)
-
-    def _show_message_detail(self, message):
-        """문의/신고 상세 조회"""
-        print_subheader("문의/신고 상세")
-        
-        type_map = {
-            "inquiry": "문의",
-            "report": "신고"
-        }
-        type_label = type_map.get(message.type.value, message.type.value)
-        user = self._safe_get_user(message.user_id)
-        user_display = user.username if user else message.user_id
-        
-        print(f"유형: {type_label}")
-        print(f"사용자명: {user_display}")
-        print(f"등록 시각: {format_datetime(message.created_at)}")
-        print(f"메시지 ID: {message.id}")
-        print(f"내용: {message.content}")
-        
         pause()
 
     def _apply_damage_penalty(self):

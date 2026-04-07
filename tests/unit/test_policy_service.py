@@ -129,9 +129,9 @@ class TestClockAdvance:
 
         result = policy_service.advance_time(actor_id="admin-2")
 
-        assert result["can_advance"] is False
+        assert result["can_advance"] is True
         logs = audit_repo.get_by_actor("admin-2")
-        assert any(log.action == "clock_advance_blocked" for log in logs)
+        assert any(log.action == "clock_advance" for log in logs)
 
 
 class TestPenaltyResetAutomation:
@@ -152,7 +152,7 @@ class TestPenaltyResetAutomation:
         old_penalty = Penalty(
             id=generate_id(),
             user_id=user.id,
-            reason=PenaltyReason.NO_SHOW,
+            reason=PenaltyReason.OTHER,
             points=3,
             related_type="room_booking",
             related_id="old-booking",
@@ -358,7 +358,6 @@ class TestCheckUserCanBook:
     def test_restricted_user_limited_booking(
         self, policy_service, create_test_user, mock_now
     ):
-        """3~5점 사용자는 전체 1건만 가능"""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
@@ -370,8 +369,8 @@ class TestCheckUserCanBook:
             can_book, max_total, message = policy_service.check_user_can_book(user)
 
             assert can_book is True
-            assert max_total == 1
-            assert "1건만 허용" in message
+            assert max_total == 2
+            assert "각 예약 유형별" in message
 
     def test_banned_user_cannot_book(self, policy_service, create_test_user, mock_now):
         """6점 이상 사용자는 예약 불가"""
@@ -413,7 +412,6 @@ class TestGetMaxBookingsForUser:
     def test_restricted_user_max_bookings(
         self, policy_service, create_test_user, mock_now
     ):
-        """제한 사용자: 전체 1건"""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
@@ -424,7 +422,6 @@ class TestGetMaxBookingsForUser:
 
             max_room, max_equipment = policy_service.get_max_bookings_for_user(user)
 
-            # 둘 중 하나만 가능
             assert max_room == 1
             assert max_equipment == 1
 

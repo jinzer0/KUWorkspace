@@ -12,14 +12,23 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.config import ensure_data_dir, DATA_DIR
+from src.config import (
+    ensure_data_dir,
+    DATA_DIR,
+    USERS_FILE,
+    ROOMS_FILE,
+    EQUIPMENTS_FILE,
+    ROOM_BOOKINGS_FILE,
+    EQUIPMENT_BOOKING_FILE,
+    PENALTIES_FILE,
+    AUDIT_LOG_FILE,
+)
 from src.domain.models import (
     User,
     Room,
     EquipmentAsset,
     UserRole,
     ResourceStatus,
-    generate_id,
 )
 from src.storage.repositories import (
     UserRepository,
@@ -30,11 +39,33 @@ from src.storage.repositories import (
 from src.storage.file_lock import global_lock
 
 
+LEGACY_DATA_FILES = [
+    DATA_DIR / "equipment_assets.txt",
+    DATA_DIR / "equipment_bookings.txt",
+    DATA_DIR / "message.txt",
+]
+
+CURRENT_DATA_FILES = [
+    USERS_FILE,
+    ROOMS_FILE,
+    EQUIPMENTS_FILE,
+    ROOM_BOOKINGS_FILE,
+    EQUIPMENT_BOOKING_FILE,
+    PENALTIES_FILE,
+    AUDIT_LOG_FILE,
+]
+
+
 def create_admin():
     """관리자 계정 생성"""
-    return User(
-        id=generate_id(), username="admin", password="admin123", role=UserRole.ADMIN
-    )
+    return User(id="admin", username="admin", password="admin123", role=UserRole.ADMIN)
+
+
+def reset_data_files():
+    for file_path in CURRENT_DATA_FILES + LEGACY_DATA_FILES:
+        if file_path.exists():
+            file_path.unlink()
+    ensure_data_dir()
 
 
 def create_rooms():
@@ -53,7 +84,7 @@ def create_rooms():
 
     return [
         Room(
-            id=generate_id(),
+            id=name,
             name=name,
             capacity=capacity,
             location=location,
@@ -83,23 +114,26 @@ def create_equipment():
 
     return [
         EquipmentAsset(
-            id=generate_id(),
+            id=serial,
             name=name,
             asset_type=asset_type,
             serial_number=serial,
             status=ResourceStatus.AVAILABLE,
-            description=f"{name} ({serial})",
+            description=name,
         )
         for name, asset_type, serial in equipment_data
     ]
 
 
-def seed():
+def seed(reset=False):
     """시드 데이터 생성"""
     print("시드 데이터 생성 시작...")
 
-    # 데이터 디렉토리 생성
-    ensure_data_dir()
+    if reset:
+        reset_data_files()
+        print("  기존 데이터 파일을 현재 포맷으로 초기화했습니다.")
+    else:
+        ensure_data_dir()
 
     # 기존 데이터 확인
     user_repo = UserRepository()
@@ -142,4 +176,4 @@ def seed():
 
 
 if __name__ == "__main__":
-    seed()
+    seed(reset="--reset" in sys.argv)

@@ -348,10 +348,10 @@ def worker_create_equipment_booking(
 
             user_repo = UserRepository(file_path=data_path / "users.txt")
             equipment_repo = EquipmentAssetRepository(
-                file_path=data_path / "equipment_assets.txt"
+                file_path=data_path / "equipments.txt"
             )
             booking_repo = EquipmentBookingRepository(
-                file_path=data_path / "equipment_bookings.txt"
+                file_path=data_path / "equipment_booking.txt"
             )
             audit_repo = AuditLogRepository(file_path=data_path / "audit_log.txt")
 
@@ -391,7 +391,7 @@ class TestConcurrentEquipmentBooking:
         user1 = user_factory(username="equip_concurrent1")
         user2 = user_factory(username="equip_concurrent2")
         equipment = EquipmentAsset(
-            id=generate_id(),
+            id="SN-CONC-001",
             name="Concurrent Equipment",
             asset_type="laptop",
             serial_number="SN-CONC-001",
@@ -399,7 +399,7 @@ class TestConcurrentEquipmentBooking:
         )
 
         equipment_repo = EquipmentAssetRepository(
-            file_path=temp_data_dir / "equipment_assets.txt"
+            file_path=temp_data_dir / "equipments.txt"
         )
         with global_lock():
             user_repo.add(user1)
@@ -457,11 +457,12 @@ class TestAtomicWriteSafety:
         PLAN2.md: 원자적 쓰기 실패 시 원본 파일 보존 확인
         """
         from src.storage.atomic_writer import atomic_write_jsonl
+        from src.storage.jsonl_handler import decode_record
 
         test_file = temp_data_dir / "test_atomic.txt"
 
         original_data = [{"id": "1", "value": "original"}]
-        atomic_write_jsonl(test_file, original_data, lambda x: json.dumps(x))
+        atomic_write_jsonl(test_file, original_data, lambda x: [json.dumps(x)])
 
         with open(test_file, "r") as f:
             content_before = f.read()
@@ -472,7 +473,7 @@ class TestAtomicWriteSafety:
         bad_data = [UnserializableObject()]
 
         with pytest.raises(TypeError):
-            atomic_write_jsonl(test_file, bad_data, lambda x: json.dumps(x))
+            atomic_write_jsonl(test_file, bad_data, lambda x: [json.dumps(x)])
 
         with open(test_file, "r") as f:
             content_after = f.read()
@@ -481,7 +482,9 @@ class TestAtomicWriteSafety:
 
         with open(test_file, "r") as f:
             line = f.readline().strip()
-            restored = json.loads(line)
+            payload = decode_record(line)[0]
+            assert payload is not None
+            restored = json.loads(payload)
 
         assert restored == {"id": "1", "value": "original"}
 
@@ -492,7 +495,7 @@ class TestAtomicWriteSafety:
         test_file = temp_data_dir / "test_no_tmp.txt"
         data = [{"id": "1", "value": "test"}]
 
-        atomic_write_jsonl(test_file, data, lambda x: json.dumps(x))
+        atomic_write_jsonl(test_file, data, lambda x: [json.dumps(x)])
 
         tmp_files = list(temp_data_dir.glob("*.tmp"))
         assert len(tmp_files) == 0

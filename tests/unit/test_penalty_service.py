@@ -22,21 +22,22 @@ from src.storage.file_lock import global_lock
 class TestNoShowPenalty:
     """노쇼 패널티 테스트"""
 
-    def test_apply_no_show_adds_3_points(self, penalty_service, create_test_user):
-        """노쇼 시 3점 추가"""
+    def test_apply_no_show_adds_2_points(self, penalty_service, create_test_user):
+        """노쇼 시 2점 추가"""
         user = create_test_user(penalty_points=0)
 
         penalty = penalty_service.apply_no_show(
             user=user, booking_type="room_booking", booking_id="booking-123"
         )
 
-        assert penalty.reason == PenaltyReason.NO_SHOW
-        assert penalty.points == 3
+        assert penalty.reason == PenaltyReason.OTHER
+        assert penalty.memo == "no_show"
+        assert penalty.points == 2
 
         # 사용자 점수 확인
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 3
+        assert updated_user.penalty_points == 2
 
     def test_no_show_resets_streak(self, penalty_service, create_test_user):
         """노쇼 발생 시 정상 이용 연속 횟수 리셋"""
@@ -78,6 +79,20 @@ class TestLateCancelPenalty:
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
         assert updated_user.penalty_points == 2
+
+    def test_apply_late_cancel_rejects_duplicate(self, penalty_service, create_test_user):
+        user = create_test_user(penalty_points=0)
+
+        penalty_service.apply_late_cancel(
+            user=user, booking_type="room_booking", booking_id="booking-456"
+        )
+
+        with pytest.raises(PenaltyError) as exc_info:
+            penalty_service.apply_late_cancel(
+                user=user, booking_type="room_booking", booking_id="booking-456"
+            )
+
+        assert "중복" in str(exc_info.value)
 
 
 class TestLateReturnPenalty:
@@ -130,6 +145,26 @@ class TestLateReturnPenalty:
         )
 
         assert penalty.points == 2
+
+    def test_apply_late_return_rejects_duplicate(self, penalty_service, create_test_user):
+        user = create_test_user(penalty_points=0)
+
+        penalty_service.apply_late_return(
+            user=user,
+            booking_type="room_booking",
+            booking_id="booking-789",
+            delay_minutes=25,
+        )
+
+        with pytest.raises(PenaltyError) as exc_info:
+            penalty_service.apply_late_return(
+                user=user,
+                booking_type="room_booking",
+                booking_id="booking-789",
+                delay_minutes=25,
+            )
+
+        assert "중복" in str(exc_info.value)
 
     def test_apply_late_return_zero_delay_returns_none(
         self, penalty_service, create_test_user
@@ -370,7 +405,7 @@ class TestPenaltyReset90Days:
         old_penalty = Penalty(
             id=generate_id(),
             user_id=user.id,
-            reason=PenaltyReason.NO_SHOW,
+            reason=PenaltyReason.OTHER,
             points=3,
             related_type="room_booking",
             related_id="old-booking",
@@ -400,7 +435,7 @@ class TestPenaltyReset90Days:
         recent_penalty = Penalty(
             id=generate_id(),
             user_id=user.id,
-            reason=PenaltyReason.NO_SHOW,
+            reason=PenaltyReason.OTHER,
             points=3,
             related_type="room_booking",
             related_id="recent-booking",
@@ -432,7 +467,7 @@ class TestPenaltyThresholds:
     """패널티 임계값 제한 테스트"""
 
     def test_3_points_triggers_restriction(self, penalty_service, create_test_user):
-        """3점 달성 시 7일 제한 적용"""
+        """2점 단일 노쇼는 제한을 유발하지 않는다"""
         user = create_test_user(penalty_points=0)
 
         # 3점 패널티 적용
@@ -441,32 +476,24 @@ class TestPenaltyThresholds:
         )
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 3
-        assert updated_user.restriction_until is not None
-
-        # restriction_until이 약 7일 후인지 확인
-        restriction_end = datetime.fromisoformat(updated_user.restriction_until)
-        expected_end = datetime.now() + timedelta(days=7)
-        assert (
-            abs((restriction_end - expected_end).total_seconds()) < 60
-        )  # 1분 오차 허용
+        assert updated_user.penalty_points == 2
+        assert updated_user.restriction_until is None
 
     def test_6_points_triggers_ban(self, penalty_service, create_test_user):
         """6점 달성 시 30일 이용 금지"""
         user = create_test_user(penalty_points=3)
 
-        # +3점으로 6점 달성
         penalty_service.apply_no_show(
             user=user, booking_type="room_booking", booking_id="booking-2"
         )
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 6
+        assert updated_user.penalty_points == 5
         assert updated_user.restriction_until is not None
 
-        # restriction_until이 약 30일 후인지 확인
+        # restriction_until이 약 7일 후인지 확인
         restriction_end = datetime.fromisoformat(updated_user.restriction_until)
-        expected_end = datetime.now() + timedelta(days=30)
+        expected_end = datetime.now() + timedelta(days=7)
         assert abs((restriction_end - expected_end).total_seconds()) < 60
 
 
@@ -540,7 +567,7 @@ class TestPenaltyHistory:
         assert len(penalties) == 3
 
         reasons = {p.reason for p in penalties}
-        assert PenaltyReason.NO_SHOW in reasons
+        assert PenaltyReason.OTHER in reasons
         assert PenaltyReason.LATE_CANCEL in reasons
         assert PenaltyReason.LATE_RETURN in reasons
 

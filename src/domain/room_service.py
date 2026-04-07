@@ -30,13 +30,13 @@ from src.storage.repositories import (
 from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
-    MAX_BOOKING_DAYS,
-    TIME_SLOT_MINUTES,
     MAX_ACTIVE_ROOM_BOOKINGS,
-    LATE_CANCEL_PENALTY,
-    LATE_CANCEL_THRESHOLD_MINUTES,
     START_REQUEST_CUTOFF_HOUR,
     END_REQUEST_CUTOFF_HOUR,
+    FIXED_BOOKING_START_HOUR,
+    FIXED_BOOKING_START_MINUTE,
+    FIXED_BOOKING_END_HOUR,
+    FIXED_BOOKING_END_MINUTE,
 )
 
 
@@ -116,12 +116,10 @@ class RoomService:
             )
 
         if status["is_restricted"]:
-            total_active = len(
-                self.booking_repo.get_active_by_user(current_user.id)
-            ) + len(self.equipment_booking_repo.get_active_by_user(current_user.id))
-            if total_active >= 1:
+            room_active = len(self.booking_repo.get_active_by_user(current_user.id))
+            if room_active >= 1:
                 raise RoomBookingError(
-                    f"패널티로 인해 활성 예약 1건만 허용됩니다. 현재 활성 예약: {total_active}건"
+                    "패널티로 인해 추가 예약이 불가합니다."
                 )
 
         return current_user
@@ -389,7 +387,7 @@ class RoomService:
                         f"회의실이 현재 {room.status.value} 상태입니다."
                     )
 
-                self._validate_booking_time(start_time, end_time)
+                start_time, end_time = self._validate_booking_time(start_time, end_time)
 
                 active_bookings = self.booking_repo.get_active_by_user(user.id)
                 if len(active_bookings) >= effective_max_active:
@@ -428,28 +426,38 @@ class RoomService:
                 return booking
 
     def _validate_booking_time(self, start_time, end_time):
-        """예약 시간 유효성 검사"""
         now = self.clock.now()
-
-        # 과거 시간 예약 불가
         if start_time < now:
-            raise RoomBookingError("과거 시간은 예약할 수 없습니다.")
-
-        # 종료가 시작보다 나중이어야 함
+            raise RoomBookingError("과거 시간은 선택할 수 없습니다.")
         if end_time <= start_time:
-            raise RoomBookingError("종료 시간은 시작 시간 이후여야 합니다.")
+            raise RoomBookingError("종료 시간은 시작 시간보다 늦어야 합니다.")
+        if start_time.minute % 30 != 0 or end_time.minute % 30 != 0:
+            raise RoomBookingError("시간은 30분 단위로만 입력 가능합니다.")
 
-        # 14일 이내 예약만 가능
-        max_date = now + timedelta(days=MAX_BOOKING_DAYS)
-        if start_time > max_date:
-            raise RoomBookingError(f"{MAX_BOOKING_DAYS}일 이내의 예약만 가능합니다.")
+        normalized_start = datetime.combine(
+            start_time.date(),
+            datetime.min.time().replace(
+                hour=FIXED_BOOKING_START_HOUR,
+                minute=FIXED_BOOKING_START_MINUTE,
+            ),
+        )
+        normalized_end = datetime.combine(
+            end_time.date(),
+            datetime.min.time().replace(
+                hour=FIXED_BOOKING_END_HOUR,
+                minute=FIXED_BOOKING_END_MINUTE,
+            ),
+        )
 
-        # 30분 단위 확인
-        if start_time.minute % TIME_SLOT_MINUTES != 0 or start_time.second != 0:
-            raise RoomBookingError(f"예약은 {TIME_SLOT_MINUTES}분 단위로만 가능합니다.")
-
-        if end_time.minute % TIME_SLOT_MINUTES != 0 or end_time.second != 0:
-            raise RoomBookingError(f"예약은 {TIME_SLOT_MINUTES}분 단위로만 가능합니다.")
+        today = now.date()
+        if normalized_start.date() < today:
+            raise RoomBookingError("과거 시간은 선택할 수 없습니다.")
+        if normalized_start.date() > today + timedelta(days=180):
+            raise RoomBookingError("예약 시작일은 오늘로부터 180일 이내여야 합니다.")
+        duration_days = (normalized_end.date() - normalized_start.date()).days + 1
+        if duration_days > 14:
+            raise RoomBookingError("예약 기간은 최대 14일까지 가능합니다.")
+        return normalized_start, normalized_end
 
     def modify_booking(self, user, booking_id, new_start_time, new_end_time):
         """
@@ -481,7 +489,9 @@ class RoomService:
                         "예약 대기(reserved) 상태만 변경 가능합니다."
                     )
 
-                self._validate_booking_time(new_start_time, new_end_time)
+                new_start_time, new_end_time = self._validate_booking_time(
+                    new_start_time, new_end_time
+                )
 
                 conflicts = self.booking_repo.get_conflicting(
                     booking.room_id,
@@ -539,8 +549,7 @@ class RoomService:
                 is_late_cancel = False
                 start_time = datetime.fromisoformat(booking.start_time)
                 current_time = self.clock.now()
-                minutes_to_start = (start_time - current_time).total_seconds() / 60
-                if 0 <= minutes_to_start <= LATE_CANCEL_THRESHOLD_MINUTES:
+                if current_time >= start_time:
                     is_late_cancel = True
                     booking_user = self.user_repo.get_by_id(booking.user_id)
                     if booking_user is None:
@@ -631,7 +640,9 @@ class RoomService:
                 if start <= now:
                     raise RoomBookingError("이미 시작된 예약은 변경할 수 없습니다.")
 
-                self._validate_booking_time(new_start_time, new_end_time)
+                new_start_time, new_end_time = self._validate_booking_time(
+                    new_start_time, new_end_time
+                )
 
                 conflicts = self.booking_repo.get_conflicting(
                     booking.room_id,
@@ -914,7 +925,10 @@ class RoomService:
             )
 
             updated = replace(
-                booking, status=RoomBookingStatus.NO_SHOW, updated_at=now_iso()
+                booking,
+                status=RoomBookingStatus.ADMIN_CANCELLED,
+                cancelled_at=now_iso(),
+                updated_at=now_iso(),
             )
 
             self.booking_repo.update(updated)

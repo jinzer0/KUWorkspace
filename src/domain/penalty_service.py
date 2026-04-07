@@ -22,7 +22,6 @@ from src.storage.repositories import (
 from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
-    NO_SHOW_PENALTY,
     LATE_CANCEL_PENALTY,
     LATE_RETURN_PENALTY,
     MAX_DAMAGE_PENALTY,
@@ -78,6 +77,12 @@ class PenaltyService:
             raise PenaltyError("존재하지 않는 사용자입니다.")
         return current_user
 
+    def _ensure_no_duplicate_penalty(
+        self, user_id, reason, related_type, related_id, memo=None
+    ):
+        if self.penalty_repo.exists(user_id, reason, related_type, related_id, memo=memo):
+            raise PenaltyError("동일한 패널티는 중복 부과할 수 없습니다.")
+
     def apply_no_show(self, user, booking_type, booking_id, actor_id="system"):
         """
         노쇼 패널티 적용 (+3점)
@@ -93,26 +98,33 @@ class PenaltyService:
         """
         user = self._get_existing_user(user)
         with global_lock(), UnitOfWork():
+            self._ensure_no_duplicate_penalty(
+                user.id,
+                PenaltyReason.OTHER,
+                booking_type,
+                booking_id,
+                memo="no_show",
+            )
             penalty = Penalty(
                 id=generate_id(),
                 user_id=user.id,
-                reason=PenaltyReason.NO_SHOW,
-                points=NO_SHOW_PENALTY,
+                reason=PenaltyReason.OTHER,
+                points=LATE_CANCEL_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo="체크인/픽업 요청 미이행",
+                memo="no_show",
                 updated_at=now_iso(),
             )
 
             self.penalty_repo.add(penalty)
-            self._update_user_penalty_points(user, NO_SHOW_PENALTY)
+            self._update_user_penalty_points(user, LATE_CANCEL_PENALTY)
 
             self.audit_repo.log_action(
                 actor_id=actor_id,
                 action="apply_no_show_penalty",
                 target_type="user",
                 target_id=user.id,
-                details=f"노쇼 패널티 +{NO_SHOW_PENALTY}점, 예약: {booking_type}/{booking_id}",
+                details=f"노쇼 패널티 +{LATE_CANCEL_PENALTY}점, 예약: {booking_type}/{booking_id}",
             )
 
             return penalty
@@ -132,6 +144,12 @@ class PenaltyService:
         """
         user = self._get_existing_user(user)
         with global_lock(), UnitOfWork():
+            self._ensure_no_duplicate_penalty(
+                user.id,
+                PenaltyReason.LATE_CANCEL,
+                booking_type,
+                booking_id,
+            )
             penalty = Penalty(
                 id=generate_id(),
                 user_id=user.id,
@@ -177,6 +195,12 @@ class PenaltyService:
             return None
 
         with global_lock(), UnitOfWork():
+            self._ensure_no_duplicate_penalty(
+                user.id,
+                PenaltyReason.LATE_RETURN,
+                booking_type,
+                booking_id,
+            )
             penalty = Penalty(
                 id=generate_id(),
                 user_id=user.id,
@@ -229,6 +253,12 @@ class PenaltyService:
             )
 
         with global_lock(), UnitOfWork():
+            self._ensure_no_duplicate_penalty(
+                user.id,
+                PenaltyReason.DAMAGE,
+                booking_type,
+                booking_id,
+            )
             penalty = Penalty(
                 id=generate_id(),
                 user_id=user.id,
