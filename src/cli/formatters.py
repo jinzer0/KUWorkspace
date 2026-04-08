@@ -20,16 +20,6 @@ def format_datetime(dt_str, fmt="%Y-%m-%d %H:%M"):
         return dt_str
 
 
-def format_date(dt_str):
-    """ISO datetime 문자열에서 날짜만 추출"""
-    return format_datetime(dt_str, "%Y-%m-%d")
-
-
-def format_time(dt_str):
-    """ISO datetime 문자열에서 시간만 추출"""
-    return format_datetime(dt_str, "%H:%M")
-
-
 def format_table(headers, rows, col_widths=None):
     """
     고정폭 텍스트 테이블 생성

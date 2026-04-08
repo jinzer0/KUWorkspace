@@ -23,13 +23,13 @@
 - 그러나 런타임/샘플 데이터에는 과거 자동 노쇼 흔적이 있습니다.
   - `data/audit_log.txt`에 `auto_no_show_room` / `auto_no_show_equipment` 항목 존재
   - `data/penalties.txt`에 `예약 시작 후 15분 내 미출석` 메모 존재
-- `tests/unit/test_models.py:252`-`tests/unit/test_models.py:266`도 audit-log roundtrip 예시에서 `action="auto_no_show"`를 사용합니다.
-- 결론: 코드베이스 산출물과 샘플 데이터가 pre-PLAN 노쇼 모델을 반영하고 있어 개발자/독자를 혼동시킬 수 있습니다.
+- 과거에는 `tests/unit/test_models.py`의 audit-log roundtrip 예시도 `action="auto_no_show"`를 사용했지만, cleanup 패스에서 중립 샘플값으로 정리했습니다.
+- 결론: 실행 데이터 샘플에는 아직 pre-PLAN 노쇼 모델 흔적이 남아 있어 개발자/독자를 혼동시킬 수 있습니다.
 
 ### 4. 코드 주석/테스트에 `PLAN2.md` 참조가 남아 있음
-- `tests/e2e/test_admin_scenarios.py:208`에 여전히 `PLAN2.md`가 등장합니다.
-- `src/storage/repositories.py`, `src/storage/atomic_writer.py` 주석에도 `PLAN2.md` 참조가 남아 있습니다.
-- 결론: `docs/PLAN.md:5`-`docs/PLAN.md:7`에서 `PLAN.md`를 단일 기준으로 선언했음에도, 저장소는 복수 기준 문서가 공존하는 신호를 보냅니다.
+- cleanup 패스 전에는 `tests/e2e/test_admin_scenarios.py`, `src/storage/repositories.py`, `src/storage/atomic_writer.py`에 `PLAN2.md` 참조가 남아 있었습니다.
+- 해당 주석/테스트 wording은 정리했지만, 관련 감사 노트와 데이터 산출물의 legacy 흔적은 여전히 추적 대상입니다.
+- 결론: 소스 코드 내부의 직접 참조는 줄었지만, 레거시 기준 문서 흔적 자체는 완전히 해소되지 않았습니다.
 
 ### 5. `PLAN.md`의 cutoff 워크플로우를 현재 슬롯 시계로는 충실히 표현하기 어려움
 - `docs/PLAN.md:107`-`docs/PLAN.md:113`는 시작/종료 cutoff를 각각 `10:00`, `19:00`로 정의합니다.

@@ -263,10 +263,10 @@ class TestAuditLog:
         log = AuditLog(
             id=generate_id(),
             actor_id="system",
-            action="auto_no_show",
+            action="policy_review",
             target_type="room_booking",
             target_id="booking-789",
-            details="자동 노쇼 판정",
+            details="정책 검토 기록",
         )
 
         json_str = log.to_json()
@@ -274,13 +274,13 @@ class TestAuditLog:
 
         assert restored.id == log.id
         assert restored.actor_id == "system"
-        assert restored.action == "auto_no_show"
+        assert restored.action == "policy_review"
 
     def test_audit_log_record_sanitizes_newlines_and_truncates_details(self):
         log = AuditLog(
             id=generate_id(),
             actor_id="system",
-            action="auto_no_show",
+            action="policy_review",
             target_type="room_booking",
             target_id="booking-789",
             details="첫줄\r\n둘째줄-" + "b" * 50,

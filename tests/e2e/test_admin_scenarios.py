@@ -210,7 +210,7 @@ class TestAdminBookingCancellation:
     def test_admin_cannot_cancel_checked_in_booking(
         self, auth_service, room_service, create_test_room, mock_now
     ):
-        """PLAN2.md: 관리자 취소는 reserved -> admin_cancelled만 허용, checked_in 상태는 취소 불가"""
+        """관리자 취소는 reserved -> admin_cancelled만 허용하고 checked_in 상태는 취소 불가"""
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
@@ -228,7 +228,7 @@ class TestAdminBookingCancellation:
             room_service.request_check_in(user, booking.id)
             room_service.check_in(admin, booking.id)
 
-            # PLAN2.md: 체크인 상태에서는 관리자 취소 불가
+            # 체크인 상태에서는 관리자 취소 불가
             with pytest.raises(RoomBookingError) as exc_info:
                 room_service.admin_cancel_booking(admin, booking.id, "긴급 상황")
 

@@ -2,11 +2,10 @@
 Repository 클래스 - 엔티티별 데이터 접근 계층
 
 모든 쓰기 작업은 전역 잠금 하에서 수행되어야 함.
-PLAN2.md 준수: 다중 파일 쓰기는 UnitOfWork를 통해 원자적으로 처리
+다중 파일 쓰기는 UnitOfWork를 통해 원자적으로 처리
 """
 
 from datetime import datetime
-
 from src.config import (
     USERS_FILE,
     ROOMS_FILE,
@@ -50,7 +49,7 @@ def require_write_lock():
 
 class UnitOfWork:
     """
-    PLAN2.md 준수 다중 파일 트랜잭션 (스택 기반 중첩 지원)
+    다중 파일 트랜잭션 (스택 기반 중첩 지원)
 
     사용법:
         with UnitOfWork() as uow:

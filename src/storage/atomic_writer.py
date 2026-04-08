@@ -3,7 +3,7 @@
 
 임시 파일에 쓰고 원본 파일로 교체하여 데이터 무결성 보장
 
-PLAN2.md 쓰기 절차:
+현재 저장 계층 쓰기 절차:
 1. 전역 락 획득
 2. 관련 txt 파일 전체 로드
 3. 메모리에서 정책 검증 및 수정
@@ -70,7 +70,7 @@ def atomic_write_jsonl(file_path, records, to_json):
 
 def staged_atomic_write_multi(file_contents):
     """
-    PLAN2.md 준수: 여러 파일을 단계적으로 원자적 쓰기
+    여러 파일을 단계적으로 원자적 쓰기
 
     1. 모든 파일을 *.tmp에 먼저 저장 (staging)
     2. 기존 원본 파일을 *.bak에 백업 (롤백 대비)

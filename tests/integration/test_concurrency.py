@@ -5,8 +5,8 @@
 - 동시 예약 시 하나만 성공 (파일 잠금)
 - 동시 회원가입 시 중복 방지
 - 잠금 획득 실패 시 처리
-- 동시 장비 예약 시 하나만 성공 (PLAN2.md)
-- 원자적 쓰기로 중단 안전성 보장 (PLAN2.md)
+- 동시 장비 예약 시 하나만 성공
+- 원자적 쓰기로 중단 안전성 보장
 """
 
 import pytest
@@ -386,7 +386,7 @@ class TestConcurrentEquipmentBooking:
         self, temp_data_dir, user_factory, user_repo
     ):
         """
-        PLAN2.md: 동일 시간대 동시 장비 예약 시 하나만 성공
+        동일 시간대 동시 장비 예약 시 하나만 성공해야 한다.
         """
         user1 = user_factory(username="equip_concurrent1")
         user2 = user_factory(username="equip_concurrent2")
@@ -454,7 +454,7 @@ class TestAtomicWriteSafety:
 
     def test_atomic_write_preserves_original_on_failure(self, temp_data_dir):
         """
-        PLAN2.md: 원자적 쓰기 실패 시 원본 파일 보존 확인
+        원자적 쓰기 실패 시 원본 파일이 보존되어야 한다.
         """
         from src.storage.atomic_writer import atomic_write_jsonl
         from src.storage.jsonl_handler import decode_record

@@ -52,9 +52,3 @@ def build_daily_booking_period(start_date, end_date):
         time(hour=FIXED_BOOKING_END_HOUR, minute=FIXED_BOOKING_END_MINUTE),
     )
     return start_time, end_time
-
-
-def calculate_request_delay_minutes(end_time, requested_at):
-    if requested_at <= end_time:
-        return 0
-    return int((requested_at - end_time).total_seconds() / 60)
