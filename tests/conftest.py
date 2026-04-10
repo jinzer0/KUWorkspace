@@ -180,6 +180,7 @@ def temp_data_dir(tmp_path):
     equipment_bookings_file = data_dir / "equipment_booking.txt"
     penalties_file = data_dir / "penalties.txt"
     audit_log_file = data_dir / "audit_log.txt"
+    clock_file = data_dir / "clock.txt"
 
     # Patch config paths AND the DATA_FILES list itself (critical for ensure_data_dir)
     isolated_data_files = [
@@ -190,6 +191,7 @@ def temp_data_dir(tmp_path):
         equipment_bookings_file,
         penalties_file,
         audit_log_file,
+        clock_file,
     ]
 
     with patch("src.config.DATA_DIR", data_dir), patch(
@@ -208,6 +210,8 @@ def temp_data_dir(tmp_path):
         "src.config.PENALTIES_FILE", penalties_file
     ), patch(
         "src.config.AUDIT_LOG_FILE", audit_log_file
+    ), patch(
+        "src.config.CLOCK_FILE", clock_file
     ), patch(
         "src.storage.file_lock.DATA_DIR", data_dir
     ), patch(
