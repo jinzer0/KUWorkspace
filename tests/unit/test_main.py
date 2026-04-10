@@ -40,6 +40,17 @@ def test_prompt_initial_clock_accepts_space_separated_date(monkeypatch):
     assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
 
 
+def test_prompt_initial_clock_accepts_hhmm_slot(monkeypatch):
+    inputs = iter(["2026-06-15", "0900"])
+
+    monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    clock = prompt_initial_clock()
+
+    assert clock.now() == datetime(2026, 6, 15, 9, 0, 0)
+
+
 def test_prompt_initial_clock_retries_on_invalid_slot(monkeypatch, capsys):
     inputs = iter(["2026-06-15", "10:00", "2026-06-15", "18:00"])
 
@@ -49,7 +60,19 @@ def test_prompt_initial_clock_retries_on_invalid_slot(monkeypatch, capsys):
     clock = prompt_initial_clock()
 
     assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
-    assert "시작 슬롯은 09:00 또는 18:00만 가능합니다." in capsys.readouterr().out
+    assert "09 또는 18" in capsys.readouterr().out
+
+
+def test_prompt_initial_clock_retries_on_outer_whitespace(monkeypatch, capsys):
+    inputs = iter([" 2026-06-15", "0900", "2026-06-15", "0900"])
+
+    monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    clock = prompt_initial_clock()
+
+    assert clock.now() == datetime(2026, 6, 15, 9, 0, 0)
+    assert "공백" in capsys.readouterr().out
 
 
 def test_prompt_initial_clock_retries_when_earlier_than_latest_data(monkeypatch, capsys):
