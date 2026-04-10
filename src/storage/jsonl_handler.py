@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import List, Optional
 
+from src.storage.integrity import DataIntegrityError
+
 
 def _escape_field(value: str) -> str:
     return value.replace("\\", "\\\\").replace("|", "\\|")
@@ -42,7 +44,7 @@ def _split_escaped(line: str) -> list[str]:
             continue
         buf.append(ch)
     if escaped:
-        buf.append("\\")
+        raise ValueError("잘못된 이스케이프 시퀀스입니다.")
     parts.append("".join(buf))
     return parts
 
@@ -79,17 +81,38 @@ def decode_record(line: str) -> List[Optional[str]]:
 
 def read_jsonl(file_path, from_json):
     if not file_path.exists():
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.touch()
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.touch()
+        except OSError as error:
+            raise DataIntegrityError(
+                f"데이터 파일을 생성할 수 없습니다: {file_path} ({error})"
+            ) from error
         return []
 
     records = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.rstrip("\n")
-            if not line:
-                continue
-            records.append(from_json(decode_record(line)))
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line_no, raw_line in enumerate(f, start=1):
+                line = raw_line.rstrip("\n")
+                if not line:
+                    raise DataIntegrityError(
+                        f"데이터 파일 형식이 올바르지 않습니다: {file_path} {line_no}번째 줄이 비어 있습니다."
+                    )
+                try:
+                    records.append(from_json(decode_record(line)))
+                except DataIntegrityError:
+                    raise
+                except (ValueError, TypeError, IndexError, UnicodeDecodeError) as error:
+                    raise DataIntegrityError(
+                        f"데이터 파일 형식이 올바르지 않습니다: {file_path} {line_no}번째 줄 ({error})"
+                    ) from error
+    except DataIntegrityError:
+        raise
+    except OSError as error:
+        raise DataIntegrityError(
+            f"데이터 파일을 읽을 수 없습니다: {file_path} ({error})"
+        ) from error
     return records
 
 
