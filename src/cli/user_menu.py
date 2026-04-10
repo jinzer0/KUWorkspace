@@ -2,6 +2,8 @@
 일반 사용자 메뉴 - 회의실/장비 예약, 조회, 취소
 """
 
+from datetime import datetime
+
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
@@ -77,6 +79,43 @@ class UserMenu:
         )
         print("  예약 시작일은 내일부터 선택할 수 있고, 오늘로부터 최대 180일까지 가능합니다.")
         print("  예약 기간은 1일 이상 14일 이하입니다.")
+
+    def _is_requestable_now(self, booking, required_status, time_attr, current_time):
+        if booking.status != required_status:
+            return False
+        return datetime.fromisoformat(getattr(booking, time_attr)) == current_time
+
+    def _is_room_checkin_requestable_now(self, booking):
+        return self._is_requestable_now(
+            booking=booking,
+            required_status=RoomBookingStatus.RESERVED,
+            time_attr="start_time",
+            current_time=self.room_service.clock.now(),
+        )
+
+    def _is_room_checkout_requestable_now(self, booking):
+        return self._is_requestable_now(
+            booking=booking,
+            required_status=RoomBookingStatus.CHECKED_IN,
+            time_attr="end_time",
+            current_time=self.room_service.clock.now(),
+        )
+
+    def _is_equipment_pickup_requestable_now(self, booking):
+        return self._is_requestable_now(
+            booking=booking,
+            required_status=EquipmentBookingStatus.RESERVED,
+            time_attr="start_time",
+            current_time=self.equipment_service.clock.now(),
+        )
+
+    def _is_equipment_return_requestable_now(self, booking):
+        return self._is_requestable_now(
+            booking=booking,
+            required_status=EquipmentBookingStatus.CHECKED_OUT,
+            time_attr="end_time",
+            current_time=self.equipment_service.clock.now(),
+        )
 
     def run(self):
         """
@@ -389,7 +428,7 @@ class UserMenu:
             requestable = [
                 b
                 for b in self.room_service.get_user_bookings(self.user.id)
-                if b.status == RoomBookingStatus.RESERVED
+                if self._is_room_checkin_requestable_now(b)
             ]
         except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
             self._handle_user_query_error(e)
@@ -432,7 +471,7 @@ class UserMenu:
             requestable = [
                 b
                 for b in self.room_service.get_user_bookings(self.user.id)
-                if b.status == RoomBookingStatus.CHECKED_IN
+                if self._is_room_checkout_requestable_now(b)
             ]
         except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
             self._handle_user_query_error(e)
@@ -737,7 +776,7 @@ class UserMenu:
             requestable = [
                 b
                 for b in self.equipment_service.get_user_bookings(self.user.id)
-                if b.status == EquipmentBookingStatus.RESERVED
+                if self._is_equipment_pickup_requestable_now(b)
             ]
         except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
             self._handle_user_query_error(e)
@@ -780,7 +819,7 @@ class UserMenu:
             requestable = [
                 b
                 for b in self.equipment_service.get_user_bookings(self.user.id)
-                if b.status == EquipmentBookingStatus.CHECKED_OUT
+                if self._is_equipment_return_requestable_now(b)
             ]
         except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
             self._handle_user_query_error(e)
