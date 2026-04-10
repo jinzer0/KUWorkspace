@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from src.cli.user_menu import UserMenu
 from src.domain.models import EquipmentBookingStatus, RoomBookingStatus
@@ -611,3 +612,115 @@ class TestUserMenuRequestableLists:
         menu._request_equipment_return()
 
         assert messages == ["반납 신청 가능한 장비 예약이 없습니다."]
+
+
+class TestCancellationWarnings:
+    def test_room_cancel_warns_before_final_confirmation(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+    ):
+        user = create_test_user()
+        menu = UserMenu(
+            user=user,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+        )
+        booking = SimpleNamespace(
+            id="room-booking-1",
+            room_id="room-1",
+            start_time="2026-04-16T09:00",
+            end_time="2026-04-16T18:00",
+            status=RoomBookingStatus.RESERVED,
+        )
+
+        monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
+        monkeypatch.setattr(menu, "_refresh_user", lambda: True)
+        monkeypatch.setattr(menu.room_service, "get_user_bookings", lambda _user_id: [booking])
+        monkeypatch.setattr(menu.room_service, "get_room", lambda _room_id: type("Room", (), {"name": "회의실 A"})())
+        monkeypatch.setattr(menu.room_service, "will_apply_late_cancel_penalty", lambda _user, _booking_id: True)
+        monkeypatch.setattr(menu.room_service, "cancel_booking", lambda _user, _booking_id: (booking, True))
+        monkeypatch.setattr("src.cli.user_menu.select_from_list", lambda items, prompt: booking.id)
+        monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_info", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_error", lambda *_: None)
+
+        call_order = []
+        monkeypatch.setattr(
+            "src.cli.user_menu.print_warning",
+            lambda msg: call_order.append(("warning", msg)),
+        )
+        monkeypatch.setattr(
+            "src.cli.user_menu.confirm",
+            lambda msg: call_order.append(("confirm", msg)) or True,
+        )
+
+        menu._cancel_room_booking()
+
+        assert call_order[0][0] == "warning"
+        assert call_order[1][0] == "confirm"
+
+    def test_equipment_cancel_warns_before_final_confirmation(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+    ):
+        user = create_test_user()
+        menu = UserMenu(
+            user=user,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+        )
+        booking = SimpleNamespace(
+            id="equipment-booking-1",
+            equipment_id="equipment-1",
+            start_time="2026-04-16T09:00",
+            end_time="2026-04-16T18:00",
+            status=EquipmentBookingStatus.RESERVED,
+        )
+
+        monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
+        monkeypatch.setattr(menu, "_refresh_user", lambda: True)
+        monkeypatch.setattr(menu.equipment_service, "get_user_bookings", lambda _user_id: [booking])
+        monkeypatch.setattr(menu.equipment_service, "get_equipment", lambda _equipment_id: type("Equipment", (), {"name": "노트북 A"})())
+        monkeypatch.setattr(menu.equipment_service, "will_apply_late_cancel_penalty", lambda _user, _booking_id: True)
+        monkeypatch.setattr(menu.equipment_service, "cancel_booking", lambda _user, _booking_id: (booking, True))
+        monkeypatch.setattr("src.cli.user_menu.select_from_list", lambda items, prompt: booking.id)
+        monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_info", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.print_error", lambda *_: None)
+
+        call_order = []
+        monkeypatch.setattr(
+            "src.cli.user_menu.print_warning",
+            lambda msg: call_order.append(("warning", msg)),
+        )
+        monkeypatch.setattr(
+            "src.cli.user_menu.confirm",
+            lambda msg: call_order.append(("confirm", msg)) or True,
+        )
+
+        menu._cancel_equipment_booking()
+
+        assert call_order[0][0] == "warning"
+        assert call_order[1][0] == "confirm"

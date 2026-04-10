@@ -544,6 +544,14 @@ class UserMenu:
         if not booking_id:
             return
 
+        try:
+            if self.room_service.will_apply_late_cancel_penalty(self.user, booking_id):
+                print_warning("이 예약을 지금 취소하면 직전 취소 패널티 2점이 부과됩니다.")
+        except (RoomBookingError, PenaltyError) as e:
+            print_error(str(e))
+            pause()
+            return
+
         if not confirm("정말 취소하시겠습니까?"):
             return
 
@@ -890,6 +898,16 @@ class UserMenu:
 
         booking_id = select_from_list(items, "취소할 예약 선택")
         if not booking_id:
+            return
+
+        try:
+            if self.equipment_service.will_apply_late_cancel_penalty(
+                self.user, booking_id
+            ):
+                print_warning("이 예약을 지금 취소하면 직전 취소 패널티 2점이 부과됩니다.")
+        except (EquipmentBookingError, PenaltyError) as e:
+            print_error(str(e))
+            pause()
             return
 
         if not confirm("정말 취소하시겠습니까?"):
