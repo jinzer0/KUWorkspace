@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 
-
 ALLOWED_CLOCK_SLOTS = {(9, 0), (18, 0)}
 
 _active_clock = None
@@ -9,6 +8,12 @@ _runtime_clock = None
 
 class ClockError(Exception):
     """가상 시계 처리 중 발생하는 오류입니다."""
+
+
+def _persist_runtime_clock(current_time):
+    from src.clock_bootstrap import persist_clock
+
+    persist_clock(current_time)
 
 
 def normalize_slot(dt):
@@ -30,6 +35,7 @@ class SystemClock:
 
     def __init__(self, start_time):
         self._current_time = normalize_slot(start_time)
+        _persist_runtime_clock(self._current_time)
 
     def now(self):
         return self._current_time
@@ -45,10 +51,12 @@ class SystemClock:
 
     def advance(self):
         self._current_time = self.next_slot()
+        _persist_runtime_clock(self._current_time)
         return self._current_time
 
     def set_time(self, new_time):
         self._current_time = normalize_slot(new_time)
+        _persist_runtime_clock(self._current_time)
         return self._current_time
 
 
@@ -101,4 +109,3 @@ def get_runtime_clock():
 
 def get_current_time():
     return get_runtime_clock().now()
-
