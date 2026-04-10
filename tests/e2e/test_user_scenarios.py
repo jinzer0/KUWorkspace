@@ -209,8 +209,7 @@ class TestPenaltyAccumulationFlow:
         with mock_now(fixed_time):
             user = auth_service.signup("penalty_user", "pass")
 
-            # 노쇼로 3점 부여
-            penalty_service.apply_no_show(user, "room_booking", "fake-booking-1")
+            penalty_service.apply_late_cancel(user, "room_booking", "fake-booking-1")
 
             # 상태 확인
             status = penalty_service.get_user_status(user)
