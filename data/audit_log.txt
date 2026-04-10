@@ -1,0 +1,2 @@
+76d00441-7b4e-482d-ab0f-97259af973d8|aaaa|create_room_booking_daily|room_booking|e650bc6a-5035-4abb-8f5b-8fb9ecff21ed|회의실: 회의실 4A, 인원: 4명, 기간: 2026-05-06 09:0|2026-04-07T18:00|2026-04-07T18:00
+bbacb532-1ebe-496d-ac19-b7977b8c54ef|aaaa|modify_room_booking_daily|room_booking|e650bc6a-5035-4abb-8f5b-8fb9ecff21ed|변경: 2026-05-08 09:00:00 ~ 2026-05-12 18:|2026-04-07T18:00|2026-04-07T18:00
