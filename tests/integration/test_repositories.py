@@ -10,8 +10,9 @@
 
 import pytest
 
+from src.storage.integrity import DataIntegrityError
 from src.storage.file_lock import global_lock
-from src.storage.repositories import UserRepository
+from src.storage.repositories import UserRepository, RoomRepository
 from src.domain.models import (
     ResourceStatus,
     RoomBookingStatus,
@@ -289,3 +290,17 @@ class TestDataPersistence:
         all_users = repo.get_all()
 
         assert all_users == []
+
+
+class TestRepositoryIntegrity:
+    def test_room_repository_fails_fast_on_invalid_enum(self, temp_data_dir):
+        room_file = temp_data_dir / "rooms.txt"
+        room_file.write_text(
+            "회의실4A|4|1층|broken_status|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+
+        repo = RoomRepository(file_path=room_file)
+
+        with pytest.raises(DataIntegrityError, match="rooms.txt"):
+            repo.get_all()

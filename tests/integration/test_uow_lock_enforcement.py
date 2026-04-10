@@ -2,6 +2,7 @@ import pytest
 
 from src.storage.file_lock import global_lock
 from src.storage.repositories import UnitOfWork, UserRepository
+from src.storage.integrity import DataIntegrityError
 
 
 def test_unit_of_work_requires_global_lock(temp_data_dir, user_factory):
@@ -23,3 +24,19 @@ def test_unit_of_work_commits_under_global_lock(temp_data_dir, user_factory):
         repo.add(user)
 
     assert repo.get_by_username("uow-with-lock") is not None
+
+
+def test_unit_of_work_fails_fast_on_write_permission_error(
+    temp_data_dir, user_factory, monkeypatch
+):
+    repo = UserRepository(file_path=temp_data_dir / "users.txt")
+    user = user_factory(username="uow-write-fail")
+
+    def fail_save(*_args, **_kwargs):
+        raise DataIntegrityError("필수 데이터 파일을 생성할 수 없습니다: permission denied")
+
+    monkeypatch.setattr("src.storage.repositories.atomic_write_jsonl", fail_save)
+
+    with pytest.raises(DataIntegrityError, match="permission denied"):
+        with global_lock():
+            repo.add(user)
