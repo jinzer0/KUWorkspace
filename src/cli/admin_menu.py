@@ -49,6 +49,7 @@ from src.cli.formatters import (
 from src.cli.validators import (
     get_daily_date_range_input,
     validate_positive_int,
+    validate_reason,
 )
 
 
@@ -154,31 +155,29 @@ class AdminMenu:
             print_header(f"관리자 메뉴 ({self.user.username})")
 
             print("\n[회의실 관리]")
-            print("  1. 회의실 목록")
-            print("  2. 회의실 상태 변경")
-            print("  3. 전체 회의실 예약 조회")
-            print("  4. 회의실 체크인 처리")
-            print("  5. 회의실 퇴실 승인 처리")
-            print("  6. 회의실 예약 변경 (관리자)")
-            print("  7. 회의실 예약 취소 (관리자)")
+            print("  1. 전체 회의실 예약 조회")
+            print("  2. 회의실 목록 조회 및 상태 변경")
+            print("  3. 회의실 체크인 처리")
+            print("  4. 회의실 퇴실 승인 처리")
+            print("  5. 회의실 예약 변경 (관리자)")
+            print("  6. 회의실 예약 취소 (관리자)")
 
             print("\n[장비 관리]")
-            print("  8. 장비 목록")
-            print("  9. 장비 상태 변경")
-            print("  10. 전체 장비 예약 조회")
-            print("  11. 장비 대여 시작 처리")
-            print("  12. 장비 반납 승인 처리")
-            print("  13. 장비 예약 변경 (관리자)")
-            print("  14. 장비 예약 취소 (관리자)")
+            print("  7. 전체 장비 예약 조회")
+            print("  8. 장비 목록 조회 및 상태 변경")
+            print("  9. 장비 대여 시작 처리")
+            print("  10. 장비 반납 승인 처리")
+            print("  11. 장비 예약 변경 (관리자)")
+            print("  12. 장비 예약 취소 (관리자)")
 
             print("\n[사용자 관리]")
-            print("  15. 사용자 목록")
-            print("  16. 사용자 상세 조회")
-            print("  17. 파손/오염 패널티 부여")
-            print("  18. 예약 직전 취소 패널티 부여")
-            print("  19. 회의실 퇴실 지연 처리")
-            print("  20. 장비 반납 지연 처리")
-            print("  21. 운영 시계")
+            print("  13. 사용자 목록")
+            print("  14. 사용자 상세 조회")
+            print("  15. 파손/오염 패널티 부여")
+            print("  16. 예약 직전 취소 패널티 부여")
+            print("  17. 회의실 퇴실 지연 처리")
+            print("  18. 장비 반납 지연 처리")
+            print("  19. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -186,46 +185,42 @@ class AdminMenu:
             choice = input("선택: ").strip()
 
             if choice == "1":
-                self._show_rooms()
-            elif choice == "2":
-                self._change_room_status()
-            elif choice == "3":
                 self._show_all_room_bookings()
-            elif choice == "4":
+            elif choice == "2":
+                self._show_rooms_and_change_status()
+            elif choice == "3":
                 self._room_checkin()
-            elif choice == "5":
+            elif choice == "4":
                 self._room_checkout()
-            elif choice == "6":
+            elif choice == "5":
                 self._admin_modify_room_booking_time()
-            elif choice == "7":
+            elif choice == "6":
                 self._admin_cancel_room_booking()
-            elif choice == "8":
-                self._show_equipment()
-            elif choice == "9":
-                self._change_equipment_status()
-            elif choice == "10":
+            elif choice == "7":
                 self._show_all_equipment_bookings()
-            elif choice == "11":
+            elif choice == "8":
+                self._show_equipment_and_change_status()
+            elif choice == "9":
                 self._equipment_checkout()
-            elif choice == "12":
+            elif choice == "10":
                 self._equipment_return()
-            elif choice == "13":
+            elif choice == "11":
                 self._admin_modify_equipment_booking_time()
-            elif choice == "14":
+            elif choice == "12":
                 self._admin_cancel_equipment_booking()
-            elif choice == "15":
+            elif choice == "13":
                 self._show_users()
-            elif choice == "16":
+            elif choice == "14":
                 self._show_user_detail()
-            elif choice == "17":
+            elif choice == "15":
                 self._apply_damage_penalty()
-            elif choice == "18":
+            elif choice == "16":
                 self._force_late_cancel_penalty()
-            elif choice == "19":
+            elif choice == "17":
                 self._force_room_late_checkout()
-            elif choice == "20":
+            elif choice == "18":
                 self._force_equipment_late_return()
-            elif choice == "21":
+            elif choice == "19":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
@@ -260,9 +255,13 @@ class AdminMenu:
         print(format_table(headers, rows))
         pause()
 
+    def _show_rooms_and_change_status(self):
+        """회의실 목록 조회 및 상태 변경"""
+        self._change_room_status()
+
     def _change_room_status(self):
         """회의실 상태 변경"""
-        print_header("회의실 상태 변경")
+        print_header("회의실 목록 조회 및 상태 변경")
 
         rooms = self.room_service.get_all_rooms()
         if not rooms:
@@ -627,6 +626,11 @@ class AdminMenu:
             return
 
         reason = input("취소 사유: ").strip()
+        valid, error = validate_reason(reason)
+        if not valid:
+            print_error(error)
+            pause()
+            return
 
         if not confirm("정말 취소하시겠습니까?"):
             return
@@ -665,9 +669,13 @@ class AdminMenu:
         print(format_table(headers, rows))
         pause()
 
+    def _show_equipment_and_change_status(self):
+        """장비 목록 조회 및 상태 변경"""
+        self._change_equipment_status()
+
     def _change_equipment_status(self):
         """장비 상태 변경"""
-        print_header("장비 상태 변경")
+        print_header("장비 목록 조회 및 상태 변경")
 
         equipment_list = self.equipment_service.get_all_equipment()
         if not equipment_list:
@@ -1001,6 +1009,11 @@ class AdminMenu:
             return
 
         reason = input("취소 사유: ").strip()
+        valid, error = validate_reason(reason)
+        if not valid:
+            print_error(error)
+            pause()
+            return
 
         if not confirm("정말 취소하시겠습니까?"):
             return
@@ -1203,6 +1216,11 @@ class AdminMenu:
             print_error(error)
 
         memo = input("사유: ").strip()
+        valid, error = validate_reason(memo)
+        if not valid:
+            print_error(error)
+            pause()
+            return
         if not memo:
             memo = "파손/오염"
 
