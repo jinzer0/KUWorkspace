@@ -39,6 +39,7 @@ from src.config import (
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
 )
+from src.domain.field_rules import validate_reason_text
 
 
 class RoomBookingError(Exception):
@@ -601,6 +602,10 @@ class RoomService:
 
     def admin_cancel_booking(self, admin, booking_id, reason=""):
         admin = self._get_existing_admin(admin)
+        try:
+            validate_reason_text(reason)
+        except ValueError as error:
+            raise RoomBookingError(str(error)) from error
         with global_lock():
             self._run_policy_checks()
             with UnitOfWork():

@@ -6,7 +6,7 @@
 - 예약 수정: 정상, 권한 확인, 상태 확인
 - 예약 취소: 정상, 직전 취소 판정
 - 체크인/체크아웃: 정상, 지연 계산
-- 노쇼 처리
+- 자동 시작 패널티 미적용
 - 관리자 기능: 예약 수정/취소, 상태 변경
 """
 
@@ -76,7 +76,7 @@ class TestCreateBooking:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = user_factory(username="ghost-user")
+            user = user_factory(username="ghost_user")
             room = create_test_room()
 
             with pytest.raises(RoomBookingError) as exc_info:
@@ -179,7 +179,7 @@ class TestCreateBooking:
             rooms = []
             with global_lock():
                 for i in range(2):
-                    room = room_factory(name=f"Room {i}")
+                    room = room_factory(name=f"회의실{i}C")
                     room_repo.add(room)
                     rooms.append(room)
 
@@ -208,7 +208,7 @@ class TestCreateBooking:
 
         with mock_now(fixed_time):
             user = create_test_user()
-            rooms = [create_test_room(name=f"Bypass Room {i}") for i in range(2)]
+            rooms = [create_test_room(name=f"회의실{i}D") for i in range(2)]
 
             room_service.create_booking(
                 user,
@@ -680,7 +680,7 @@ class TestCheckInOut:
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
-    def test_default_room_service_no_longer_applies_auto_no_show_policy(
+    def test_default_room_service_keeps_reserved_booking_without_auto_start_penalty(
         self,
         room_repo,
         room_booking_repo,
@@ -704,7 +704,7 @@ class TestCheckInOut:
                 audit_repo=audit_repo,
             )
             user = create_test_user()
-            admin = create_test_user(username="admin-default", role=UserRole.ADMIN)
+            admin = create_test_user(username="admin_default", role=UserRole.ADMIN)
             room = create_test_room()
             booking = service.create_booking(
                 user,
@@ -829,7 +829,7 @@ class TestCheckInOut:
 
         with mock_now(fixed_time):
             user = create_test_user()
-            admin = create_test_user(username="admin-force", role=UserRole.ADMIN)
+            admin = create_test_user(username="admin_force", role=UserRole.ADMIN)
             room = create_test_room()
             booking = room_service.create_booking(
                 user,
@@ -1014,8 +1014,8 @@ class TestAdminFunctions:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = create_test_user(username="room-user-1")
-            user2 = create_test_user(username="room-user-2")
+            user = create_test_user(username="room_user_1")
+            user2 = create_test_user(username="room_user_2")
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
 
@@ -1131,7 +1131,7 @@ class TestAuditLogging:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            admin = create_test_user(username="admin-audit", role=UserRole.ADMIN)
+            admin = create_test_user(username="admin_audit", role=UserRole.ADMIN)
             room = create_test_room()
             room_service.update_room_status(admin, room.id, ResourceStatus.MAINTENANCE)
 
