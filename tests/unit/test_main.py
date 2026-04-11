@@ -97,7 +97,11 @@ def test_main_routes_user_to_user_menu_and_returns_to_guest(monkeypatch):
     monkeypatch.setattr(main_module, "PenaltyService", lambda: object())
     monkeypatch.setattr(main_module, "RoomService", lambda penalty_service=None: object())
     monkeypatch.setattr(main_module, "EquipmentService", lambda penalty_service=None: object())
-    monkeypatch.setattr(main_module, "PolicyService", lambda clock_persistor=None: object())
+    monkeypatch.setattr(
+        main_module,
+        "PolicyService",
+        lambda clock_persistor=None, clock_loader=None: object(),
+    )
     monkeypatch.setattr(main_module, "GuestMenu", FakeGuestMenu)
     monkeypatch.setattr(main_module, "UserMenu", FakeUserMenu)
     monkeypatch.setattr(
@@ -154,7 +158,11 @@ def test_main_routes_admin_to_admin_menu(monkeypatch):
     monkeypatch.setattr(main_module, "PenaltyService", lambda: object())
     monkeypatch.setattr(main_module, "RoomService", lambda penalty_service=None: object())
     monkeypatch.setattr(main_module, "EquipmentService", lambda penalty_service=None: object())
-    monkeypatch.setattr(main_module, "PolicyService", lambda clock_persistor=None: object())
+    monkeypatch.setattr(
+        main_module,
+        "PolicyService",
+        lambda clock_persistor=None, clock_loader=None: object(),
+    )
     monkeypatch.setattr(main_module, "GuestMenu", FakeGuestMenu)
     monkeypatch.setattr(
         main_module,
@@ -197,7 +205,11 @@ def test_main_uses_persisted_clock_without_prompt(monkeypatch):
     monkeypatch.setattr(main_module, "PenaltyService", lambda: object())
     monkeypatch.setattr(main_module, "RoomService", lambda penalty_service=None: object())
     monkeypatch.setattr(main_module, "EquipmentService", lambda penalty_service=None: object())
-    monkeypatch.setattr(main_module, "PolicyService", lambda clock_persistor=None: object())
+    monkeypatch.setattr(
+        main_module,
+        "PolicyService",
+        lambda clock_persistor=None, clock_loader=None: object(),
+    )
     monkeypatch.setattr(main_module, "GuestMenu", lambda **_kwargs: SimpleNamespace(run=lambda: None))
     monkeypatch.setattr(main_module, "UserMenu", lambda **_kwargs: SimpleNamespace(run=lambda: True))
     monkeypatch.setattr(main_module, "AdminMenu", lambda **_kwargs: SimpleNamespace(run=lambda: True))
