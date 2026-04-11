@@ -10,6 +10,18 @@ import uuid
 import json
 
 from src.runtime_clock import get_current_time
+from src.domain.field_rules import (
+    validate_username_text,
+    validate_password_text,
+    validate_room_name,
+    validate_room_capacity,
+    validate_room_location,
+    validate_room_description,
+    validate_equipment_name,
+    validate_equipment_asset_type,
+    validate_equipment_serial,
+    validate_equipment_description,
+)
 
 # ===== Enums =====
 
@@ -93,7 +105,7 @@ def normalize_datetime_string(value: Optional[str]) -> Optional[str]:
         return value
 
 
-def normalize_persisted_text(value: Optional[str], max_length: int = 40) -> str:
+def normalize_persisted_text(value: Optional[str], max_length: int = 20) -> str:
     if value is None:
         return ""
     return value.replace("\r", " ").replace("\n", " ")[:max_length]
@@ -139,6 +151,8 @@ class User:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        validate_username_text(self.username)
+        validate_password_text(self.password)
         return [
             self.username,
             self.password,
@@ -160,6 +174,8 @@ class User:
         else:
             user_id, username, password, role, points, streak, restriction_until, created_at, updated_at = record
         user_key = username or user_id or ""
+        validate_username_text(user_key)
+        validate_password_text(password or "")
         return cls(
             id=user_id or user_key,
             username=user_key,
@@ -205,6 +221,10 @@ class Room:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        validate_room_name(self.name)
+        validate_room_capacity(self.capacity)
+        validate_room_location(self.location)
+        validate_room_description(self.description)
         return [
             self.name,
             str(self.capacity),
@@ -225,6 +245,10 @@ class Room:
         else:
             room_id, name, capacity, location, status, description, created_at, updated_at = record
         room_key = name or room_id or ""
+        validate_room_name(room_key)
+        validate_room_capacity(int(capacity or "0"))
+        validate_room_location(location or "")
+        validate_room_description(description or "")
         return cls(
             id=room_id or room_key,
             name=room_key,
@@ -269,6 +293,10 @@ class EquipmentAsset:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        validate_equipment_name(self.name)
+        validate_equipment_asset_type(self.asset_type)
+        validate_equipment_serial(self.serial_number)
+        validate_equipment_description(self.description)
         return [
             self.name,
             self.asset_type,
@@ -289,6 +317,10 @@ class EquipmentAsset:
         else:
             equipment_id, name, asset_type, serial_number, status, description, created_at, updated_at = record
         serial_key = serial_number or equipment_id or ""
+        validate_equipment_name(name or "")
+        validate_equipment_asset_type(asset_type or "")
+        validate_equipment_serial(serial_key)
+        validate_equipment_description(description or "")
         return cls(
             id=equipment_id or serial_key,
             name=name or "",

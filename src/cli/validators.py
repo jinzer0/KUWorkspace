@@ -8,7 +8,9 @@ import re
 from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
     validate_username as validate_auth_username,
+    validate_password as validate_auth_password,
 )
+from src.domain.field_rules import validate_reason_text
 from src.runtime_clock import get_current_time
 
 
@@ -56,25 +58,7 @@ def validate_password(password):
     Returns:
         (valid, error_message)
     """
-    if not isinstance(password, str):
-        return False, "비밀번호를 입력해주세요."
-    
-    # 공백 포함 확인 (plan 4.1.2: 공백 미포함, leading/trailing 포함)
-    if ' ' in password or '\t' in password or '\n' in password:
-        return False, "비밀번호에 공백을 포함할 수 없습니다."
-    
-    password_str = password.strip()
-    
-    if not password_str:
-        return False, "비밀번호를 입력해주세요."
-    
-    if len(password_str) < 4:
-        return False, "비밀번호는 4자 이상이어야 합니다."
-    
-    if len(password_str) > 50:
-        return False, "비밀번호는 50자 이하여야 합니다."
-    
-    return True, ""
+    return validate_auth_password(password)
 
 
 def validate_date_plan(date_str):
@@ -300,15 +284,11 @@ def validate_reason(reason_str):
     # 앞뒤 공백 제거 (입력 후 strip 일반적 관례)
     reason_str = reason_str.strip()
     
-    # 줄바꿈 문자 확인
-    if '\n' in reason_str or '\r' in reason_str:
-        return False, "사유에 줄바꿈을 포함할 수 없습니다."
-    
-    # 길이 확인
-    if len(reason_str) > 20:
-        return False, "사유는 20자 이하여야 합니다."
-    
-    return True, ""
+    try:
+        validate_reason_text(reason_str)
+        return True, ""
+    except ValueError as error:
+        return False, str(error)
 
 
 def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 날짜"):
