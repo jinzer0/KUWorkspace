@@ -19,6 +19,7 @@ from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
     PenaltyReason,
+    UserRole,
 )
 from src.storage.file_lock import global_lock
 
@@ -132,6 +133,64 @@ class TestClockAdvance:
         assert result["can_advance"] is True
         logs = audit_repo.get_by_actor("admin-2")
         assert any(log.action == "clock_advance" for log in logs)
+
+    def test_prepare_advance_for_actor_shows_personalized_events_for_user(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+        user = create_test_user(username="user-personal")
+        room = create_test_room()
+
+        booking = RoomBooking(
+            id="personal-booking",
+            user_id=user.id,
+            room_id=room.id,
+            start_time=current_time.isoformat(),
+            end_time=datetime(2024, 6, 16, 18, 0, 0).isoformat(),
+            status=RoomBookingStatus.CHECKED_IN,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
+
+        result = policy_service.prepare_advance_for_actor(actor_id=user.id)
+
+        assert any("본인의 회의실 예약이 종료될 예정입니다." in event for event in result["events"])
+        assert all("당일 종료 예정 회의실" not in event for event in result["events"])
+
+    def test_prepare_advance_for_actor_keeps_aggregate_events_for_admin(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+        admin = create_test_user(username="admin-personal", role=UserRole.ADMIN)
+        user = create_test_user(username="user-aggregate")
+        room = create_test_room()
+
+        booking = RoomBooking(
+            id="aggregate-booking",
+            user_id=user.id,
+            room_id=room.id,
+            start_time=current_time.isoformat(),
+            end_time=datetime(2024, 6, 16, 18, 0, 0).isoformat(),
+            status=RoomBookingStatus.CHECKED_IN,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
+
+        result = policy_service.prepare_advance_for_actor(actor_id=admin.id)
+
+        assert any("당일 종료 예정 회의실" in event for event in result["events"])
 
 
 class TestPenaltyResetAutomation:
