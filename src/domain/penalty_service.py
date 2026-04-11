@@ -33,6 +33,7 @@ from src.config import (
     PENALTY_RESET_DAYS,
     STREAK_BONUS_COUNT,
 )
+from src.domain.field_rules import validate_reason_text
 
 
 class PenaltyError(Exception):
@@ -111,7 +112,7 @@ class PenaltyService:
                 points=LATE_CANCEL_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo="예약 시작 1시간 이내 취소",
+                memo="예약시작1시간이내취소",
                 updated_at=now_iso(),
             )
 
@@ -162,7 +163,7 @@ class PenaltyService:
                 points=LATE_RETURN_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo=f"지연 {delay_minutes}분 처리",
+                memo=f"지연{delay_minutes}분처리",
                 updated_at=now_iso(),
             )
 
@@ -205,6 +206,10 @@ class PenaltyService:
             raise PenaltyError(
                 f"파손/오염 패널티는 1~{MAX_DAMAGE_PENALTY}점 사이여야 합니다."
             )
+        try:
+            validate_reason_text(memo)
+        except ValueError as error:
+            raise PenaltyError(str(error)) from error
 
         with global_lock(), UnitOfWork():
             self._ensure_no_duplicate_penalty(
