@@ -88,10 +88,9 @@ def main():
     penalty_service = PenaltyService()
     room_service = RoomService(penalty_service=penalty_service)
     equipment_service = EquipmentService(penalty_service=penalty_service)
-    policy_service = PolicyService(
-        clock_persistor=save_clock_time,
-        clock_loader=load_clock_time,
-    )
+    policy_service = PolicyService(clock_persistor=save_clock_time)
+    if hasattr(policy_service, "clock_loader"):
+        policy_service.clock_loader = load_clock_time
 
     while True:
         guest_menu = GuestMenu(auth_service=auth_service, policy_service=policy_service)
