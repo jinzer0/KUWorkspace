@@ -19,7 +19,10 @@ class ClockMenu:
 
     def run(self):
         while True:
-            preview = self.policy_service.prepare_advance()
+            if hasattr(self.policy_service, "prepare_advance_for_actor"):
+                preview = self.policy_service.prepare_advance_for_actor(self.actor_id)
+            else:
+                preview = self.policy_service.prepare_advance()
 
             print_header("운영 시계")
             print(f"  현재 운영 시점: {format_datetime(preview['current_time'].isoformat())}")

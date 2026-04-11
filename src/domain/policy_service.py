@@ -6,6 +6,7 @@ from dataclasses import replace
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
+    UserRole,
     now_iso,
 )
 from src.storage.repositories import (
@@ -38,6 +39,7 @@ class PolicyService:
         audit_repo=None,
         penalty_service=None,
         clock=None,
+        clock_persistor=None,
     ):
         self.clock = clock or get_runtime_clock()
         self.user_repo = user_repo or UserRepository()
@@ -53,6 +55,7 @@ class PolicyService:
             audit_repo=self.audit_repo,
             clock=self.clock,
         )
+        self.clock_persistor = clock_persistor
 
     def run_all_checks(self, current_time=None):
         if current_time is None:
@@ -83,6 +86,18 @@ class PolicyService:
             current_time = self.clock.now()
         return self._build_advance_state(current_time)
 
+    def prepare_advance_for_actor(self, actor_id="system", current_time=None):
+        if current_time is None:
+            current_time = self.clock.now()
+        state = self._build_advance_state(current_time)
+        state["events"] = self._events_for_actor(
+            actor_id,
+            current_time,
+            state["next_time"],
+            state["events"],
+        )
+        return state
+
     def advance_time(self, actor_id="system"):
         with global_lock(), UnitOfWork():
             current_time = self.clock.now()
@@ -99,10 +114,16 @@ class PolicyService:
                 return state
 
             next_time = self.clock.advance()
-            maintenance = self._run_checks_locked(next_time)
-            events = list(state["events"])
-            events.extend(auto_events)
-            events.extend(self._build_post_advance_events(next_time, maintenance))
+            try:
+                maintenance = self._run_checks_locked(next_time)
+                events = list(state["events"])
+                events.extend(auto_events)
+                events.extend(self._build_post_advance_events(next_time, maintenance))
+                if self.clock_persistor:
+                    self.clock_persistor(next_time)
+            except Exception:
+                self.clock.set_time(current_time)
+                raise
 
             self.audit_repo.log_action(
                 actor_id=actor_id,
@@ -113,7 +134,7 @@ class PolicyService:
             )
 
             state["next_time"] = next_time
-            state["events"] = events
+            state["events"] = self._events_for_actor(actor_id, current_time, next_time, events)
             state["maintenance"] = maintenance
             return state
 
@@ -433,6 +454,56 @@ class PolicyService:
             events.append(f"이용 금지 사용자 미래 예약 자동 취소 {cancelled_count}건")
 
         return events
+
+    def _is_admin_actor(self, actor_id):
+        if actor_id in {"system", "guest"}:
+            return actor_id == "system"
+        actor = self.user_repo.get_by_id(actor_id)
+        return actor is not None and actor.role == UserRole.ADMIN
+
+    def _events_for_actor(self, actor_id, current_time, next_time, admin_events=None):
+        if self._is_admin_actor(actor_id):
+            return list(admin_events) if admin_events is not None else []
+
+        room_count = self._count_actor_room_events(actor_id, next_time)
+        equipment_count = self._count_actor_equipment_events(actor_id, next_time)
+        events = [f"{next_time.strftime('%Y-%m-%d %H:%M')}로 이동 준비"]
+
+        if room_count == 0 and equipment_count == 0:
+            events.append("본인 관련 예정 이벤트가 없습니다.")
+            return events
+
+        if current_time.hour == 9:
+            if room_count:
+                events.append("본인의 회의실 예약이 종료될 예정입니다.")
+            if equipment_count:
+                events.append("본인의 장비 반납 기한이 도래할 예정입니다.")
+        else:
+            if room_count:
+                events.append("본인의 회의실 예약 시작이 예정되어 있습니다.")
+            if equipment_count:
+                events.append("본인의 장비 픽업 시작이 예정되어 있습니다.")
+        return events
+
+    def _count_actor_room_events(self, actor_id, target_time):
+        return len(
+            [
+                booking
+                for booking in self.room_booking_repo.get_by_user(actor_id)
+                if booking.status in {RoomBookingStatus.CHECKED_IN, RoomBookingStatus.CHECKOUT_REQUESTED}
+                and datetime.fromisoformat(booking.end_time) == target_time
+            ]
+        )
+
+    def _count_actor_equipment_events(self, actor_id, target_time):
+        return len(
+            [
+                booking
+                for booking in self.equipment_booking_repo.get_by_user(actor_id)
+                if booking.status in {EquipmentBookingStatus.CHECKED_OUT, EquipmentBookingStatus.RETURN_REQUESTED}
+                and datetime.fromisoformat(booking.end_time) == target_time
+            ]
+        )
 
     def _check_penalty_resets(self, current_time):
         """90일 경과 패널티 초기화"""
