@@ -129,7 +129,7 @@ class TestAdminMenuPolicyChecks:
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
-        target = create_test_user(username="target-user")
+        target = create_test_user(username="target_user")
         menu = AdminMenu(
             user=admin,
             auth_service=auth_service,
@@ -169,7 +169,7 @@ class TestAdminMenuPolicyChecks:
         create_test_user,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
-        target = create_test_user(username="target-user")
+        target = create_test_user(username="target_user")
         menu = AdminMenu(
             user=admin,
             auth_service=auth_service,
@@ -303,7 +303,7 @@ class TestAdminMenuPolicyChecks:
         def stale_on_second_lookup(_user_id):
             lookup_count["count"] += 1
             if lookup_count["count"] == 1:
-                return user_factory(username="temp-user")
+                return user_factory(username="temp_user")
             return None
 
         monkeypatch.setattr(menu, "_safe_get_user", stale_on_second_lookup)

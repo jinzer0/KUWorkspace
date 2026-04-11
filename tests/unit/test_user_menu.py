@@ -245,8 +245,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="room_checkin_user")
-        room = create_test_room(name="체크인 회의실")
+        user = create_test_user(username="room_ckin_user")
+        room = create_test_room(name="회의실2A")
 
         eligible = room_booking_factory(
             user_id=user.id,
@@ -297,8 +297,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="room_checkin_empty_user")
-        room = create_test_room(name="빈 회의실")
+        user = create_test_user(username="room_ckin_empty")
+        room = create_test_room(name="회의실2C")
 
         future_booking = room_booking_factory(
             user_id=user.id,
@@ -341,8 +341,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 18, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="room_checkout_user")
-        room = create_test_room(name="퇴실 회의실")
+        user = create_test_user(username="room_ckout_user")
+        room = create_test_room(name="회의실2B")
 
         eligible = room_booking_factory(
             user_id=user.id,
@@ -393,8 +393,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 18, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="room_checkout_empty_user")
-        room = create_test_room(name="퇴실 없음 회의실")
+        user = create_test_user(username="room_ckout_empty")
+        room = create_test_room(name="회의실2D")
 
         not_yet_due = room_booking_factory(
             user_id=user.id,
@@ -437,8 +437,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="equipment_pickup_user")
-        equipment = create_test_equipment(name="프로젝터 A")
+        user = create_test_user(username="equip_pickup_usr")
+        equipment = create_test_equipment(name="프로젝터A")
 
         eligible = equipment_booking_factory(
             user_id=user.id,
@@ -489,8 +489,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="equipment_pickup_empty_user")
-        equipment = create_test_equipment(name="프로젝터 B")
+        user = create_test_user(username="equip_pickup_emp")
+        equipment = create_test_equipment(name="프로젝터B")
 
         future_booking = equipment_booking_factory(
             user_id=user.id,
@@ -533,8 +533,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 18, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="equipment_return_user")
-        equipment = create_test_equipment(name="노트북 A")
+        user = create_test_user(username="equip_return_usr")
+        equipment = create_test_equipment(name="노트북A")
 
         eligible = equipment_booking_factory(
             user_id=user.id,
@@ -585,8 +585,8 @@ class TestUserMenuRequestableLists:
     ):
         fixed_time = datetime(2026, 4, 15, 18, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="equipment_return_empty_user")
-        equipment = create_test_equipment(name="노트북 B")
+        user = create_test_user(username="equip_return_emp")
+        equipment = create_test_equipment(name="노트북B")
 
         not_yet_due = equipment_booking_factory(
             user_id=user.id,
