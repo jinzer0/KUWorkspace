@@ -85,26 +85,26 @@ class TestRoomRepository:
 
     def test_add_and_get_room(self, room_repo, room_factory):
         """회의실 추가 및 조회"""
-        room = room_factory(name="Test Room")
+        room = room_factory(name="회의실9A")
 
         room_repo.add(room)
 
         found = room_repo.get_by_id(room.id)
         assert found is not None
-        assert found.name == "Test Room"
+        assert found.name == "회의실9A"
 
     def test_get_available_rooms(self, room_repo, room_factory):
         """예약 가능한 회의실만 조회"""
-        room_repo.add(room_factory(name="Available", status=ResourceStatus.AVAILABLE))
+        room_repo.add(room_factory(name="회의실9E", status=ResourceStatus.AVAILABLE))
         room_repo.add(
-            room_factory(name="Maintenance", status=ResourceStatus.MAINTENANCE)
+            room_factory(name="회의실9F", status=ResourceStatus.MAINTENANCE)
         )
-        room_repo.add(room_factory(name="Disabled", status=ResourceStatus.DISABLED))
+        room_repo.add(room_factory(name="회의실9G", status=ResourceStatus.DISABLED))
 
         available = room_repo.get_available()
 
         assert len(available) == 1
-        assert available[0].name == "Available"
+        assert available[0].name == "회의실9E"
 
 
 class TestRoomBookingRepository:
@@ -261,7 +261,7 @@ class TestAuditLogRepository:
         assert len(all_logs) == 1
         assert "\n" not in all_logs[0].details
         assert "\r" not in all_logs[0].details
-        assert len(all_logs[0].details) == 40
+        assert len(all_logs[0].details) == 20
 
 
 class TestDataPersistence:
