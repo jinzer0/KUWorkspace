@@ -9,6 +9,7 @@ from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
     validate_username as validate_auth_username,
 )
+from src.runtime_clock import get_current_time
 
 
 def validate_positive_int(value_str, min_val=1, max_val=100):
@@ -325,7 +326,7 @@ def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 
         print(f"  ✗ {error}")
 
 
-def get_positive_int_input(prompt, min_val=1, max_val=100):
+def get_positive_int_input(prompt, min_val=1, max_val=100, max_error_msg=None):
     while True:
         value_str = input(f"{prompt}: ").strip()
         if value_str.lower() in ("q", "quit", "취소"):
@@ -334,4 +335,7 @@ def get_positive_int_input(prompt, min_val=1, max_val=100):
         valid, value, error = validate_positive_int(value_str, min_val, max_val)
         if valid:
             return value
-        print(f"  ✗ {error}")
+        if max_error_msg and value_str.isdigit() and int(value_str) > max_val:
+            print(f"  ✗ {max_error_msg}")
+        else:
+            print(f"  ✗ {error}")
