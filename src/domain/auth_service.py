@@ -78,11 +78,13 @@ class AuthService:
         username = normalize_credential(username)
         password = normalize_credential(password)
 
-        if not username:
-            raise AuthError("사용자명을 입력해주세요.")
+        valid, error = validate_username(username)
+        if not valid:
+            raise AuthError(error)
 
-        if not password:
-            raise AuthError("비밀번호를 입력해주세요.")
+        valid, error = validate_password(password)
+        if not valid:
+            raise AuthError(error)
 
         user = self.user_repo.get_by_username(username)
 
