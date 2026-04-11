@@ -73,7 +73,7 @@ class TestCreateEquipmentBooking:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = user_factory(username="ghost-user")
+            user = user_factory(username="ghost_user")
             equipment = create_test_equipment()
 
             with pytest.raises(EquipmentBookingError) as exc_info:
@@ -140,7 +140,7 @@ class TestCreateEquipmentBooking:
         with mock_now(fixed_time):
             user = create_test_user()
             equipment_items = [
-                create_test_equipment(name=f"Bypass Equipment {i}") for i in range(2)
+                create_test_equipment(name=f"장비{i}") for i in range(2)
             ]
 
             equipment_service.create_booking(
@@ -475,7 +475,7 @@ class TestCheckoutReturn:
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
-    def test_default_equipment_service_no_longer_applies_auto_no_show_policy(
+    def test_default_equipment_service_keeps_reserved_booking_without_auto_start_penalty(
         self,
         equipment_repo,
         equipment_booking_repo,
@@ -499,7 +499,7 @@ class TestCheckoutReturn:
                 audit_repo=audit_repo,
             )
             user = create_test_user()
-            admin = create_test_user(username="admin-default", role=UserRole.ADMIN)
+            admin = create_test_user(username="admin_default", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = service.create_booking(
                 user,
@@ -619,7 +619,7 @@ class TestCheckoutReturn:
 
         with mock_now(fixed_time):
             user = create_test_user()
-            admin = create_test_user(username="admin-force", role=UserRole.ADMIN)
+            admin = create_test_user(username="admin_force", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = equipment_service.create_booking(
                 user,

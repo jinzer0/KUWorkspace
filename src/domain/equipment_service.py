@@ -40,6 +40,7 @@ from src.config import (
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
 )
+from src.domain.field_rules import validate_reason_text
 
 
 class EquipmentBookingError(Exception):
@@ -591,6 +592,10 @@ class EquipmentService:
     def admin_cancel_booking(self, admin, booking_id, reason=""):
         """관리자에 의한 예약 취소"""
         admin = self._get_existing_admin(admin)
+        try:
+            validate_reason_text(reason)
+        except ValueError as error:
+            raise EquipmentBookingError(str(error)) from error
         with global_lock():
             self._run_policy_checks()
             with UnitOfWork():
