@@ -10,6 +10,7 @@ DATA_DIR = BASE_DIR / "data"
 
 # 데이터 파일 경로
 LOCK_FILE = DATA_DIR / ".lock"
+CLOCK_STATE_FILE = DATA_DIR / "clock_state.txt"
 USERS_FILE = DATA_DIR / "users.txt"
 ROOMS_FILE = DATA_DIR / "rooms.txt"
 EQUIPMENTS_FILE = DATA_DIR / "equipments.txt"
@@ -19,6 +20,7 @@ PENALTIES_FILE = DATA_DIR / "penalties.txt"
 AUDIT_LOG_FILE = DATA_DIR / "audit_log.txt"
 
 DATA_FILES = [
+    CLOCK_STATE_FILE,
     USERS_FILE,
     ROOMS_FILE,
     EQUIPMENTS_FILE,

@@ -23,7 +23,7 @@ from src.config import (
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
 )
-from src.runtime_clock import get_runtime_clock
+from src.runtime_clock import get_runtime_clock, compute_next_slot
 
 
 class PolicyService:
@@ -273,7 +273,7 @@ class PolicyService:
         return events
 
     def _build_advance_state(self, current_time):
-        next_time = self.clock.next_slot()
+        next_time = compute_next_slot(current_time)
         blockers = []
 
         if current_time.hour == 9:
