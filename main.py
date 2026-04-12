@@ -106,3 +106,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n프로그램이 중단되었습니다.")
         sys.exit(0)
+print("test")
