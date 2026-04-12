@@ -40,7 +40,6 @@ class PolicyService:
         penalty_service=None,
         clock=None,
         clock_persistor=None,
-        clock_loader=None,
     ):
         self.clock = clock or get_runtime_clock()
         self.user_repo = user_repo or UserRepository()
@@ -57,7 +56,6 @@ class PolicyService:
             clock=self.clock,
         )
         self.clock_persistor = clock_persistor
-        self.clock_loader = clock_loader
 
     def run_all_checks(self, current_time=None):
         if current_time is None:
@@ -84,13 +82,11 @@ class PolicyService:
         return results
 
     def prepare_advance(self, current_time=None):
-        self._sync_clock_from_store()
         if current_time is None:
             current_time = self.clock.now()
         return self._build_advance_state(current_time)
 
     def prepare_advance_for_actor(self, actor_id="system", current_time=None):
-        self._sync_clock_from_store()
         if current_time is None:
             current_time = self.clock.now()
         state = self._build_advance_state(current_time)
@@ -104,7 +100,6 @@ class PolicyService:
 
     def advance_time(self, actor_id="system"):
         with global_lock(), UnitOfWork():
-            self._sync_clock_from_store()
             current_time = self.clock.now()
             auto_events = self._handle_boundary_automation(current_time)
             state = self._build_advance_state(current_time)
@@ -142,15 +137,6 @@ class PolicyService:
             state["events"] = self._events_for_actor(actor_id, current_time, next_time, events)
             state["maintenance"] = maintenance
             return state
-
-    def _sync_clock_from_store(self):
-        if self.clock_loader is None:
-            return
-        persisted_time = self.clock_loader()
-        if persisted_time is None:
-            return
-        if persisted_time != self.clock.now():
-            self.clock.set_time(persisted_time)
 
     def _handle_boundary_automation(self, current_time):
         if current_time.hour == 9:

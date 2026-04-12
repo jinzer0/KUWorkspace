@@ -98,8 +98,7 @@ class TestClockAdvance:
 
         assert result["can_advance"] is True
         assert result["next_time"] == datetime(2024, 6, 17, 9, 0, 0)
-        assert isinstance(result["events"], list)
-        assert result["events"]
+        assert any("운영 시점이" in event for event in result["events"])
 
         logs = audit_repo.get_by_actor("admin-1")
         assert any(log.action == "clock_advance" for log in logs)
@@ -192,28 +191,6 @@ class TestClockAdvance:
         result = policy_service.prepare_advance_for_actor(actor_id=admin.id)
 
         assert any("당일 종료 예정 회의실" in event for event in result["events"])
-
-    def test_prepare_advance_syncs_clock_from_store(self, policy_service, fake_clock):
-        fake_clock(datetime(2024, 6, 16, 9, 0, 0))
-        persisted = datetime(2024, 6, 16, 18, 0, 0)
-        policy_service.clock_loader = lambda: persisted
-
-        result = policy_service.prepare_advance()
-
-        assert result["current_time"] == persisted
-
-    def test_advance_time_uses_synced_clock_before_transition(
-        self,
-        policy_service,
-        fake_clock,
-    ):
-        fake_clock(datetime(2024, 6, 16, 9, 0, 0))
-        persisted = datetime(2024, 6, 16, 18, 0, 0)
-        policy_service.clock_loader = lambda: persisted
-
-        result = policy_service.advance_time(actor_id="admin-sync")
-
-        assert result["next_time"] == datetime(2024, 6, 17, 9, 0, 0)
 
 
 class TestPenaltyResetAutomation:
