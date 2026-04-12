@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime, timedelta
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from src.domain.models import (
     User,
@@ -31,8 +31,6 @@ from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_ACTIVE_ROOM_BOOKINGS,
-    START_REQUEST_CUTOFF_HOUR,
-    END_REQUEST_CUTOFF_HOUR,
     LATE_CANCEL_THRESHOLD_MINUTES,
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
@@ -52,6 +50,15 @@ class AdminRequiredError(Exception):
     """관리자 권한이 필요한 작업에서 발생하는 예외입니다."""
 
     pass
+
+
+@dataclass(frozen=True)
+class RoomOperationalOverview:
+    room_name: str
+    capacity: int
+    location: str
+    operational_status: str
+    reservation_summary: str
 
 
 def _require_admin(user):
@@ -149,20 +156,10 @@ class RoomService:
     def _require_start_request_window(self, booking):
         start_time = datetime.fromisoformat(booking.start_time)
         self._require_current_boundary(start_time, "체크인 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= START_REQUEST_CUTOFF_HOUR:
-            raise RoomBookingError(
-                f"체크인 요청은 {START_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
-            )
 
     def _require_end_request_window(self, booking):
         end_time = datetime.fromisoformat(booking.end_time)
         self._require_current_boundary(end_time, "퇴실 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= END_REQUEST_CUTOFF_HOUR:
-            raise RoomBookingError(
-                f"퇴실 요청은 {END_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
-            )
 
     def _is_late_cancel(self, booking, current_time=None):
         if current_time is None:
@@ -942,6 +939,86 @@ class RoomService:
         """모든 예약 조회 (관리자용)"""
         self._get_existing_admin(admin)
         return self.booking_repo.get_all()
+
+    def get_room_operational_overview(self, admin):
+        """회의실별 운영 현황 개요 조회 (관리자용)"""
+        self._get_existing_admin(admin)
+        now = self.clock.now()
+        rooms = sorted(self.room_repo.get_all(), key=lambda room: room.name)
+        relevant_statuses = {
+            RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
+            RoomBookingStatus.CHECKED_IN,
+            RoomBookingStatus.CHECKOUT_REQUESTED,
+        }
+
+        bookings_by_room = {room.id: [] for room in rooms}
+        for booking in self.booking_repo.get_all():
+            if booking.status in relevant_statuses:
+                bookings_by_room.setdefault(booking.room_id, []).append(booking)
+
+        overview = []
+        for room in rooms:
+            room_bookings = bookings_by_room.get(room.id, [])
+            current_bookings = []
+            upcoming_bookings = []
+
+            for booking in room_bookings:
+                start_time = datetime.fromisoformat(booking.start_time)
+                end_time = datetime.fromisoformat(booking.end_time)
+                if booking.status in {
+                    RoomBookingStatus.CHECKED_IN,
+                    RoomBookingStatus.CHECKOUT_REQUESTED,
+                } and start_time <= now <= end_time:
+                    current_bookings.append(booking)
+                elif booking.status in {
+                    RoomBookingStatus.RESERVED,
+                    RoomBookingStatus.CHECKIN_REQUESTED,
+                } and start_time >= now:
+                    upcoming_bookings.append(booking)
+
+            current_bookings.sort(key=lambda item: item.start_time)
+            upcoming_bookings.sort(key=lambda item: item.start_time)
+
+            if current_bookings:
+                primary = current_bookings[0]
+                operational_status = "사용중"
+                reservation_summary = self._format_overview_summary(
+                    primary.start_time,
+                    primary.end_time,
+                    len(current_bookings),
+                )
+            elif upcoming_bookings:
+                primary = upcoming_bookings[0]
+                operational_status = "예약있음"
+                reservation_summary = self._format_overview_summary(
+                    primary.start_time,
+                    primary.end_time,
+                    len(upcoming_bookings),
+                )
+            else:
+                operational_status = "예약없음"
+                reservation_summary = "X"
+
+            overview.append(
+                RoomOperationalOverview(
+                    room_name=room.name,
+                    capacity=room.capacity,
+                    location=room.location,
+                    operational_status=operational_status,
+                    reservation_summary=reservation_summary,
+                )
+            )
+
+        return overview
+
+    def _format_overview_summary(self, start_time, end_time, booking_count):
+        start_dt = datetime.fromisoformat(start_time)
+        end_dt = datetime.fromisoformat(end_time)
+        summary = f"{start_dt.strftime('%Y-%m-%d')} ~ {end_dt.strftime('%Y-%m-%d')}"
+        if booking_count > 1:
+            summary += f" 외 {booking_count - 1}건"
+        return summary
 
     def get_room_bookings(self, room_id):
         """회의실별 예약 조회"""

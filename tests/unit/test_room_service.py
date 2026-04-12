@@ -14,7 +14,7 @@ import pytest
 from datetime import datetime, timedelta
 from dataclasses import replace
 
-from src.domain.room_service import RoomBookingError
+from src.domain.room_service import AdminRequiredError, RoomBookingError
 from src.domain.models import (
     EquipmentBookingStatus,
     RoomBooking,
@@ -1074,6 +1074,127 @@ class TestAdminFunctions:
                 )
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
+
+    def test_get_room_operational_overview_marks_in_use_reserved_and_empty(
+        self, room_service, create_test_user, create_test_room, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
+            user = create_test_user(username="user1")
+            room_in_use = create_test_room(name="회의실4A")
+            room_reserved = create_test_room(name="회의실4B")
+            room_empty = create_test_room(name="회의실4C")
+
+            with global_lock():
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="in-use-booking",
+                        user_id=user.id,
+                        room_id=room_in_use.id,
+                        start_time=(fixed_time - timedelta(hours=1)).isoformat(),
+                        end_time=(fixed_time + timedelta(hours=1)).isoformat(),
+                        status=RoomBookingStatus.CHECKED_IN,
+                    )
+                )
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="reserved-booking-1",
+                        user_id=user.id,
+                        room_id=room_reserved.id,
+                        start_time=(fixed_time + timedelta(days=1)).isoformat(),
+                        end_time=(fixed_time + timedelta(days=2)).isoformat(),
+                        status=RoomBookingStatus.RESERVED,
+                    )
+                )
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="reserved-booking-2",
+                        user_id=user.id,
+                        room_id=room_reserved.id,
+                        start_time=(fixed_time + timedelta(days=3)).isoformat(),
+                        end_time=(fixed_time + timedelta(days=4)).isoformat(),
+                        status=RoomBookingStatus.RESERVED,
+                    )
+                )
+
+            overview = room_service.get_room_operational_overview(admin)
+
+            by_name = {item.room_name: item for item in overview}
+            assert by_name[room_in_use.name].operational_status == "사용중"
+            assert by_name[room_in_use.name].reservation_summary == "2024-06-15 ~ 2024-06-15"
+            assert by_name[room_reserved.name].operational_status == "예약있음"
+            assert by_name[room_reserved.name].reservation_summary == "2024-06-16 ~ 2024-06-17 외 1건"
+            assert by_name[room_empty.name].operational_status == "예약없음"
+            assert by_name[room_empty.name].reservation_summary == "X"
+
+    def test_get_room_operational_overview_rejects_non_admin(
+        self, room_service, create_test_user, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(username="user1")
+
+            with pytest.raises(AdminRequiredError):
+                room_service.get_room_operational_overview(user)
+
+    def test_get_room_operational_overview_marks_start_boundary_items_as_reserved(
+        self, room_service, create_test_user, create_test_room, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
+            user = create_test_user(username="user1")
+            room = create_test_room(name="회의실4D")
+
+            with global_lock():
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="reserved-now-booking",
+                        user_id=user.id,
+                        room_id=room.id,
+                        start_time=fixed_time.isoformat(),
+                        end_time=fixed_time.replace(hour=18).isoformat(),
+                        status=RoomBookingStatus.RESERVED,
+                    )
+                )
+
+            overview = room_service.get_room_operational_overview(admin)
+            by_name = {item.room_name: item for item in overview}
+
+            assert by_name[room.name].operational_status == "예약있음"
+            assert by_name[room.name].reservation_summary == "2024-06-15 ~ 2024-06-15"
+
+    def test_get_room_operational_overview_marks_start_boundary_checkin_requested_as_reserved(
+        self, room_service, create_test_user, create_test_room, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            admin = create_test_user(username="admin", role=UserRole.ADMIN)
+            user = create_test_user(username="user1")
+            room = create_test_room(name="회의실4E")
+
+            with global_lock():
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="checkin-requested-now-booking",
+                        user_id=user.id,
+                        room_id=room.id,
+                        start_time=fixed_time.isoformat(),
+                        end_time=fixed_time.replace(hour=18).isoformat(),
+                        status=RoomBookingStatus.CHECKIN_REQUESTED,
+                    )
+                )
+
+            overview = room_service.get_room_operational_overview(admin)
+            by_name = {item.room_name: item for item in overview}
+
+            assert by_name[room.name].operational_status == "예약있음"
+            assert by_name[room.name].reservation_summary == "2024-06-15 ~ 2024-06-15"
 
 
 class TestAuditLogging:
