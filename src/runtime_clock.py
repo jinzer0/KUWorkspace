@@ -76,11 +76,6 @@ class RuntimeClock:
             raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
         return _active_clock.advance()
 
-    def set_time(self, new_time):
-        if _active_clock is None:
-            raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
-        return _active_clock.set_time(new_time)
-
 
 def set_active_clock(clock):
     global _active_clock
@@ -106,3 +101,4 @@ def get_runtime_clock():
 
 def get_current_time():
     return get_runtime_clock().now()
+
