@@ -1,7 +1,7 @@
 from src.cli.guest_menu import GuestMenu
 from src.cli.admin_menu import AdminMenu
 from src.domain.penalty_service import PenaltyError
-from src.domain.room_service import RoomBookingError
+from src.domain.room_service import RoomBookingError, RoomOperationalOverview
 from src.domain.models import UserRole, EquipmentBookingStatus
 
 
@@ -196,7 +196,7 @@ class TestAdminMenuPolicyChecks:
 
         assert messages == ["존재하지 않는 사용자입니다."]
 
-    def test_show_all_room_bookings_handles_stale_booking_owner(
+    def test_show_all_room_bookings_handles_room_overview_error(
         self,
         monkeypatch,
         auth_service,
@@ -205,10 +205,8 @@ class TestAdminMenuPolicyChecks:
         penalty_service,
         policy_service,
         create_test_user,
-        room_booking_factory,
     ):
         admin = create_test_user(role=UserRole.ADMIN)
-        booking = room_booking_factory(user_id="missing-user")
         menu = AdminMenu(
             user=admin,
             auth_service=auth_service,
@@ -218,8 +216,11 @@ class TestAdminMenuPolicyChecks:
             policy_service=policy_service,
         )
 
-        monkeypatch.setattr(menu, "_get_room_bookings_or_abort", lambda: [booking])
-        monkeypatch.setattr(menu, "_safe_get_user", lambda _user_id: None)
+        monkeypatch.setattr(
+            menu.room_service,
+            "get_room_operational_overview",
+            lambda _admin: (_ for _ in ()).throw(RoomBookingError("존재하지 않는 사용자입니다.")),
+        )
         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
         messages = []
@@ -227,7 +228,63 @@ class TestAdminMenuPolicyChecks:
 
         menu._show_all_room_bookings()
 
-        assert messages == ["사용자를 찾을 수 없습니다."]
+        assert messages == ["존재하지 않는 사용자입니다."]
+
+    def test_show_all_room_bookings_renders_room_operational_overview(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+        capsys,
+    ):
+        admin = create_test_user(role=UserRole.ADMIN)
+        menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+        )
+
+        monkeypatch.setattr(
+            menu.room_service,
+            "get_room_operational_overview",
+            lambda _admin: [
+                RoomOperationalOverview(
+                    room_name="회의실4A",
+                    capacity=4,
+                    location="1층",
+                    operational_status="예약있음",
+                    reservation_summary="2026-06-15 ~ 2026-06-15 외 1건",
+                ),
+                RoomOperationalOverview(
+                    room_name="회의실4B",
+                    capacity=6,
+                    location="2층",
+                    operational_status="예약없음",
+                    reservation_summary="X",
+                ),
+            ],
+        )
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.print_header", lambda title: print(title))
+
+        menu._show_all_room_bookings()
+
+        output = capsys.readouterr().out
+        assert "이름" in output
+        assert "현황" in output
+        assert "예약일" in output
+        assert "회의실4A" in output
+        assert "예약있음" in output
+        assert "외 1건" in output
+        assert "회의실4B" in output
+        assert "예약없음" in output
 
     def test_equipment_checkout_handles_stale_booking_owner(
         self,

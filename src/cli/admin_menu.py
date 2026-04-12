@@ -123,6 +123,14 @@ class AdminMenu:
             pause()
             return None
 
+    def _get_room_overview_or_abort(self):
+        try:
+            return self.room_service.get_room_operational_overview(self.user)
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+            pause()
+            return None
+
     def _get_equipment_bookings_or_abort(self):
         try:
             return self.equipment_service.get_all_bookings(self.user)
@@ -316,39 +324,30 @@ class AdminMenu:
 
     def _show_all_room_bookings(self):
         """전체 회의실 예약 조회"""
-        print_header("전체 회의실 예약")
+        print_header("회의실 목록")
 
-        bookings = self._get_room_bookings_or_abort()
-        if bookings is None:
+        overview = self._get_room_overview_or_abort()
+        if overview is None:
             return
-        if not bookings:
-            print_info("예약 내역이 없습니다.")
+        if not overview:
+            print_info("등록된 회의실이 없습니다.")
             pause()
             return
 
-        bookings.sort(key=lambda b: b.start_time, reverse=True)
-
-        headers = ["ID", "회의실", "사용자", "시간", "상태"]
+        headers = ["이름", "수용인원", "위치", "현황", "예약일"]
         rows = []
-        for booking in bookings[:30]:
-            room = self.room_service.get_room(booking.room_id)
-            user = self._get_booking_user_or_abort(booking.user_id)
-            if user is None:
-                return
+        for item in overview:
             rows.append(
                 [
-                    booking.id[:8],
-                    room.name if room else "-",
-                    user.username,
-                    format_booking_time_range(booking.start_time, booking.end_time),
-                    format_status_badge(booking.status.value),
+                    item.room_name,
+                    f"{item.capacity}명",
+                    item.location,
+                    item.operational_status,
+                    item.reservation_summary,
                 ]
             )
 
         print(format_table(headers, rows))
-
-        if len(bookings) > 30:
-            print(f"\n  ... 외 {len(bookings) - 30}건")
 
         pause()
 
