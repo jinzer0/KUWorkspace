@@ -32,8 +32,6 @@ from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
-    START_REQUEST_CUTOFF_HOUR,
-    END_REQUEST_CUTOFF_HOUR,
     LATE_CANCEL_THRESHOLD_MINUTES,
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
@@ -144,20 +142,10 @@ class EquipmentService:
     def _require_start_request_window(self, booking):
         start_time = datetime.fromisoformat(booking.start_time)
         self._require_current_boundary(start_time, "픽업 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= START_REQUEST_CUTOFF_HOUR:
-            raise EquipmentBookingError(
-                f"픽업 요청은 {START_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
-            )
 
     def _require_end_request_window(self, booking):
         end_time = datetime.fromisoformat(booking.end_time)
         self._require_current_boundary(end_time, "반납 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= END_REQUEST_CUTOFF_HOUR:
-            raise EquipmentBookingError(
-                f"반납 요청은 {END_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
-            )
 
     def _is_late_cancel(self, booking, current_time=None):
         if current_time is None:
