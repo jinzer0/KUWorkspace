@@ -7,12 +7,6 @@ from datetime import datetime
 from src.config import ensure_data_dir
 from src.clock_bootstrap import get_latest_data_timestamp
 from src.runtime_clock import SystemClock, set_active_clock, ClockError
-from src.system_clock_store import (
-    load_clock_time,
-    save_clock_time,
-    initialize_clock_file,
-    ClockStoreError,
-)
 from src.cli.validators import validate_date_plan
 from src.domain.models import UserRole
 from src.domain.auth_service import AuthService
@@ -68,27 +62,13 @@ def prompt_initial_clock():
 def main():
     """애플리케이션 메뉴 루프를 실행합니다."""
     ensure_data_dir()
-    initialize_clock_file()
-
-    try:
-        persisted_clock = load_clock_time()
-    except ClockStoreError as error:
-        print(f"✗ {error}")
-        return
-
-    if persisted_clock is None:
-        clock = prompt_initial_clock()
-    else:
-        clock = SystemClock(persisted_clock)
-
-    set_active_clock(clock)
-    save_clock_time(clock.now())
+    set_active_clock(prompt_initial_clock())
 
     auth_service = AuthService()
     penalty_service = PenaltyService()
     room_service = RoomService(penalty_service=penalty_service)
     equipment_service = EquipmentService(penalty_service=penalty_service)
-    policy_service = PolicyService(clock_persistor=save_clock_time)
+    policy_service = PolicyService()
 
     while True:
         guest_menu = GuestMenu(auth_service=auth_service, policy_service=policy_service)
