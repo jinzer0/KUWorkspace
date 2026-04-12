@@ -238,7 +238,7 @@ class UserMenu:
             print_warning(message)
 
         self._print_daily_booking_guide()
-        attendee_count = get_positive_int_input("이용 인원", 1, 8, max_error_msg="수용 가능한 최대 인원은 8명입니다.")
+        attendee_count = get_positive_int_input("이용 인원", 1, 8, min_error_msg="1 이상의 인원을 입력해주세요.", max_error_msg="수용 가능한 최대 인원은 8명입니다.")
         if attendee_count is None:
             return
 
