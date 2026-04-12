@@ -9,7 +9,6 @@ from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
     validate_username as validate_auth_username,
 )
-from src.runtime_clock import get_current_time
 
 
 def validate_positive_int(value_str, min_val=1, max_val=100):
