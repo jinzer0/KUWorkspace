@@ -3,7 +3,9 @@ CLI 입력 검증 유틸리티
 """
 
 from datetime import datetime
+
 import re
+from src.runtime_clock import get_current_time
 
 from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (

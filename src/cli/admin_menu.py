@@ -1,7 +1,7 @@
 """
 관리자 메뉴 - 회의실/장비 관리, 예약 관리, 사용자 관리
 """
-
+from datetime import datetime
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
@@ -154,18 +154,12 @@ class AdminMenu:
             print_header(f"관리자 메뉴 ({self.user.username})")
 
             print("\n[회의실 관리]")
-            print("  <제거>1. 회의실 목록")
             print("  1. 전체 회의실 예약 조회")
-            print("  <제거>2. 회의실 상태 변경")
             print("  2. 회의실 목록 조회 및 상태 변경")
-            print("  <제거>3. 전체 회의실 예약 조회")
             print("  3. 회의실 체크인 승인 처리")
-            print("  <제거>4. 회의실 체크인 처리")
-            print("  4. 회의실 퇴실 승인 처리(관리자)")
-            print("  <제거>5. 회의실 퇴실 승인 처리")
-            print("  5. 회의실 예약 취소(관리자)")
-            print("  <제거>6. 회의실 예약 변경/교체 (관리자)")
-            print("  <제거>7. 회의실 예약 취소 (관리자)")
+            print("  4. 회의실 퇴실 승인 처리")
+            print("  5. 회의실 예약 예약 변경(관리자)")
+            print("  6. 회의실 예약 취소(관리자)")
 
             print("\n[장비 관리]")
             print("  8. 장비 목록")
@@ -191,19 +185,20 @@ class AdminMenu:
             choice = input("선택: ").strip()
 
             if choice == "1":
-                self._show_rooms()
+                # 기존 self._show_rooms() 와 self._show_all_room_bookings() 를 합침
+                self._show_room_overview()
             elif choice == "2":
                 self._change_room_status()
             elif choice == "3":
-                self._show_all_room_bookings()
-            elif choice == "4":
                 self._room_checkin()
-            elif choice == "5":
+            elif choice == "4":
                 self._room_checkout()
+            elif choice == "5":
+                # 타겟 함수 변경함
+                self._admin_modify_room_booking_time()
             elif choice == "6":
-                self._admin_modify_or_swap_room_booking()
-            elif choice == "7":
                 self._admin_cancel_room_booking()
+
             elif choice == "8":
                 self._show_equipment()
             elif choice == "9":
@@ -238,6 +233,108 @@ class AdminMenu:
                     return True
             else:
                 print_error("잘못된 선택입니다.")
+
+    def _show_room_overview(self):
+        """관리자 회의실 1번 : 전체 회의실 예약 조회"""
+        print_header("회의실 목록")
+        rooms =self.room_service.get_all_rooms()
+        if not rooms: 
+            print_info("등록된 회의실이 없습니다.")
+            pause()
+            return 
+        bookings = self._get_room_bookings_or_abort()
+        if bookings is None:
+            return 
+
+        current_time = self.policy_service.clock.now()
+        rooms = sorted(rooms, key=lambda room:(room.capacity, room.name))
+        header = (
+            f"{'이름':<14}"
+            f"{'수용인원':<10}"
+            f"{'위치':<8}"
+            f"{'현황':<10}"
+            f"예약일"
+        )
+        print(header)
+        print("-" * 70)
+
+        for room in rooms:
+            room_bookings = self._get_visible_room_bookings(room.id, bookings,
+        current_time)
+            room_status = self._get_room_overview_status(room_bookings,
+        current_time)
+
+            if not room_bookings:
+                print(
+                    f"{room.name:<14}"
+                    f"{f'{room.capacity}명':<10}"
+                    f"{room.location:<8}"
+                    f"{room_status:<10}"
+                    f"X"
+                )
+                continue
+
+            booking_ranges = [
+                self._format_booking_date_range(booking.start_time, booking.end_time)
+                for booking in room_bookings
+            ]
+
+            print(
+                f"{room.name:<14}"
+                f"{f'{room.capacity}명':<10}"
+                f"{room.location:<8}"
+                f"{room_status:<10}"
+                f"{booking_ranges[0]}"
+            )
+
+            for date_range in booking_ranges[1:]:
+                print(f"{'':<42}{date_range}")
+
+        pause()
+
+    def _get_visible_room_bookings(self, room_id, bookings, current_time):
+        """현재 시점 기준으로 의미 있는 유효 예약만 추리는 함수"""
+        active_statuses = {
+            RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
+            RoomBookingStatus.CHECKED_IN,
+            RoomBookingStatus.CHECKOUT_REQUESTED,
+        }
+
+        room_bookings = [
+            booking
+            for booking in bookings
+            if booking.room_id == room_id
+            and booking.status in active_statuses
+            and datetime.fromisoformat(booking.end_time) >= current_time
+        ]
+
+        room_bookings.sort(key=lambda booking: booking.start_time)
+        return room_bookings
+    def _get_room_overview_status(self, room_bookings, current_time):
+        """사용중 / 예약있음 / 예약없음 판정"""
+        if not room_bookings:
+            return "예약없음"
+
+        for booking in room_bookings:
+            start_time = datetime.fromisoformat(booking.start_time)
+            end_time = datetime.fromisoformat(booking.end_time)
+
+            if (
+                booking.status in {
+                  RoomBookingStatus.CHECKED_IN,
+                  RoomBookingStatus.CHECKOUT_REQUESTED,
+                }
+                and start_time <= current_time <= end_time
+            ):
+                return "사용중"
+
+        return "예약있음"
+
+    def _format_booking_date_range(self, start_time, end_time):
+        start_dt = datetime.fromisoformat(start_time)
+        end_dt = datetime.fromisoformat(end_time)
+        return f"{start_dt.strftime('%Y.%m.%d')} ~ {end_dt.strftime('%Y.%m.%d')}"
 
     def _show_rooms(self):
         """회의실 목록"""
@@ -549,7 +646,9 @@ class AdminMenu:
 
         pause()
 
+
     def _admin_modify_or_swap_room_booking(self):
+        # 이제 사용하지 않는 함수
         """관리자 회의실 예약 변경/교체 - 서브메뉴"""
         print_header("회의실 예약 변경/교체 (관리자)")
         
