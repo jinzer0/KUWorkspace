@@ -86,8 +86,6 @@ class UserMenu:
             로그아웃 여부 (True면 로그아웃)
         """
         while True:
-            if not self._run_policy_checks():
-                return True
             if not self._refresh_user():
                 return True
 
