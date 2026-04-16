@@ -239,9 +239,11 @@ class Room:
 
 @dataclass
 class EquipmentAsset:
-    """장비 자산 (개별 자산 단위 관리)"""
+    """장비 자산 (개별 자산 단위 관리)
+    
+    id 기능 serial_number 와 통합
+    """
 
-    id: str
     name: str
     asset_type: str  # 장비 종류 (예: 프로젝터, 노트북 등)
     serial_number: str
@@ -249,6 +251,11 @@ class EquipmentAsset:
     description: str = ""
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
+
+    @property
+    def id(self) -> str:
+        """serial_number를 장비 ID로 사용"""
+        return self.serial_number
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -258,6 +265,7 @@ class EquipmentAsset:
     @classmethod
     def from_dict(cls, data: dict) -> "EquipmentAsset":
         data = data.copy()
+        data.pop("id", None)  # id 필드가 있으면 제거 (serial_number로 대체)
         data["status"] = ResourceStatus(data["status"])
         return cls(**data)
 
@@ -281,19 +289,16 @@ class EquipmentAsset:
 
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "EquipmentAsset":
+        # 데이터 파일 형식: name|asset_type|serial_number|status|description|created_at|updated_at
         if len(record) == 7:
-            equipment_id = record[2] or ""
             name, asset_type, serial_number, status, description, created_at, updated_at = record
-            if not equipment_id:
-                equipment_id = serial_number or ""
         else:
-            equipment_id, name, asset_type, serial_number, status, description, created_at, updated_at = record
-        serial_key = serial_number or equipment_id or ""
+            # 구형 포맷(id 포함 8컬럼) 호환: id는 무시하고 serial_number 사용
+            _, name, asset_type, serial_number, status, description, created_at, updated_at = record
         return cls(
-            id=equipment_id or serial_key,
             name=name or "",
             asset_type=asset_type or "",
-            serial_number=serial_key,
+            serial_number=serial_number or "",
             status=ResourceStatus(status),
             description=description or "",
             created_at=normalize_datetime_string(created_at) or now_iso(),
@@ -394,7 +399,7 @@ class EquipmentBooking:
 
     id: str
     user_id: str
-    equipment_id: str
+    equipment_id: str  # 장비 serial_number 사용
     start_time: str  # ISO datetime
     end_time: str  # ISO datetime
     status: EquipmentBookingStatus = EquipmentBookingStatus.RESERVED
