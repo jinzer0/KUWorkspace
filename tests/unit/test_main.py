@@ -320,3 +320,69 @@ def test_main_exits_on_corrupted_data_file(tmp_path, monkeypatch, capsys):
 
     assert exc_info.value.code == 1
     assert "데이터 파일 형식이 올바르지 않습니다" in capsys.readouterr().err
+
+
+def test_main_exits_on_malformed_persisted_datetime(tmp_path, monkeypatch, capsys):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    users = data_dir / "users.txt"
+    rooms = data_dir / "rooms.txt"
+    equips = data_dir / "equipments.txt"
+    room_bookings = data_dir / "room_bookings.txt"
+    equipment_booking = data_dir / "equipment_booking.txt"
+    penalties = data_dir / "penalties.txt"
+    audit = data_dir / "audit_log.txt"
+    clock = data_dir / "clock.txt"
+
+    users.write_text("admin|admin123|user|0|0|\\-|2026-03-20T09:00|2026-03-20T09:00\n", encoding="utf-8")
+    rooms.touch()
+    equips.touch()
+    room_bookings.write_text(
+        "bad-booking|user01|회의실4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+        encoding="utf-8",
+    )
+    equipment_booking.touch()
+    penalties.touch()
+    audit.touch()
+    clock.write_text("0000-00-00T00:00", encoding="utf-8")
+
+    monkeypatch.setattr("src.config.DATA_DIR", data_dir)
+    monkeypatch.setattr("src.config.USERS_FILE", users)
+    monkeypatch.setattr("src.config.ROOMS_FILE", rooms)
+    monkeypatch.setattr("src.config.EQUIPMENTS_FILE", equips)
+    monkeypatch.setattr("src.config.ROOM_BOOKINGS_FILE", room_bookings)
+    monkeypatch.setattr("src.config.EQUIPMENT_BOOKING_FILE", equipment_booking)
+    monkeypatch.setattr("src.config.PENALTIES_FILE", penalties)
+    monkeypatch.setattr("src.config.AUDIT_LOG_FILE", audit)
+    monkeypatch.setattr("src.config.CLOCK_FILE", clock)
+    monkeypatch.setattr(
+        "src.config.DATA_FILES",
+        [users, rooms, equips, room_bookings, equipment_booking, penalties, audit, clock],
+    )
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_DIR", data_dir)
+    monkeypatch.setattr("src.clock_bootstrap.config.USERS_FILE", users)
+    monkeypatch.setattr("src.clock_bootstrap.config.ROOMS_FILE", rooms)
+    monkeypatch.setattr("src.clock_bootstrap.config.EQUIPMENTS_FILE", equips)
+    monkeypatch.setattr("src.clock_bootstrap.config.ROOM_BOOKINGS_FILE", room_bookings)
+    monkeypatch.setattr("src.clock_bootstrap.config.EQUIPMENT_BOOKING_FILE", equipment_booking)
+    monkeypatch.setattr("src.clock_bootstrap.config.PENALTIES_FILE", penalties)
+    monkeypatch.setattr("src.clock_bootstrap.config.AUDIT_LOG_FILE", audit)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", clock)
+    monkeypatch.setattr(
+        "src.clock_bootstrap.config.DATA_FILES",
+        [users, rooms, equips, room_bookings, equipment_booking, penalties, audit, clock],
+    )
+    monkeypatch.setattr("src.storage.repositories.USERS_FILE", users)
+    monkeypatch.setattr("src.storage.repositories.ROOMS_FILE", rooms)
+    monkeypatch.setattr("src.storage.repositories.EQUIPMENTS_FILE", equips)
+    monkeypatch.setattr("src.storage.repositories.ROOM_BOOKINGS_FILE", room_bookings)
+    monkeypatch.setattr("src.storage.repositories.EQUIPMENT_BOOKING_FILE", equipment_booking)
+    monkeypatch.setattr("src.storage.repositories.PENALTIES_FILE", penalties)
+    monkeypatch.setattr("src.storage.repositories.AUDIT_LOG_FILE", audit)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main()
+
+    assert exc_info.value.code == 1
+    assert "room_bookings.txt" in capsys.readouterr().err

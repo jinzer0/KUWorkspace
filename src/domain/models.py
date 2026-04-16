@@ -95,13 +95,20 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(dt_str)
 
 
-def normalize_datetime_string(value: Optional[str]) -> Optional[str]:
+def normalize_datetime_string(
+    value: Optional[str],
+    *,
+    strict: bool = False,
+    field_name: str = "datetime",
+) -> Optional[str]:
     if value is None:
         return None
     try:
         dt = datetime.fromisoformat(value)
         return dt.replace(second=0, microsecond=0).isoformat(timespec="minutes")
-    except ValueError:
+    except ValueError as error:
+        if strict:
+            raise ValueError(f"{field_name} 형식이 올바르지 않습니다: {value}") from error
         return value
 
 
@@ -183,9 +190,13 @@ class User:
             role=UserRole(role),
             penalty_points=int(points or "0"),
             normal_use_streak=int(streak or "0"),
-            restriction_until=normalize_datetime_string(restriction_until),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            restriction_until=normalize_datetime_string(
+                restriction_until,
+                strict=True,
+                field_name="restriction_until",
+            ),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -256,8 +267,8 @@ class Room:
             location=location or "",
             status=ResourceStatus(status),
             description=description or "",
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -328,8 +339,8 @@ class EquipmentAsset:
             serial_number=serial_key,
             status=ResourceStatus(status),
             description=description or "",
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -407,16 +418,16 @@ class RoomBooking:
             id=booking_id or generate_id(),
             user_id=user_id or "",
             room_id=room_id or "",
-            start_time=normalize_datetime_string(start_time) or now_iso(),
-            end_time=normalize_datetime_string(end_time) or now_iso(),
+            start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
+            end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
             status=RoomBookingStatus(status),
-            checked_in_at=normalize_datetime_string(checked_in_at),
-            requested_checkin_at=normalize_datetime_string(requested_checkin_at),
-            requested_checkout_at=normalize_datetime_string(requested_checkout_at),
-            completed_at=normalize_datetime_string(completed_at),
-            cancelled_at=normalize_datetime_string(cancelled_at),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            checked_in_at=normalize_datetime_string(checked_in_at, strict=True, field_name="checked_in_at"),
+            requested_checkin_at=normalize_datetime_string(requested_checkin_at, strict=True, field_name="requested_checkin_at"),
+            requested_checkout_at=normalize_datetime_string(requested_checkout_at, strict=True, field_name="requested_checkout_at"),
+            completed_at=normalize_datetime_string(completed_at, strict=True, field_name="completed_at"),
+            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -494,16 +505,16 @@ class EquipmentBooking:
             id=booking_id or generate_id(),
             user_id=user_id or "",
             equipment_id=equipment_id or "",
-            start_time=normalize_datetime_string(start_time) or now_iso(),
-            end_time=normalize_datetime_string(end_time) or now_iso(),
+            start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
+            end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
             status=EquipmentBookingStatus(status),
-            checked_out_at=normalize_datetime_string(checked_out_at),
-            requested_pickup_at=normalize_datetime_string(requested_pickup_at),
-            requested_return_at=normalize_datetime_string(requested_return_at),
-            returned_at=normalize_datetime_string(returned_at),
-            cancelled_at=normalize_datetime_string(cancelled_at),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            checked_out_at=normalize_datetime_string(checked_out_at, strict=True, field_name="checked_out_at"),
+            requested_pickup_at=normalize_datetime_string(requested_pickup_at, strict=True, field_name="requested_pickup_at"),
+            requested_return_at=normalize_datetime_string(requested_return_at, strict=True, field_name="requested_return_at"),
+            returned_at=normalize_datetime_string(returned_at, strict=True, field_name="returned_at"),
+            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -563,8 +574,8 @@ class Penalty:
             related_type=related_type or "",
             related_id=related_id or "",
             memo=normalize_persisted_text(memo),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at"),
         )
 
 
@@ -617,6 +628,6 @@ class AuditLog:
             target_type=target_type or "",
             target_id=target_id or "",
             details=normalize_persisted_text(details),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at"),
         )

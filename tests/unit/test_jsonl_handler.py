@@ -35,5 +35,5 @@ def test_read_jsonl_wraps_record_parse_error_with_line_number(tmp_path):
             raise ValueError("boom")
         return value
 
-    with pytest.raises(DataIntegrityError, match="2번째 줄"):
+    with pytest.raises(DataIntegrityError, match=r"2번째 줄 .*boom"):
         read_jsonl(file_path, parser)

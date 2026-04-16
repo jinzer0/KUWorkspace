@@ -12,7 +12,7 @@ import pytest
 
 from src.storage.integrity import DataIntegrityError
 from src.storage.file_lock import global_lock
-from src.storage.repositories import UserRepository, RoomRepository
+from src.storage.repositories import UserRepository, RoomRepository, RoomBookingRepository
 from src.domain.models import (
     ResourceStatus,
     RoomBookingStatus,
@@ -303,4 +303,16 @@ class TestRepositoryIntegrity:
         repo = RoomRepository(file_path=room_file)
 
         with pytest.raises(DataIntegrityError, match="rooms.txt"):
+            repo.get_all()
+
+    def test_room_booking_repository_fails_fast_on_malformed_datetime(self, temp_data_dir):
+        booking_file = temp_data_dir / "room_bookings.txt"
+        booking_file.write_text(
+            "bad-booking|user01|회의실4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+
+        repo = RoomBookingRepository(file_path=booking_file)
+
+        with pytest.raises(DataIntegrityError, match="room_bookings.txt"):
             repo.get_all()
