@@ -1,0 +1,37 @@
+3a770096-7f74-47f6-872b-1f1bc15da455|rasubin|create_equipment_booking_daily|equipment_booking|85a3dac3-1067-4d59-8572-5aac8de05e7e|장비: 웹캠, 기간: 2099-01-31 09:00:00 ~ 2099-0|2099-01-30T09:00|2099-01-30T09:00
+3b92e4c1-949e-49b5-b826-905e74fc2230|rasubin|modify_equipment_booking_daily|equipment_booking|85a3dac3-1067-4d59-8572-5aac8de05e7e|변경: 2099-03-02 09:00:00 ~ 2099-03-02 18:|2099-02-03T09:00|2099-02-03T09:00
+a4286172-c01d-4faf-93b3-07ba3aec2a42|rasubin|cancel_equipment_booking|equipment_booking|85a3dac3-1067-4d59-8572-5aac8de05e7e|사용자 취소|2099-02-03T09:00|2099-02-03T09:00
+5760bf98-49a7-4e3c-bba3-cb76bf3237c4|rasubin|create_equipment_booking_daily|equipment_booking|c0e42c8a-a59e-4198-a11a-7acd76441543|장비: 케이블, 기간: 2099-06-12 09:00:00 ~ 2099-|2099-03-03T09:00|2099-03-03T09:00
+ad8291f9-ee71-4376-be04-614fe070a7ce|rasubin|clock_advance|system_clock|2099-03-03T18:00|2099-03-03 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-03-03T18:00|2099-03-03T18:00
+c23797dd-6359-42a9-9411-cc1698ed79db|rasubin|clock_advance|system_clock|2099-03-04T09:00|2099-03-04 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-03-04T09:00|2099-03-04T09:00
+f3b45d8c-39d2-4afa-b90f-87d8b824fdc3|rasubin|clock_advance|system_clock|2099-03-04T18:00|2099-03-04 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-03-04T18:00|2099-03-04T18:00
+fa5d76cf-f385-459e-873a-d99bdc5ae49d|rasubin|clock_advance|system_clock|2099-03-05T09:00|2099-03-05 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-03-05T09:00|2099-03-05T09:00
+fa2b4d35-a31f-4f72-854a-8bb8da463f90|rasubin|clock_advance|system_clock|2099-03-05T18:00|2099-03-05 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-03-05T18:00|2099-03-05T18:00
+9bf39f68-5c2b-43dc-b9c8-74a2484ed21a|rasubin|clock_advance|system_clock|2099-03-06T09:00|2099-03-06 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-03-06T09:00|2099-03-06T09:00
+d4c4b452-101a-494c-bdfa-d9538f1d734f|rasubin|clock_advance|system_clock|2099-03-06T18:00|2099-03-06 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-03-06T18:00|2099-03-06T18:00
+43ec5a9f-3569-4487-b4fb-69195c10469b|rasubin|clock_advance|system_clock|2099-03-07T09:00|2099-03-07 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-03-07T09:00|2099-03-07T09:00
+a904b17c-16bf-433d-bf20-2f34fb1c8815|rasubin|clock_advance|system_clock|2099-03-07T18:00|2099-03-07 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-03-07T18:00|2099-03-07T18:00
+30bd1cb9-bda1-4279-8b0d-39a6e57ecd0a|rasubin|clock_advance|system_clock|2099-03-08T09:00|2099-03-08 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-03-08T09:00|2099-03-08T09:00
+ebd2bf2d-b84d-4df0-9b88-6a04b91504e1|rasubin|clock_advance|system_clock|2099-08-12T18:00|2099-08-12 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-12T18:00|2099-08-12T18:00
+a006a267-1941-4695-87ff-a2435e069b6c|rasubin|clock_advance|system_clock|2099-08-13T09:00|2099-08-13 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-13T09:00|2099-08-13T09:00
+f505fb63-d898-40ac-b31c-fd88e9526a21|rasubin|clock_advance|system_clock|2099-08-13T18:00|2099-08-13 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-13T18:00|2099-08-13T18:00
+c6fc5f89-0368-47cc-8cce-968732aee294|rasubin|clock_advance|system_clock|2099-08-14T09:00|2099-08-14 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-14T09:00|2099-08-14T09:00
+557d5e48-9a16-4a1b-9666-398b236b0a99|rasubin|clock_advance|system_clock|2099-08-14T18:00|2099-08-14 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-14T18:00|2099-08-14T18:00
+779e39f4-2f6e-4420-a404-ccddf3edaa23|rasubin|clock_advance|system_clock|2099-08-15T09:00|2099-08-15 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-15T09:00|2099-08-15T09:00
+1f36de2d-d302-4a27-b42f-c4bad3f1f84a|rasubin|clock_advance|system_clock|2099-08-15T18:00|2099-08-15 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-15T18:00|2099-08-15T18:00
+f17ab66f-f639-4602-9a14-dab60249df05|rasubin|create_equipment_booking_daily|equipment_booking|44d91e9e-75f5-4cfa-8743-2d7c6d22b773|장비: 프로젝터, 기간: 2099-08-17 09:00:00 ~ 2099|2099-08-16T09:00|2099-08-16T09:00
+4c6a3368-d408-4af1-81ac-32c786dedf36|rasubin|modify_equipment_booking_daily|equipment_booking|44d91e9e-75f5-4cfa-8743-2d7c6d22b773|변경: 2099-08-20 09:00:00 ~ 2099-08-22 18:|2099-08-16T09:00|2099-08-16T09:00
+b6137a04-a673-4834-9978-9647513d95db|rasubin|modify_equipment_booking_daily|equipment_booking|44d91e9e-75f5-4cfa-8743-2d7c6d22b773|변경: 2099-08-20 09:00:00 ~ 2099-08-23 18:|2099-08-16T09:00|2099-08-16T09:00
+b32102d5-3e43-4ea2-b22e-6c913c42e43c|rasubin|cancel_equipment_booking|equipment_booking|44d91e9e-75f5-4cfa-8743-2d7c6d22b773|사용자 취소|2099-08-16T09:00|2099-08-16T09:00
+0914fe39-4849-4abb-aa6e-185a0bc86e65|rasubin|create_equipment_booking_daily|equipment_booking|8ae1d289-ca11-451e-a830-f669c1ec3f04|장비: 프로젝터, 기간: 2100-01-21 09:00:00 ~ 2100|2099-08-16T09:00|2099-08-16T09:00
+dc6bd9e5-d66c-4d77-82f9-6cd2a9effc11|rasubin|modify_equipment_booking_daily|equipment_booking|8ae1d289-ca11-451e-a830-f669c1ec3f04|변경: 2100-02-01 09:00:00 ~ 2100-02-14 18:|2099-08-16T09:00|2099-08-16T09:00
+6d1588eb-e395-4e3b-9893-54598f706009|rasubin|modify_equipment_booking_daily|equipment_booking|8ae1d289-ca11-451e-a830-f669c1ec3f04|변경: 2099-08-20 09:00:00 ~ 2099-08-21 18:|2099-08-16T09:00|2099-08-16T09:00
+b67cc677-907b-4f11-b1a5-716f5974defc|rasubin|clock_advance|system_clock|2099-08-16T18:00|2099-08-16 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-16T18:00|2099-08-16T18:00
+150e4a2e-782e-44a7-8c50-1af397a20ba2|rasubin|clock_advance|system_clock|2099-08-17T09:00|2099-08-17 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-17T09:00|2099-08-17T09:00
+e20fe7fb-52c9-48ec-9f89-00b4f4f2dadb|rasubin|clock_advance|system_clock|2099-08-17T18:00|2099-08-17 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-17T18:00|2099-08-17T18:00
+d103265d-fbc4-495d-bbc9-b0440ad008f1|rasubin|clock_advance|system_clock|2099-08-18T09:00|2099-08-18 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-18T09:00|2099-08-18T09:00
+5abe45c6-4517-4063-9dda-a55980ff5bbb|rasubin|clock_advance|system_clock|2099-08-18T18:00|2099-08-18 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-18T18:00|2099-08-18T18:00
+717dde1b-5646-4a6a-b29a-b7d2f3ff725d|rasubin|clock_advance|system_clock|2099-08-19T09:00|2099-08-19 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-19T09:00|2099-08-19T09:00
+b7cb9190-f2a2-42a2-8a30-3143a72af06d|rasubin|clock_advance|system_clock|2099-08-19T18:00|2099-08-19 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2099-08-19T18:00|2099-08-19T18:00
+167cb5a4-0013-4160-99f5-98dce21601d0|rasubin|clock_advance|system_clock|2099-08-20T09:00|2099-08-20 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2099-08-20T09:00|2099-08-20T09:00
+183d7830-23fc-4816-9d11-4ab6db3a43c6|rasubin|request_equipment_pickup|equipment_booking|8ae1d289-ca11-451e-a830-f669c1ec3f04||2099-08-20T09:00|2099-08-20T09:00
