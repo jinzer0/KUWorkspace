@@ -847,7 +847,6 @@ class RoomService:
                 raise RoomBookingError(
                     f"'{booking.status.value}' 상태의 예약은 퇴실 신청할 수 없습니다."
                 )
-            self._require_end_request_window(booking)
 
             updated = replace(
                 booking,
