@@ -34,3 +34,4 @@ c0ef09e3-5d5e-467d-83cd-eda7c2340a5c|user2|request_room_check_in|room_booking|2e
 3dd16708-6664-418f-ba18-1b88f1aa7b28|user2|request_room_checkout|room_booking|2ee962f3-d41d-471a-9c64-ed824238cdd1||2026-06-08T18:00|2026-06-08T18:00
 442aa753-7b5b-44d6-87ca-bec783165637|admin|clock_advance|system_clock|2026-06-08T18:00|2026-06-08 18:00로 이동 준비 \| 당일 종료 예정 회의실 1|2026-06-08T18:00|2026-06-08T18:00
 5dc28949-6d93-42ae-8b73-9707aaecf716|admin|approve_room_checkout_request|room_booking|2ee962f3-d41d-471a-9c64-ed824238cdd1|지연: 0분|2026-06-08T18:00|2026-06-08T18:00
+a18e9756-fa10-4921-ab7c-1093accab2a3|admin|update_room_status|room|회의실 4B|상태 변경: disabled, 취소된 예약: 0건|2026-07-07T09:00|2026-07-07T09:00

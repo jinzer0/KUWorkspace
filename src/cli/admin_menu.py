@@ -397,6 +397,12 @@ class AdminMenu:
             return
 
         new_status = status_map[choice]
+        current_time = self.policy_service.clock.now()
+        if (new_status == ResourceStatus.MAINTENANCE and 
+            (current_time.hour, current_time.minute) != (18, 0)):
+            print_error(f"관리자가 회의실을 [점검중] 으로 변경할 수 있는 시점은 18:00 입니다.")
+            pause()
+            return
 
         if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
             print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
