@@ -23,10 +23,10 @@ def validate_positive_int(value_str, min_val=1, max_val=100):
     """
     value_str = value_str.strip()
 
-    if not value_str.isdigit():
+    try:
+        value = int(value_str)
+    except ValueError:
         return False, None, "숫자를 입력해주세요."
-
-    value = int(value_str)
 
     if value < min_val:
         return False, None, f"{min_val} 이상의 값을 입력해주세요."
@@ -318,7 +318,7 @@ def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 
         print(f"  ✗ {error}")
 
 
-def get_positive_int_input(prompt, min_val=1, max_val=100):
+def get_positive_int_input(prompt, min_val=1, max_val=100, min_error_msg=None, max_error_msg=None):
     while True:
         value_str = input(f"{prompt}: ").strip()
         if value_str.lower() in ("q", "quit", "취소"):
@@ -327,4 +327,14 @@ def get_positive_int_input(prompt, min_val=1, max_val=100):
         valid, value, error = validate_positive_int(value_str, min_val, max_val)
         if valid:
             return value
-        print(f"  ✗ {error}")
+
+        try:
+            parsed = int(value_str)
+            if min_error_msg and parsed < min_val:
+                print(f"  ✗ {min_error_msg}")
+            elif max_error_msg and parsed > max_val:
+                print(f"  ✗ {max_error_msg}")
+            else:
+                print(f"  ✗ {error}")
+        except ValueError:
+            print(f"  ✗ {error}")

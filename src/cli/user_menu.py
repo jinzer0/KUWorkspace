@@ -3,10 +3,10 @@
 """
 
 from datetime import datetime
-
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
+    ResourceStatus,
 )
 from src.domain.auth_service import AuthService, AuthError
 from src.domain.room_service import RoomService, RoomBookingError
@@ -233,12 +233,15 @@ class UserMenu:
         headers = ["이름", "수용인원", "위치", "상태"]
         rows = []
         for room in rooms:
+            status_text = format_status_badge(room.status.value)
+            if room.status != ResourceStatus.AVAILABLE:
+                status_text += " 예약 불가"
             rows.append(
                 [
                     room.name,
                     f"{room.capacity}명",
                     room.location,
-                    format_status_badge(room.status.value),
+                    status_text,
                 ]
             )
 
@@ -271,7 +274,7 @@ class UserMenu:
             print_warning(message)
 
         self._print_daily_booking_guide()
-        attendee_count = get_positive_int_input("이용 인원", 1, 100)
+        attendee_count = get_positive_int_input("이용 인원", 1, 8, min_error_msg="1 이상의 인원을 입력해주세요.", max_error_msg="수용 가능한 최대 인원은 8명입니다.")
         if attendee_count is None:
             return
 
@@ -291,9 +294,16 @@ class UserMenu:
             return
 
         items = [(r.id, f"{r.name} ({r.capacity}명, {r.location})") for r in rooms]
-        room_id = select_from_list(items, "회의실 선택")
-        if not room_id:
-            return
+        while True:
+            room_id = select_from_list(items, "회의실 선택")
+            if not room_id:
+                return
+
+            selected_room = next((r for r in rooms if r.id == room_id), None)
+            if selected_room and any(r.capacity < selected_room.capacity for r in rooms):
+                print_warning("더 작은 회의실이 예약 가능합니다. 해당 회의실을 먼저 이용해주세요.")
+                continue
+            break
 
         try:
             limits = self.policy_service.get_user_flow_limits(self.user)
@@ -312,7 +322,9 @@ class UserMenu:
             print(
                 f"  시간: {format_booking_time_range(booking.start_time, booking.end_time)}"
             )
-        except (RoomBookingError, PenaltyError) as e:
+        except RoomBookingError:
+            print_error("선택한 회의실을 예약할 수 없습니다. 다시 시도해주세요.")
+        except PenaltyError as e:
             print_error(str(e))
 
         pause()
@@ -397,10 +409,27 @@ class UserMenu:
         if not booking_id:
             return
 
+        selected = next((b for b in active_bookings if b.id == booking_id), None)
+
         self._print_daily_booking_guide()
-        start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
-        if start_date is None or end_date is None:
-            return
+        while True:
+            start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
+            if start_date is None or end_date is None:
+                return
+
+            from src.domain.daily_booking_rules import build_daily_booking_period
+            new_start, new_end = build_daily_booking_period(start_date, end_date)
+
+            if selected:
+                existing_start = datetime.fromisoformat(selected.start_time)
+                existing_end = datetime.fromisoformat(selected.end_time)
+                if new_start == existing_start and new_end == existing_end:
+                    print_error("변경된 내용이 없습니다. 다른 날짜를 입력해주세요.")
+                    continue
+
+            if not confirm("정말 변경하시겠습니까?"):
+                return
+            break
 
         try:
             booking = self.room_service.modify_daily_booking(
@@ -453,6 +482,9 @@ class UserMenu:
         if not booking_id:
             return
 
+        if not confirm("체크인 요청하시겠습니까?"):
+            return
+
         try:
             self.room_service.request_check_in(self.user, booking_id)
             print_success("체크인 요청이 접수되었습니다. 관리자 승인 대기 상태입니다.")
@@ -494,6 +526,9 @@ class UserMenu:
 
         booking_id = select_from_list(items, "퇴실 신청할 예약 선택")
         if not booking_id:
+            return
+
+        if not confirm("퇴실 신청하시겠습니까?"):
             return
 
         try:
@@ -545,22 +580,25 @@ class UserMenu:
             return
 
         try:
-            if self.room_service.will_apply_late_cancel_penalty(self.user, booking_id):
-                print_warning("이 예약을 지금 취소하면 직전 취소 패널티 2점이 부과됩니다.")
+            is_late_cancel = self.room_service.will_apply_late_cancel_penalty(
+                self.user, booking_id
+            )
         except (RoomBookingError, PenaltyError) as e:
             print_error(str(e))
             pause()
             return
 
-        if not confirm("정말 취소하시겠습니까?"):
-            return
+        if is_late_cancel:
+            print_warning("직전 취소로 인해 패널티 2점이 부과됩니다.")
+            if not confirm("그래도 취소하시겠습니까?"):
+                return
+        else:
+            if not confirm("정말 취소하시겠습니까?"):
+                return
 
         try:
-            booking, is_late = self.room_service.cancel_booking(self.user, booking_id)
+            booking, _ = self.room_service.cancel_booking(self.user, booking_id)
             print_success("예약이 취소되었습니다.")
-
-            if is_late:
-                print_warning("직전 취소로 패널티 2점이 부과됩니다.")
         except (RoomBookingError, PenaltyError) as e:
             print_error(str(e))
 
