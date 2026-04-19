@@ -33,6 +33,7 @@ from src.config import (
     PENALTY_RESET_DAYS,
     STREAK_BONUS_COUNT,
 )
+from src.domain.field_rules import validate_reason_text
 
 
 class PenaltyError(Exception):
@@ -83,52 +84,6 @@ class PenaltyService:
         if self.penalty_repo.exists(user_id, reason, related_type, related_id, memo=memo):
             raise PenaltyError("동일한 패널티는 중복 부과할 수 없습니다.")
 
-    def apply_no_show(self, user, booking_type, booking_id, actor_id="system"):
-        """
-        노쇼 패널티 적용 (+3점)
-
-        Args:
-            user: 대상 사용자
-            booking_type: 'room_booking' or 'equipment_booking'
-            booking_id: 예약 ID
-            actor_id: 수행자 ID
-
-        Returns:
-            생성된 패널티
-        """
-        user = self._get_existing_user(user)
-        with global_lock(), UnitOfWork():
-            self._ensure_no_duplicate_penalty(
-                user.id,
-                PenaltyReason.OTHER,
-                booking_type,
-                booking_id,
-                memo="no_show",
-            )
-            penalty = Penalty(
-                id=generate_id(),
-                user_id=user.id,
-                reason=PenaltyReason.OTHER,
-                points=LATE_CANCEL_PENALTY,
-                related_type=booking_type,
-                related_id=booking_id,
-                memo="no_show",
-                updated_at=now_iso(),
-            )
-
-            self.penalty_repo.add(penalty)
-            self._update_user_penalty_points(user, LATE_CANCEL_PENALTY)
-
-            self.audit_repo.log_action(
-                actor_id=actor_id,
-                action="apply_no_show_penalty",
-                target_type="user",
-                target_id=user.id,
-                details=f"노쇼 패널티 +{LATE_CANCEL_PENALTY}점, 예약: {booking_type}/{booking_id}",
-            )
-
-            return penalty
-
     def apply_late_cancel(self, user, booking_type, booking_id, actor_id="system"):
         """
         직전 취소 패널티 적용 (+2점)
@@ -157,7 +112,7 @@ class PenaltyService:
                 points=LATE_CANCEL_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo="예약 시작 1시간 이내 취소",
+                memo="예약시작1시간이내취소",
                 updated_at=now_iso(),
             )
 
@@ -208,7 +163,7 @@ class PenaltyService:
                 points=LATE_RETURN_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo=f"지연 {delay_minutes}분 처리",
+                memo=f"지연{delay_minutes}분처리",
                 updated_at=now_iso(),
             )
 
@@ -251,6 +206,10 @@ class PenaltyService:
             raise PenaltyError(
                 f"파손/오염 패널티는 1~{MAX_DAMAGE_PENALTY}점 사이여야 합니다."
             )
+        try:
+            validate_reason_text(memo)
+        except ValueError as error:
+            raise PenaltyError(str(error)) from error
 
         with global_lock(), UnitOfWork():
             self._ensure_no_duplicate_penalty(

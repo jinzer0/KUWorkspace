@@ -4,6 +4,8 @@
 
 from pathlib import Path
 
+from src.storage.integrity import DataIntegrityError
+
 # 경로 설정
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -17,6 +19,8 @@ ROOM_BOOKINGS_FILE = DATA_DIR / "room_bookings.txt"
 EQUIPMENT_BOOKING_FILE = DATA_DIR / "equipment_booking.txt"
 PENALTIES_FILE = DATA_DIR / "penalties.txt"
 AUDIT_LOG_FILE = DATA_DIR / "audit_log.txt"
+CLOCK_FILE = DATA_DIR / "clock.txt"
+CLOCK_SENTINEL = "0000-00-00T00:00"
 
 DATA_FILES = [
     USERS_FILE,
@@ -26,6 +30,7 @@ DATA_FILES = [
     EQUIPMENT_BOOKING_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
+    CLOCK_FILE,
 ]
 
 # 예약 정책 상수
@@ -35,8 +40,6 @@ FIXED_BOOKING_START_HOUR = 9
 FIXED_BOOKING_START_MINUTE = 0
 FIXED_BOOKING_END_HOUR = 18
 FIXED_BOOKING_END_MINUTE = 0
-START_REQUEST_CUTOFF_HOUR = 10
-END_REQUEST_CUTOFF_HOUR = 19
 TIME_SLOT_MINUTES = 30
 MAX_ACTIVE_ROOM_BOOKINGS = 1  # 회의실 최대 활성 예약 수
 MAX_ACTIVE_EQUIPMENT_BOOKINGS = 1  # 장비 최대 활성 예약 수
@@ -61,6 +64,13 @@ LOCK_TIMEOUT = 30  # 잠금 대기 타임아웃 (초)
 
 
 def ensure_data_dir():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    for file_path in DATA_FILES:
-        file_path.touch(exist_ok=True)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        for file_path in DATA_FILES:
+            file_path.touch(exist_ok=True)
+        if not CLOCK_FILE.read_text(encoding="utf-8").strip():
+            CLOCK_FILE.write_text(CLOCK_SENTINEL, encoding="utf-8")
+    except OSError as error:
+        raise DataIntegrityError(
+            f"필수 데이터 파일을 생성할 수 없습니다: {error}"
+        ) from error

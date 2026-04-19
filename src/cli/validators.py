@@ -8,7 +8,10 @@ import re
 from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
     validate_username as validate_auth_username,
+    validate_password as validate_auth_password,
 )
+from src.domain.field_rules import validate_reason_text
+from src.runtime_clock import get_current_time
 
 
 def validate_positive_int(value_str, min_val=1, max_val=100):
@@ -55,25 +58,7 @@ def validate_password(password):
     Returns:
         (valid, error_message)
     """
-    if not isinstance(password, str):
-        return False, "비밀번호를 입력해주세요."
-    
-    # 공백 포함 확인 (plan 4.1.2: 공백 미포함, leading/trailing 포함)
-    if ' ' in password or '\t' in password or '\n' in password:
-        return False, "비밀번호에 공백을 포함할 수 없습니다."
-    
-    password_str = password.strip()
-    
-    if not password_str:
-        return False, "비밀번호를 입력해주세요."
-    
-    if len(password_str) < 4:
-        return False, "비밀번호는 4자 이상이어야 합니다."
-    
-    if len(password_str) > 50:
-        return False, "비밀번호는 50자 이하여야 합니다."
-    
-    return True, ""
+    return validate_auth_password(password)
 
 
 def validate_date_plan(date_str):
@@ -97,12 +82,13 @@ def validate_date_plan(date_str):
     """
     if not isinstance(date_str, str):
         return False, None, "날짜는 텍스트여야 합니다."
-    
-    date_str = date_str.strip()
-    
-    if not date_str:
+
+    if not date_str or not date_str.strip():
         return False, None, "날짜를 입력해주세요."
-    
+
+    if date_str != date_str.strip():
+        return False, None, "날짜 앞뒤에 공백을 포함할 수 없습니다."
+
     # 구분자 선택 및 일관성 확인
     separator = None
     if '-' in date_str:
@@ -127,7 +113,10 @@ def validate_date_plan(date_str):
     
     try:
         year_str, month_str, day_str = parts
-        
+
+        if len(year_str) != 4:
+            return False, None, "연도는 4자리여야 합니다."
+
         # 0 패딩 확인 (월, 일은 2자리 필수)
         if len(month_str) != 2 or len(day_str) != 2:
             return False, None, "월과 일은 0을 포함한 2자리여야 합니다. (예: 2026-04-03)"
@@ -180,12 +169,13 @@ def validate_time_plan(time_str):
     """
     if not isinstance(time_str, str):
         return False, None, "시간은 텍스트여야 합니다."
-    
-    time_str = time_str.strip()
-    
-    if not time_str:
+
+    if not time_str or not time_str.strip():
         return False, None, "시간을 입력해주세요."
-    
+
+    if time_str != time_str.strip():
+        return False, None, "시간 앞뒤에 공백을 포함할 수 없습니다."
+
     # 공백 확인
     if ' ' in time_str or '\t' in time_str or '\n' in time_str:
         return False, None, "시간에 공백을 포함할 수 없습니다."
@@ -197,6 +187,13 @@ def validate_time_plan(time_str):
         if len(parts) != 2:
             return False, None, "시간 형식이 올바르지 않습니다. (예: 09:00 또는 1800)"
         hour_str, minute_str = parts
+        if (
+            len(hour_str) != 2
+            or len(minute_str) != 2
+            or not hour_str.isdigit()
+            or not minute_str.isdigit()
+        ):
+            return False, None, "시간 형식이 올바르지 않습니다. (예: 09:00 또는 1800)"
     else:
         # HHMM 형식
         if len(time_str) != 4 or not time_str.isdigit():
@@ -287,25 +284,21 @@ def validate_reason(reason_str):
     # 앞뒤 공백 제거 (입력 후 strip 일반적 관례)
     reason_str = reason_str.strip()
     
-    # 줄바꿈 문자 확인
-    if '\n' in reason_str or '\r' in reason_str:
-        return False, "사유에 줄바꿈을 포함할 수 없습니다."
-    
-    # 길이 확인
-    if len(reason_str) > 20:
-        return False, "사유는 20자 이하여야 합니다."
-    
-    return True, ""
+    try:
+        validate_reason_text(reason_str)
+        return True, ""
+    except ValueError as error:
+        return False, str(error)
 
 
 def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 날짜"):
     while True:
-        start_str = input(f"  {start_prompt} (YYYY-MM-DD): ").strip()
-        if start_str.lower() in ("q", "quit", "취소"):
+        start_str = input(f"  {start_prompt} (YYYY-MM-DD): ")
+        if start_str.strip().lower() in ("q", "quit", "취소"):
             return None, None
 
-        end_str = input(f"  {end_prompt} (YYYY-MM-DD): ").strip()
-        if end_str.lower() in ("q", "quit", "취소"):
+        end_str = input(f"  {end_prompt} (YYYY-MM-DD): ")
+        if end_str.strip().lower() in ("q", "quit", "취소"):
             return None, None
 
         start_valid, start_date, start_error = validate_date_plan(start_str)

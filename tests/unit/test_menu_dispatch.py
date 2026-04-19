@@ -119,27 +119,25 @@ def test_user_menu_opens_clock_with_user_actor(
 @pytest.mark.parametrize(
     ("choice", "method_name"),
     [
-        ("1", "_show_rooms"),
-        ("2", "_change_room_status"),
-        ("3", "_show_all_room_bookings"),
-        ("4", "_room_checkin"),
-        ("5", "_room_checkout"),
-        ("6", "_admin_modify_or_swap_room_booking"),
-        ("7", "_admin_cancel_room_booking"),
-        ("8", "_show_equipment"),
-        ("9", "_change_equipment_status"),
-        ("10", "_show_all_equipment_bookings"),
-        ("11", "_equipment_checkout"),
-        ("12", "_equipment_return"),
-        ("13", "_admin_modify_or_swap_equipment_booking"),
-        ("14", "_admin_cancel_equipment_booking"),
-        ("15", "_show_users"),
-        ("16", "_show_user_detail"),
-        ("17", "_apply_damage_penalty"),
-        ("18", "_force_late_cancel_penalty"),
-        ("19", "_force_room_late_checkout"),
-        ("20", "_force_equipment_late_return"),
-        ("21", "_open_clock"),
+        ("1", "_show_all_room_bookings"),
+        ("2", "_show_rooms_and_change_status"),
+        ("3", "_room_checkin"),
+        ("4", "_room_checkout"),
+        ("5", "_admin_modify_room_booking_time"),
+        ("6", "_admin_cancel_room_booking"),
+        ("7", "_show_all_equipment_bookings"),
+        ("8", "_show_equipment_and_change_status"),
+        ("9", "_equipment_checkout"),
+        ("10", "_equipment_return"),
+        ("11", "_admin_modify_equipment_booking_time"),
+        ("12", "_admin_cancel_equipment_booking"),
+        ("13", "_show_users"),
+        ("14", "_show_user_detail"),
+        ("15", "_apply_damage_penalty"),
+        ("16", "_force_late_cancel_penalty"),
+        ("17", "_force_room_late_checkout"),
+        ("18", "_force_equipment_late_return"),
+        ("19", "_open_clock"),
     ],
 )
 def test_admin_menu_dispatches_actions(
@@ -183,148 +181,6 @@ def test_admin_menu_dispatches_actions(
     assert calls == [method_name]
 
 
-def test_admin_menu_room_modify_submenu_routes_to_time_change(
-    monkeypatch,
-    auth_service,
-    room_service,
-    equipment_service,
-    penalty_service,
-    policy_service,
-    create_test_user,
-):
-    """Admin menu choice 6 (room modify) with submenu choice 1 routes to time change"""
-    admin = create_test_user(role=UserRole.ADMIN)
-    menu = AdminMenu(
-        user=admin,
-        auth_service=auth_service,
-        room_service=room_service,
-        equipment_service=equipment_service,
-        penalty_service=penalty_service,
-        policy_service=policy_service,
-    )
-    calls = []
-    inputs = iter(["6", "1", "0"])
-
-    monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
-    monkeypatch.setattr(menu, "_refresh_admin", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.print_info", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
-    monkeypatch.setattr("src.cli.admin_menu.confirm", lambda *_: True)
-    monkeypatch.setattr("builtins.print", lambda *_: None)
-    monkeypatch.setattr(menu, "_admin_modify_room_booking_time", lambda: calls.append("_admin_modify_room_booking_time"))
-
-    assert menu.run() is True
-    assert "_admin_modify_room_booking_time" in calls
-
-
-def test_admin_menu_room_modify_submenu_cancel_returns_cleanly(
-    monkeypatch,
-    auth_service,
-    room_service,
-    equipment_service,
-    penalty_service,
-    policy_service,
-    create_test_user,
-):
-    """Admin menu choice 6 (room modify) with submenu choice 0 (cancel) returns without service calls"""
-    admin = create_test_user(role=UserRole.ADMIN)
-    menu = AdminMenu(
-        user=admin,
-        auth_service=auth_service,
-        room_service=room_service,
-        equipment_service=equipment_service,
-        penalty_service=penalty_service,
-        policy_service=policy_service,
-    )
-    calls = []
-    inputs = iter(["6", "0", "0"])
-
-    monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
-    monkeypatch.setattr(menu, "_refresh_admin", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.confirm", lambda *_: True)
-    monkeypatch.setattr("builtins.print", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
-    monkeypatch.setattr(menu, "_admin_modify_room_booking_time", lambda: calls.append("_admin_modify_room_booking_time"))
-
-    assert menu.run() is True
-    assert "_admin_modify_room_booking_time" not in calls
-
-
-def test_admin_menu_equipment_modify_submenu_routes_to_time_change(
-    monkeypatch,
-    auth_service,
-    room_service,
-    equipment_service,
-    penalty_service,
-    policy_service,
-    create_test_user,
-):
-    """Admin menu choice 13 (equipment modify) with submenu choice 1 routes to time change"""
-    admin = create_test_user(role=UserRole.ADMIN)
-    menu = AdminMenu(
-        user=admin,
-        auth_service=auth_service,
-        room_service=room_service,
-        equipment_service=equipment_service,
-        penalty_service=penalty_service,
-        policy_service=policy_service,
-    )
-    calls = []
-    inputs = iter(["13", "1", "0"])
-
-    monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
-    monkeypatch.setattr(menu, "_refresh_admin", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.print_info", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
-    monkeypatch.setattr("src.cli.admin_menu.confirm", lambda *_: True)
-    monkeypatch.setattr("builtins.print", lambda *_: None)
-    monkeypatch.setattr(menu, "_admin_modify_equipment_booking_time", lambda: calls.append("_admin_modify_equipment_booking_time"))
-
-    assert menu.run() is True
-    assert "_admin_modify_equipment_booking_time" in calls
-
-
-def test_admin_menu_equipment_modify_submenu_cancel_returns_cleanly(
-    monkeypatch,
-    auth_service,
-    room_service,
-    equipment_service,
-    penalty_service,
-    policy_service,
-    create_test_user,
-):
-    """Admin menu choice 13 (equipment modify) with submenu choice 0 (cancel) returns without service calls"""
-    admin = create_test_user(role=UserRole.ADMIN)
-    menu = AdminMenu(
-        user=admin,
-        auth_service=auth_service,
-        room_service=room_service,
-        equipment_service=equipment_service,
-        penalty_service=penalty_service,
-        policy_service=policy_service,
-    )
-    calls = []
-    inputs = iter(["13", "0", "0"])
-
-    monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
-    monkeypatch.setattr(menu, "_refresh_admin", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.confirm", lambda *_: True)
-    monkeypatch.setattr("builtins.print", lambda *_: None)
-    monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
-    monkeypatch.setattr(menu, "_admin_modify_equipment_booking_time", lambda: calls.append("_admin_modify_equipment_booking_time"))
-
-    assert menu.run() is True
-    assert "_admin_modify_equipment_booking_time" not in calls
-
-
 def test_admin_menu_opens_clock_with_admin_actor(
     monkeypatch,
     auth_service,
@@ -344,7 +200,7 @@ def test_admin_menu_opens_clock_with_admin_actor(
         policy_service=policy_service,
     )
     created = {}
-    inputs = iter(["21", "0"])
+    inputs = iter(["19", "0"])
 
     class FakeClockMenu:
         def __init__(self, policy_service, actor_id="system", allow_advance=True):
@@ -369,4 +225,88 @@ def test_admin_menu_opens_clock_with_admin_actor(
         "actor_id": admin.id,
         "allow_advance": True,
         "ran": True,
+    }
+
+
+def test_admin_room_list_status_flow_skips_enter_and_confirm(
+    monkeypatch,
+    auth_service,
+    room_service,
+    equipment_service,
+    penalty_service,
+    policy_service,
+    create_test_user,
+):
+    admin = create_test_user(role=UserRole.ADMIN)
+    menu = AdminMenu(
+        user=admin,
+        auth_service=auth_service,
+        room_service=room_service,
+        equipment_service=equipment_service,
+        penalty_service=penalty_service,
+        policy_service=policy_service,
+    )
+    state = {"show_called": False, "confirm_called": False, "changed": False}
+
+    monkeypatch.setattr(menu, "_show_rooms", lambda: state.__setitem__("show_called", True))
+    monkeypatch.setattr(
+        menu,
+        "_change_room_status",
+        lambda: state.__setitem__("changed", True),
+    )
+    monkeypatch.setattr(
+        "src.cli.admin_menu.confirm",
+        lambda _msg: state.__setitem__("confirm_called", True) or True,
+    )
+
+    menu._show_rooms_and_change_status()
+
+    assert state == {
+        "show_called": False,
+        "confirm_called": False,
+        "changed": True,
+    }
+
+
+def test_admin_equipment_list_status_flow_skips_enter_and_confirm(
+    monkeypatch,
+    auth_service,
+    room_service,
+    equipment_service,
+    penalty_service,
+    policy_service,
+    create_test_user,
+):
+    admin = create_test_user(role=UserRole.ADMIN)
+    menu = AdminMenu(
+        user=admin,
+        auth_service=auth_service,
+        room_service=room_service,
+        equipment_service=equipment_service,
+        penalty_service=penalty_service,
+        policy_service=policy_service,
+    )
+    state = {"show_called": False, "confirm_called": False, "changed": False}
+
+    monkeypatch.setattr(
+        menu,
+        "_show_equipment",
+        lambda: state.__setitem__("show_called", True),
+    )
+    monkeypatch.setattr(
+        menu,
+        "_change_equipment_status",
+        lambda: state.__setitem__("changed", True),
+    )
+    monkeypatch.setattr(
+        "src.cli.admin_menu.confirm",
+        lambda _msg: state.__setitem__("confirm_called", True) or True,
+    )
+
+    menu._show_equipment_and_change_status()
+
+    assert state == {
+        "show_called": False,
+        "confirm_called": False,
+        "changed": True,
     }
