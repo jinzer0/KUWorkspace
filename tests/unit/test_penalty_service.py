@@ -2,7 +2,6 @@
 패널티 서비스 테스트
 
 테스트 대상:
-- 노쇼 패널티 (+3점)
 - 직전 취소 패널티 (+2점)
 - 지연 반납 패널티 (ceil(분/10)점)
 - 파손/오염 패널티 (1~5점)
@@ -17,50 +16,6 @@ from datetime import datetime, timedelta
 from src.domain.penalty_service import PenaltyError, AdminRequiredError
 from src.domain.models import UserRole, PenaltyReason
 from src.storage.file_lock import global_lock
-
-
-class TestNoShowPenalty:
-    """노쇼 패널티 테스트"""
-
-    def test_apply_no_show_adds_2_points(self, penalty_service, create_test_user):
-        """노쇼 시 2점 추가"""
-        user = create_test_user(penalty_points=0)
-
-        penalty = penalty_service.apply_no_show(
-            user=user, booking_type="room_booking", booking_id="booking-123"
-        )
-
-        assert penalty.reason == PenaltyReason.OTHER
-        assert penalty.memo == "no_show"
-        assert penalty.points == 2
-
-        # 사용자 점수 확인
-
-        updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 2
-
-    def test_no_show_resets_streak(self, penalty_service, create_test_user):
-        """노쇼 발생 시 정상 이용 연속 횟수 리셋"""
-        user = create_test_user(penalty_points=0, normal_use_streak=8)
-
-        penalty_service.apply_no_show(
-            user=user, booking_type="room_booking", booking_id="booking-123"
-        )
-
-        updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.normal_use_streak == 0
-
-    def test_apply_no_show_nonexistent_user_fails(self, penalty_service, user_factory):
-        fake_user = user_factory(id="missing-user")
-
-        with pytest.raises(PenaltyError) as exc_info:
-            penalty_service.apply_no_show(
-                user=fake_user,
-                booking_type="room_booking",
-                booking_id="booking-123",
-            )
-
-        assert "존재하지 않는 사용자" in str(exc_info.value)
 
 
 class TestLateCancelPenalty:
@@ -467,11 +422,10 @@ class TestPenaltyThresholds:
     """패널티 임계값 제한 테스트"""
 
     def test_3_points_triggers_restriction(self, penalty_service, create_test_user):
-        """2점 단일 노쇼는 제한을 유발하지 않는다"""
+        """2점 단일 직전 취소는 제한을 유발하지 않는다"""
         user = create_test_user(penalty_points=0)
 
-        # 3점 패널티 적용
-        penalty_service.apply_no_show(
+        penalty_service.apply_late_cancel(
             user=user, booking_type="room_booking", booking_id="booking-1"
         )
 
@@ -481,19 +435,19 @@ class TestPenaltyThresholds:
 
     def test_6_points_triggers_ban(self, penalty_service, create_test_user):
         """6점 달성 시 30일 이용 금지"""
-        user = create_test_user(penalty_points=3)
+        user = create_test_user(penalty_points=4)
 
-        penalty_service.apply_no_show(
+        penalty_service.apply_late_cancel(
             user=user, booking_type="room_booking", booking_id="booking-2"
         )
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 5
+        assert updated_user.penalty_points == 6
         assert updated_user.restriction_until is not None
 
-        # restriction_until이 약 7일 후인지 확인
+        # restriction_until이 약 30일 후인지 확인
         restriction_end = datetime.fromisoformat(updated_user.restriction_until)
-        expected_end = datetime.now() + timedelta(days=7)
+        expected_end = datetime.now() + timedelta(days=30)
         assert abs((restriction_end - expected_end).total_seconds()) < 60
 
 
@@ -556,18 +510,16 @@ class TestPenaltyHistory:
         user = create_test_user(penalty_points=0)
 
         # 여러 패널티 적용
-        penalty_service.apply_no_show(user, "room_booking", "b1")
-        penalty_service.apply_late_cancel(user, "room_booking", "b2")
+        penalty_service.apply_late_cancel(user, "room_booking", "b1")
         penalty_service.apply_late_return(
-            user, "equipment_booking", "b3", delay_minutes=15
+            user, "equipment_booking", "b2", delay_minutes=15
         )
 
         penalties = penalty_service.get_user_penalties(user.id)
 
-        assert len(penalties) == 3
+        assert len(penalties) == 2
 
         reasons = {p.reason for p in penalties}
-        assert PenaltyReason.OTHER in reasons
         assert PenaltyReason.LATE_CANCEL in reasons
         assert PenaltyReason.LATE_RETURN in reasons
 

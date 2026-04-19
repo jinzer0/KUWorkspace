@@ -64,7 +64,7 @@ class TestBookingCompleteFlow:
             admin = auth_service.signup("admin_user", "pass", role=UserRole.ADMIN)
 
             # 2. 회의실 생성
-            room = create_test_room(name="E2E Room")
+            room = create_test_room(name="회의실9C")
 
             # 3. 예약 생성
             booking = room_service.create_booking(
@@ -109,7 +109,7 @@ class TestBookingCompleteFlow:
             user = auth_service.signup("eq_user", "pass")
             admin = auth_service.signup("eq_admin", "pass", role=UserRole.ADMIN)
 
-            equipment = create_test_equipment(name="E2E Laptop")
+            equipment = create_test_equipment(name="장비102")
 
             # 예약
             booking = equipment_service.create_booking(
@@ -209,8 +209,7 @@ class TestPenaltyAccumulationFlow:
         with mock_now(fixed_time):
             user = auth_service.signup("penalty_user", "pass")
 
-            # 노쇼로 3점 부여
-            penalty_service.apply_no_show(user, "room_booking", "fake-booking-1")
+            penalty_service.apply_late_cancel(user, "room_booking", "fake-booking-1")
 
             # 상태 확인
             status = penalty_service.get_user_status(user)
@@ -234,8 +233,8 @@ class TestPenaltyAccumulationFlow:
 
         with mock_now(fixed_time):
             user = auth_service.signup("banned_user", "pass")
-            room = create_test_room(name="restricted-room")
-            equipment = create_test_equipment(name="restricted-equip")
+            room = create_test_room(name="회의실9D")
+            equipment = create_test_equipment(name="장비103")
 
             penalty_service.apply_damage(
                 admin=auth_service.signup("restricted_admin", "pass", role=UserRole.ADMIN),
@@ -350,7 +349,7 @@ class TestMultipleBookingsFlow:
         with mock_now(fixed_time):
             user = auth_service.signup("multi_booking_user", "pass")
 
-            rooms = [create_test_room(name=f"Room {i}") for i in range(2)]
+            rooms = [create_test_room(name=f"회의실{i}A") for i in range(2)]
 
             room_service.create_booking(
                 user,
