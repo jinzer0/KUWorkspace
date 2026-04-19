@@ -34,7 +34,6 @@ from src.cli.formatters import (
     format_datetime,
     format_penalty_status,
 )
-from src.runtime_clock import get_current_time
 from src.cli.validators import get_daily_date_range_input, get_positive_int_input
 
 
@@ -543,8 +542,14 @@ class UserMenu:
         if not booking_id:
             return
 
-        selected = next((b for b in active_bookings if b.id == booking_id), None)
-        is_late_cancel = selected and datetime.fromisoformat(selected.start_time) <= get_current_time()
+        try:
+            is_late_cancel = self.room_service.will_apply_late_cancel_penalty(
+                self.user, booking_id
+            )
+        except (RoomBookingError, PenaltyError) as e:
+            print_error(str(e))
+            pause()
+            return
 
         if is_late_cancel:
             print_warning("직전 취소로 인해 패널티 2점이 부과됩니다.")

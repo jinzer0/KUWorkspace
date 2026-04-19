@@ -9,6 +9,7 @@ from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
     validate_username as validate_auth_username,
 )
+from src.domain.field_rules import validate_reason_text
 from src.runtime_clock import get_current_time
 
 

@@ -153,15 +153,6 @@ class RoomService:
                 f"체크인 요청은 {START_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
             )
 
-    def _require_end_request_window(self, booking):
-        end_time = datetime.fromisoformat(booking.end_time)
-        self._require_current_boundary(end_time, "퇴실 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= END_REQUEST_CUTOFF_HOUR:
-            raise RoomBookingError(
-                f"퇴실 요청은 {END_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
-            )
-
     def get_all_rooms(self):
         """모든 회의실 조회"""
         return self.room_repo.get_all()
