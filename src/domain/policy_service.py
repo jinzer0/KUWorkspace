@@ -6,6 +6,7 @@ from dataclasses import replace
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
+    UserRole,
     now_iso,
 )
 from src.storage.repositories import (
@@ -23,7 +24,7 @@ from src.config import (
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
 )
-from src.runtime_clock import get_runtime_clock, compute_next_slot
+from src.runtime_clock import get_runtime_clock
 
 
 class PolicyService:
@@ -78,16 +79,16 @@ class PolicyService:
         results["banned_user_cancelled_bookings"] = cancelled
         return results
 
-    def prepare_advance(self, current_time=None):
+    def prepare_advance(self, current_time=None, actor_id="system"):
         if current_time is None:
             current_time = self.clock.now()
-        return self._build_advance_state(current_time)
+        return self._build_advance_state(current_time, actor_id=actor_id)
 
     def advance_time(self, actor_id="system"):
         with global_lock(), UnitOfWork():
             current_time = self.clock.now()
             auto_events = self._handle_boundary_automation(current_time)
-            state = self._build_advance_state(current_time)
+            state = self._build_advance_state(current_time, actor_id=actor_id)
             if not state["can_advance"]:
                 self.audit_repo.log_action(
                     actor_id=actor_id,
@@ -272,8 +273,16 @@ class PolicyService:
 
         return events
 
-    def _build_advance_state(self, current_time):
-        next_time = compute_next_slot(current_time)
+    def _build_force_notice(self, actor_id, blockers):
+        if not blockers:
+            return ""
+        actor = self.user_repo.get_by_id(actor_id)
+        if actor is None or actor.role == UserRole.ADMIN:
+            return "미해결 사건이 있어도 강행할 수 있습니다. 자동 패널티는 기존 책임 사용자 기준으로 처리됩니다."
+        return "강행하면 이 이동으로 발생하는 자동 패널티가 모두 현재 사용자에게 부과됩니다."
+
+    def _build_advance_state(self, current_time, actor_id="system"):
+        next_time = self.clock.next_slot()
         blockers = []
 
         if current_time.hour == 9:
@@ -295,6 +304,7 @@ class PolicyService:
             "next_time": next_time,
             "blockers": blockers,
             "events": events,
+            "force_notice": self._build_force_notice(actor_id, blockers),
         }
 
     def _user_label(self, user_id):

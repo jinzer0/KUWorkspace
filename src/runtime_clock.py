@@ -1,9 +1,8 @@
-import json
 import os
 from datetime import datetime, timedelta
 
-from src.config import CLOCK_STATE_FILE
 from src.storage.file_lock import global_lock
+from src.storage.integrity import DataIntegrityError
 
 
 ALLOWED_CLOCK_SLOTS = {(9, 0), (18, 0)}
@@ -35,6 +34,7 @@ class SystemClock:
 
     def __init__(self, start_time):
         self._current_time = normalize_slot(start_time)
+        _save_persisted_time(self._current_time)
 
     def now(self):
         return self._current_time
@@ -50,10 +50,12 @@ class SystemClock:
 
     def advance(self):
         self._current_time = self.next_slot()
+        _save_persisted_time(self._current_time)
         return self._current_time
 
     def set_time(self, new_time):
         self._current_time = normalize_slot(new_time)
+        _save_persisted_time(self._current_time)
         return self._current_time
 
 
@@ -81,36 +83,25 @@ class RuntimeClock:
             if _active_clock is None:
                 raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
             next_time = _active_clock.advance()
-            _save_persisted_time(next_time)
             return next_time
 
 
 def _load_persisted_time():
-    if not CLOCK_STATE_FILE.exists():
-        return None
-
-    content = CLOCK_STATE_FILE.read_text(encoding="utf-8").strip()
-    if not content:
-        return None
+    from src.clock_bootstrap import load_persisted_clock
 
     try:
-        payload = json.loads(content)
-        saved_time = payload.get("current_time")
-        if not saved_time:
-            return None
-        return normalize_slot(datetime.fromisoformat(saved_time))
-    except (json.JSONDecodeError, TypeError, ValueError, ClockError):
+        return load_persisted_clock()
+    except DataIntegrityError:
         return None
 
 
 def _save_persisted_time(current_time):
-    payload = {"current_time": normalize_slot(current_time).isoformat()}
-    temp_path = CLOCK_STATE_FILE.with_suffix(f"{CLOCK_STATE_FILE.suffix}.tmp")
-    temp_path.write_text(
-        json.dumps(payload, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    os.replace(temp_path, CLOCK_STATE_FILE)
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+
+    from src.clock_bootstrap import persist_clock
+
+    persist_clock(normalize_slot(current_time))
 
 
 def _sync_active_clock_from_state():
@@ -127,8 +118,6 @@ def set_active_clock(clock):
     _active_clock = clock
     with global_lock():
         _sync_active_clock_from_state()
-        if _active_clock is not None:
-            _save_persisted_time(_active_clock.now())
     return _active_clock
 
 
