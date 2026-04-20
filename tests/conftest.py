@@ -144,13 +144,16 @@ def freeze_time():
 def fake_clock():
     """세션 가상 시계를 직접 제어하는 픽스처."""
 
-    def _set(fixed_time):
-        set_active_clock(SystemClock(fixed_time))
-        from src.runtime_clock import get_active_clock
+    with patch("src.clock_bootstrap.persist_clock", lambda _time: None):
 
-        return get_active_clock()
+        def _set(fixed_time):
+            set_active_clock(SystemClock(fixed_time))
+            from src.runtime_clock import get_active_clock
 
-    yield _set
+            return get_active_clock()
+
+        yield _set
+
     clear_active_clock()
 
 
@@ -180,6 +183,7 @@ def temp_data_dir(tmp_path):
     equipment_bookings_file = data_dir / "equipment_booking.txt"
     penalties_file = data_dir / "penalties.txt"
     audit_log_file = data_dir / "audit_log.txt"
+    clock_file = data_dir / "clock.txt"
 
     # Patch config paths AND the DATA_FILES list itself (critical for ensure_data_dir)
     isolated_data_files = [
@@ -190,6 +194,7 @@ def temp_data_dir(tmp_path):
         equipment_bookings_file,
         penalties_file,
         audit_log_file,
+        clock_file,
     ]
 
     with patch("src.config.DATA_DIR", data_dir), patch(
@@ -208,6 +213,8 @@ def temp_data_dir(tmp_path):
         "src.config.PENALTIES_FILE", penalties_file
     ), patch(
         "src.config.AUDIT_LOG_FILE", audit_log_file
+    ), patch(
+        "src.config.CLOCK_FILE", clock_file
     ), patch(
         "src.storage.file_lock.DATA_DIR", data_dir
     ), patch(
@@ -275,13 +282,13 @@ def room_factory():
         id=None,
         name=None,
         capacity=10,
-        location="Building A",
+        location="1층",
         status=ResourceStatus.AVAILABLE,
-        description="",
+        description="회의실",
         **overrides,
     ):
         _counter[0] += 1
-        resolved_name = name or f"Room {_counter[0]}"
+        resolved_name = name or f"회의실{_counter[0] % 10}{chr(65 + ((_counter[0] - 1) % 3))}"
         return Room(
             id=id or resolved_name,
             name=resolved_name,
@@ -310,10 +317,10 @@ def equipment_factory():
         **overrides,
     ):
         _counter[0] += 1
-        resolved_serial = serial_number or f"SN-{_counter[0]:05d}"
+        resolved_serial = serial_number or f"NB-{_counter[0]:03d}"
         return EquipmentAsset(
             id=id or resolved_serial,
-            name=name or f"Equipment {_counter[0]}",
+            name=name or f"장비{_counter[0]}",
             asset_type=asset_type,
             serial_number=resolved_serial,
             status=status,

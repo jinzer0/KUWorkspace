@@ -139,7 +139,7 @@ class TestConcurrentBooking:
         # 데이터 준비
         user1 = user_factory(username="concurrent1")
         user2 = user_factory(username="concurrent2")
-        room = room_factory(name="Concurrent Room")
+        room = room_factory(name="회의실9B")
 
         with global_lock():
             user_repo.add(user1)
@@ -246,7 +246,7 @@ class TestConcurrentMultipleRooms:
         """
         # 여러 사용자와 회의실
         users = [user_factory(username=f"multi_user_{i}") for i in range(3)]
-        rooms = [room_factory(name=f"Multi Room {i}") for i in range(3)]
+        rooms = [room_factory(name=f"회의실{i}B") for i in range(3)]
 
         with global_lock():
             for u in users:
@@ -391,10 +391,10 @@ class TestConcurrentEquipmentBooking:
         user1 = user_factory(username="equip_concurrent1")
         user2 = user_factory(username="equip_concurrent2")
         equipment = EquipmentAsset(
-            id="SN-CONC-001",
-            name="Concurrent Equipment",
+            id="WC-101",
+            name="장비101",
             asset_type="laptop",
-            serial_number="SN-CONC-001",
+            serial_number="WC-101",
             status=ResourceStatus.AVAILABLE,
         )
 

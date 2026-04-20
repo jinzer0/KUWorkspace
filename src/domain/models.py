@@ -10,6 +10,18 @@ import uuid
 import json
 
 from src.runtime_clock import get_current_time
+from src.domain.field_rules import (
+    validate_username_text,
+    validate_password_text,
+    validate_room_name,
+    validate_room_capacity,
+    validate_room_location,
+    validate_room_description,
+    validate_equipment_name,
+    validate_equipment_asset_type,
+    validate_equipment_serial,
+    validate_equipment_description,
+)
 
 # ===== Enums =====
 
@@ -83,17 +95,24 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(dt_str)
 
 
-def normalize_datetime_string(value: Optional[str]) -> Optional[str]:
+def normalize_datetime_string(
+    value: Optional[str],
+    *,
+    strict: bool = False,
+    field_name: str = "datetime",
+) -> Optional[str]:
     if value is None:
         return None
     try:
         dt = datetime.fromisoformat(value)
         return dt.replace(second=0, microsecond=0).isoformat(timespec="minutes")
-    except ValueError:
+    except ValueError as error:
+        if strict:
+            raise ValueError(f"{field_name} 형식이 올바르지 않습니다: {value}") from error
         return value
 
 
-def normalize_persisted_text(value: Optional[str], max_length: int = 40) -> str:
+def normalize_persisted_text(value: Optional[str], max_length: int = 20) -> str:
     if value is None:
         return ""
     return value.replace("\r", " ").replace("\n", " ")[:max_length]
@@ -139,6 +158,8 @@ class User:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        validate_username_text(self.username)
+        validate_password_text(self.password)
         return [
             self.username,
             self.password,
@@ -160,6 +181,8 @@ class User:
         else:
             user_id, username, password, role, points, streak, restriction_until, created_at, updated_at = record
         user_key = username or user_id or ""
+        validate_username_text(user_key)
+        validate_password_text(password or "")
         return cls(
             id=user_id or user_key,
             username=user_key,
@@ -167,9 +190,13 @@ class User:
             role=UserRole(role),
             penalty_points=int(points or "0"),
             normal_use_streak=int(streak or "0"),
-            restriction_until=normalize_datetime_string(restriction_until),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            restriction_until=normalize_datetime_string(
+                restriction_until,
+                strict=True,
+                field_name="restriction_until",
+            ),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -205,6 +232,10 @@ class Room:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        validate_room_name(self.name)
+        validate_room_capacity(self.capacity)
+        validate_room_location(self.location)
+        validate_room_description(self.description)
         return [
             self.name,
             str(self.capacity),
@@ -225,6 +256,10 @@ class Room:
         else:
             room_id, name, capacity, location, status, description, created_at, updated_at = record
         room_key = name or room_id or ""
+        validate_room_name(room_key)
+        validate_room_capacity(int(capacity or "0"))
+        validate_room_location(location or "")
+        validate_room_description(description or "")
         return cls(
             id=room_id or room_key,
             name=room_key,
@@ -232,8 +267,8 @@ class Room:
             location=location or "",
             status=ResourceStatus(status),
             description=description or "",
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -277,6 +312,10 @@ class EquipmentAsset:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        validate_equipment_name(self.name)
+        validate_equipment_asset_type(self.asset_type)
+        validate_equipment_serial(self.serial_number)
+        validate_equipment_description(self.description)
         return [
             self.name,
             self.asset_type,
@@ -301,8 +340,8 @@ class EquipmentAsset:
             serial_number=serial_number or "",
             status=ResourceStatus(status),
             description=description or "",
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -380,16 +419,16 @@ class RoomBooking:
             id=booking_id or generate_id(),
             user_id=user_id or "",
             room_id=room_id or "",
-            start_time=normalize_datetime_string(start_time) or now_iso(),
-            end_time=normalize_datetime_string(end_time) or now_iso(),
+            start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
+            end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
             status=RoomBookingStatus(status),
-            checked_in_at=normalize_datetime_string(checked_in_at),
-            requested_checkin_at=normalize_datetime_string(requested_checkin_at),
-            requested_checkout_at=normalize_datetime_string(requested_checkout_at),
-            completed_at=normalize_datetime_string(completed_at),
-            cancelled_at=normalize_datetime_string(cancelled_at),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            checked_in_at=normalize_datetime_string(checked_in_at, strict=True, field_name="checked_in_at"),
+            requested_checkin_at=normalize_datetime_string(requested_checkin_at, strict=True, field_name="requested_checkin_at"),
+            requested_checkout_at=normalize_datetime_string(requested_checkout_at, strict=True, field_name="requested_checkout_at"),
+            completed_at=normalize_datetime_string(completed_at, strict=True, field_name="completed_at"),
+            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -467,16 +506,16 @@ class EquipmentBooking:
             id=booking_id or generate_id(),
             user_id=user_id or "",
             equipment_id=equipment_id or "",
-            start_time=normalize_datetime_string(start_time) or now_iso(),
-            end_time=normalize_datetime_string(end_time) or now_iso(),
+            start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
+            end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
             status=EquipmentBookingStatus(status),
-            checked_out_at=normalize_datetime_string(checked_out_at),
-            requested_pickup_at=normalize_datetime_string(requested_pickup_at),
-            requested_return_at=normalize_datetime_string(requested_return_at),
-            returned_at=normalize_datetime_string(returned_at),
-            cancelled_at=normalize_datetime_string(cancelled_at),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            checked_out_at=normalize_datetime_string(checked_out_at, strict=True, field_name="checked_out_at"),
+            requested_pickup_at=normalize_datetime_string(requested_pickup_at, strict=True, field_name="requested_pickup_at"),
+            requested_return_at=normalize_datetime_string(requested_return_at, strict=True, field_name="requested_return_at"),
+            returned_at=normalize_datetime_string(returned_at, strict=True, field_name="returned_at"),
+            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
 
 
@@ -536,8 +575,8 @@ class Penalty:
             related_type=related_type or "",
             related_id=related_id or "",
             memo=normalize_persisted_text(memo),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at"),
         )
 
 
@@ -590,6 +629,6 @@ class AuditLog:
             target_type=target_type or "",
             target_id=target_id or "",
             details=normalize_persisted_text(details),
-            created_at=normalize_datetime_string(created_at) or now_iso(),
-            updated_at=normalize_datetime_string(updated_at),
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at"),
         )
