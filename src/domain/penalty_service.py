@@ -418,3 +418,38 @@ class PenaltyService:
         """사용자의 패널티 이력 조회"""
         self._get_existing_user_by_id(user_id)
         return self.penalty_repo.get_by_user(user_id)
+    def apply_fixed_penalty(self, admin, user, penalty_type, points, memo):
+        admin = self._get_existing_admin(admin)
+        user = self._get_existing_user(user)
+
+        reason_map = {
+            "late_checkout": PenaltyReason.LATE_RETURN,
+            "late_return": PenaltyReason.LATE_RETURN,
+            "late_cancel": PenaltyReason.LATE_CANCEL
+        }
+        reason = reason_map.get(penalty_type, PenaltyReason.DAMAGE)
+
+        with global_lock(), UnitOfWork():
+            penalty = Penalty(
+                id=generate_id(),
+                user_id=user.id,
+                reason=reason,
+                points=points,
+                related_type=None,
+                related_id="",
+                memo=memo,
+                updated_at=now_iso(),
+            )
+
+            self.penalty_repo.add(penalty)
+            self._update_user_penalty_points(user, points)
+
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action=f"apply_{penalty_type}_penalty",
+                target_type="user",
+                target_id=user.id,
+                details=f"{penalty_type} 패널티 +{points}점, 사유: {memo}",
+            )
+
+            return penalty

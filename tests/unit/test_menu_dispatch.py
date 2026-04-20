@@ -174,6 +174,8 @@ def test_admin_menu_dispatches_actions(
             "src.cli.admin_menu.ClockMenu",
             lambda *_args, **_kwargs: type("FakeClock", (), {"run": lambda _self: calls.append(method_name)})(),
         )
+    elif method_name == "_apply_fixed_penalty":
+        monkeypatch.setattr(menu, "_apply_fixed_penalty", lambda _penalty_type: calls.append(method_name))
     else:
         monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
 

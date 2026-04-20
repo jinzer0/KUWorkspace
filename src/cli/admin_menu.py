@@ -1503,3 +1503,61 @@ class AdminMenu:
             print_error(str(e))
 
         pause()
+
+    def _apply_fixed_penalty(self, penalty_type):
+        type_info = {
+            "late_checkout": "회의실 퇴실 지연",
+            "late_return": "장비 반납 지연",
+            "late_cancel": "직전 취소"
+        }
+        title = type_info.get(penalty_type, "패널티")
+        print_header(f"{title} 패널티 부여")
+        users = self.auth_service.get_all_users(self.user)
+        users = [u for u in users if u.username != "admin"]
+        if not users:
+            return
+
+        items = [(u.id, u.username) for u in users]
+        user_id = select_from_list(items, "사용자 선택")
+        if not user_id:
+            return
+
+        user = self._safe_get_user(user_id)
+        if not user:
+            print_error("사용자를 찾을 수 없습니다.")
+            pause()
+            return
+
+        penalty_points = 2
+        print_info(f"\n{title} 규정에 따라 고정 패널티 {penalty_points}점이 배정됩니다.")
+        
+        reason = input("사유 입력: ").strip()
+        if not reason:
+            reason = f"관리자 수동 부과 ({title})"
+
+        if not confirm(f"{user.username}에게 {penalty_points}점 패널티를 부여하시겠습니까?"):
+            print_info("패널티 부여를 철회합니다.")
+            return
+
+        try:
+            penalty = self.penalty_service.apply_fixed_penalty(
+                admin=self.user,
+                user=user,
+                penalty_type=penalty_type,
+                points=penalty_points,
+                memo=reason
+            )
+            print_success(f"✓ 패널티가 부여되었습니다. (+{penalty.points}점)")
+
+            status = self.penalty_service.get_user_status(user)
+            print_info(f"i 사용자 현재 누적 : {status['points']}점")
+
+            if status.get("is_banned"):
+                print_warning("⚠️ 사용자가 이용 금지 상태가 되었습니다.")
+            elif status.get("is_restricted"):
+                print_warning("⚠️ 사용자가 예약 제한 상태가 되었습니다.")
+                
+        except (PenaltyError, AdminRequiredError, AuthError) as e:
+            print_error(str(e))
+
+        pause()
