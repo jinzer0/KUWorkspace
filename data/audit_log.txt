@@ -1,2 +1,14 @@
-76d00441-7b4e-482d-ab0f-97259af973d8|aaaa|create_room_booking_daily|room_booking|e650bc6a-5035-4abb-8f5b-8fb9ecff21ed|회의실: 회의실 4A, 인원: 4명, 기간: 2026-05-06 09:0|2026-04-07T18:00|2026-04-07T18:00
-bbacb532-1ebe-496d-ac19-b7977b8c54ef|aaaa|modify_room_booking_daily|room_booking|e650bc6a-5035-4abb-8f5b-8fb9ecff21ed|변경: 2026-05-08 09:00:00 ~ 2026-05-12 18:|2026-04-07T18:00|2026-04-07T18:00
+befa9b24-49d8-4b2b-85c4-412be5cb9ff9|admin|clock_advance|system_clock|2026-04-08T18:00|2026-04-08 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2026-04-08T18:00|2026-04-08T18:00
+55346759-2dbc-42bd-b7ad-1dde1d002be2|admin|clock_advance|system_clock|2026-04-09T09:00|2026-04-09 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2026-04-09T09:00|2026-04-09T09:00
+cd1a39d2-b569-4fb0-9c35-efb0fa28b0bb|ddd|create_room_booking_daily|room_booking|2ea2308e-399c-415b-83b3-c05f5e033bee|회의실: 회의실 4A, 인원: 2명, 기간: 2026-04-10 09:0|2026-04-09T09:00|2026-04-09T09:00
+98d18fe6-0c68-4a6e-8264-dbad4189eab4|ddd|clock_advance|system_clock|2026-04-09T18:00|2026-04-09 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2026-04-09T18:00|2026-04-09T18:00
+db943e2b-4880-473c-97f3-7214fddbf363|admin|clock_advance|system_clock|2026-04-09T18:00|2026-04-09 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2026-04-09T18:00|2026-04-09T18:00
+1d739f30-7906-4d90-bcf1-b6d605e908f5|admin|clock_advance|system_clock|2026-04-10T09:00|2026-04-10 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2026-04-10T09:00|2026-04-10T09:00
+501a26dc-7f59-4459-a8c4-e19d91131db3|ddd|request_room_check_in|room_booking|2ea2308e-399c-415b-83b3-c05f5e033bee||2026-04-10T09:00|2026-04-10T09:00
+478c4c8c-77ef-4429-9793-97323e07b072|admin|room_check_in|room_booking|2ea2308e-399c-415b-83b3-c05f5e033bee||2026-04-10T09:00|2026-04-10T09:00
+84040066-bb75-4b7f-9ddc-011b4aa7eaab|ddd|clock_advance|system_clock|2026-04-10T18:00|2026-04-10 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2026-04-10T18:00|2026-04-10T18:00
+7cf1ebae-db27-460f-a74d-09519581371e|admin|clock_advance|system_clock|2026-04-11T09:00|2026-04-11 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2026-04-11T09:00|2026-04-11T09:00
+95d76e7c-e3c1-410b-9a04-dedf4a6e3ecb|admin|clock_advance|system_clock|2026-04-11T18:00|2026-04-11 18:00로 이동 준비 \| 당일 종료 예정 회의실 1|2026-04-11T18:00|2026-04-11T18:00
+08ec9215-6eaa-4aa5-8a10-7aa5025eadac|ddd|request_room_checkout|room_booking|2ea2308e-399c-415b-83b3-c05f5e033bee||2026-04-11T18:00|2026-04-11T18:00
+ca4064d8-f740-461b-a7a4-c464d9344b2a|admin|clock_advance|system_clock|2026-04-12T09:00|2026-04-12 09:00로 이동 준비 \| 다음 시점 시작 예정 회의|2026-04-12T09:00|2026-04-12T09:00
+8f42c85d-6941-40c4-a312-a045c82566c7|admin|clock_advance|system_clock|2026-04-12T18:00|2026-04-12 18:00로 이동 준비 \| 당일 종료 예정 회의실 0|2026-04-12T18:00|2026-04-12T18:00

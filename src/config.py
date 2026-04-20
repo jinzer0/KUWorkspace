@@ -64,12 +64,20 @@ LOCK_TIMEOUT = 30  # 잠금 대기 타임아웃 (초)
 
 
 def ensure_data_dir():
+    global CLOCK_FILE, DATA_FILES
+
+    clock_file = DATA_DIR / CLOCK_FILE.name
+    CLOCK_FILE = clock_file
+    data_files = list(DATA_FILES)
+    if clock_file not in data_files:
+        data_files.append(clock_file)
+
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        for file_path in DATA_FILES:
+        for file_path in data_files:
             file_path.touch(exist_ok=True)
-        if not CLOCK_FILE.read_text(encoding="utf-8").strip():
-            CLOCK_FILE.write_text(CLOCK_SENTINEL, encoding="utf-8")
+        if not clock_file.read_text(encoding="utf-8").strip():
+            clock_file.write_text(CLOCK_SENTINEL, encoding="utf-8")
     except OSError as error:
         raise DataIntegrityError(
             f"필수 데이터 파일을 생성할 수 없습니다: {error}"

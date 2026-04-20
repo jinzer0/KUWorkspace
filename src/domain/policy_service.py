@@ -83,7 +83,6 @@ class PolicyService:
         return results
 
     def prepare_advance(self, current_time=None, actor_id="system"):
-        validate_all_data_files()
         if current_time is None:
             current_time = self.clock.now()
         return self._build_advance_state(current_time, actor_id=actor_id)
@@ -92,8 +91,9 @@ class PolicyService:
         with global_lock(), UnitOfWork():
             validate_all_data_files()
             current_time = self.clock.now()
+            auto_events = self._handle_boundary_automation(current_time)
             state = self._build_advance_state(current_time, actor_id=actor_id)
-            if state["blockers"] and not force:
+            if not state["can_advance"]:
                 self.audit_repo.log_action(
                     actor_id=actor_id,
                     action="clock_advance_blocked",

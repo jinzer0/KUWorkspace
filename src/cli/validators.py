@@ -58,6 +58,16 @@ def validate_password(password):
     Returns:
         (valid, error_message)
     """
+    if not isinstance(password, str):
+        return False, "비밀번호를 입력해주세요."
+
+    if any(ch in password for ch in (" ", "\t", "\n")):
+        return False, "비밀번호에 공백을 포함할 수 없습니다."
+
+    password = password.strip()
+    if not password:
+        return False, "비밀번호를 입력해주세요."
+
     return validate_auth_password(password)
 
 
@@ -280,15 +290,13 @@ def validate_reason(reason_str):
     """
     if not isinstance(reason_str, str):
         return False, "사유는 텍스트여야 합니다."
-    
-    # 앞뒤 공백 제거 (입력 후 strip 일반적 관례)
-    reason_str = reason_str.strip()
-    
+
     try:
         validate_reason_text(reason_str)
-        return True, ""
     except ValueError as error:
         return False, str(error)
+
+    return True, ""
 
 
 def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 날짜"):

@@ -144,13 +144,16 @@ def freeze_time():
 def fake_clock():
     """세션 가상 시계를 직접 제어하는 픽스처."""
 
-    def _set(fixed_time):
-        set_active_clock(SystemClock(fixed_time))
-        from src.runtime_clock import get_active_clock
+    with patch("src.clock_bootstrap.persist_clock", lambda _time: None):
 
-        return get_active_clock()
+        def _set(fixed_time):
+            set_active_clock(SystemClock(fixed_time))
+            from src.runtime_clock import get_active_clock
 
-    yield _set
+            return get_active_clock()
+
+        yield _set
+
     clear_active_clock()
 
 

@@ -5,10 +5,14 @@ import sys
 from datetime import datetime
 
 from src.config import ensure_data_dir
-from src.clock_bootstrap import get_latest_data_timestamp, load_persisted_clock
-from src.runtime_clock import SystemClock, set_active_clock, ClockError
-from src.cli.validators import validate_date_plan, validate_time_plan
+from src.clock_bootstrap import (
+    initialize_runtime_clock,
+    get_latest_data_timestamp,
+    load_persisted_clock,
+)
+from src.runtime_clock import SystemClock, ClockError, set_active_clock, clear_active_clock
 from src.storage.integrity import DataIntegrityError, validate_all_data_files
+from src.cli.validators import validate_date_plan, validate_time_plan
 from src.domain.models import UserRole
 from src.domain.auth_service import AuthService
 from src.domain.room_service import RoomService
@@ -36,7 +40,7 @@ def prompt_initial_clock():
 
         time_valid, slot_time, time_error = validate_time_plan(slot_str)
         if not time_valid or slot_time is None:
-            print(f"✗ {time_error}")
+            print("✗ 시작 슬롯은 09:00 또는 18:00만 가능합니다.")
             continue
 
         start_time = datetime(
@@ -67,9 +71,11 @@ def main():
         validate_all_data_files()
         persisted_clock = load_persisted_clock()
         if persisted_clock is None:
-            set_active_clock(prompt_initial_clock())
+            active_clock = prompt_initial_clock()
         else:
-            set_active_clock(SystemClock(persisted_clock))
+            active_clock = SystemClock(persisted_clock)
+        set_active_clock(active_clock)
+        initialize_runtime_clock(active_clock)
 
         auth_service = AuthService()
         penalty_service = PenaltyService()
@@ -108,6 +114,11 @@ def main():
     except DataIntegrityError as error:
         print(f"오류: {error}", file=sys.stderr)
         raise SystemExit(1) from error
+    except ClockError as error:
+        print(f"시계 오류: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+    finally:
+        clear_active_clock()
 
 
 if __name__ == "__main__":
