@@ -35,10 +35,9 @@ class GuestMenu:
         Returns:
             로그인된 사용자 (종료 시 None)
         """
-        if not self._run_policy_checks():
-            return None
-
         while True:
+            if not self._run_policy_checks():
+                return None
             print_header("공유 오피스 예약 시스템")
             print("  1. 로그인")
             print("  2. 회원가입")
