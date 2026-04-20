@@ -708,6 +708,15 @@ class EquipmentService:
 
                 self.booking_repo.update(updated)
 
+                equipment = self.equipment_repo.get_by_id(booking.equipment_id)
+                if equipment is not None:
+                    disabled_equipment = replace(
+                        equipment,
+                        status=ResourceStatus.DISABLED,
+                        updated_at=now_iso(),
+                    )
+                    self.equipment_repo.update(disabled_equipment)
+                
                 self.audit_repo.log_action(
                     actor_id=admin.id,
                     action="equipment_checkout",

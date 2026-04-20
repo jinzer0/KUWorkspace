@@ -162,6 +162,14 @@ class PolicyService:
         events = []
         now = now_iso()
 
+        # 09:00 시점: 대여 기간이 끝난 장비 중 DISABLED/MAINTENANCE 상태인 것을 AVAILABLE로 일괄 복원
+        from src.domain.models import ResourceStatus
+        from src.storage.repositories import EquipmentAssetRepository
+        from dataclasses import replace as dc_replace
+        equipment_repo = EquipmentAssetRepository()
+        all_equipment = equipment_repo.get_all()
+        all_equip_bookings = self.equipment_booking_repo.get_all()
+        
         for booking in self.room_booking_repo.get_all():
             if datetime.fromisoformat(booking.start_time) != current_time:
                 continue
