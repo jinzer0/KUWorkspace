@@ -136,7 +136,7 @@ def test_user_menu_opens_clock_with_user_actor(
         ("15", "_show_users"),
         ("16", "_show_user_detail"),
         ("17", "_apply_damage_penalty"),
-        ("18", "_apply_fixed_late_cancel_penalty"),
+        ("18", "_apply_fixed_penalty"),
         ("19", "_open_clock"),
     ],
 )
@@ -174,8 +174,8 @@ def test_admin_menu_dispatches_actions(
             "src.cli.admin_menu.ClockMenu",
             lambda *_args, **_kwargs: type("FakeClock", (), {"run": lambda _self: calls.append(method_name)})(),
         )
-    elif method_name == "_apply_fixed_late_cancel_penalty":
-        monkeypatch.setattr(menu, "_apply_fixed_penalty", lambda penalty_type: calls.append(f"_apply_fixed_{penalty_type}_penalty"))
+    elif method_name == "_apply_fixed_penalty":
+        monkeypatch.setattr(menu, "_apply_fixed_penalty", lambda _penalty_type: calls.append(method_name))
     else:
         monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
 
