@@ -172,13 +172,11 @@ class AdminMenu:
             print("  14. 장비 예약 취소 (관리자)")
 
             print("\n[사용자 관리]")
-            print("  13. 사용자 목록")
-            print("  14. 사용자 상세 조회")
-            print("  15. 파손/오염 패널티 부여")
-            print("  16. 회의실 퇴실 지연 처리")
-            print("  17. 장비 반납 지연 처리")
+            print("  15. 사용자 목록")
+            print("  16. 사용자 상세 조회")
+            print("  17. 파손/오염 패널티 부여")
             print("  18. 예약 직전 취소 처리")
-            print("  21. 운영 시계")
+            print("  19. 운영 시계")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -213,18 +211,16 @@ class AdminMenu:
                 self._admin_modify_or_swap_equipment_booking()
             elif choice == "14":
                 self._admin_cancel_equipment_booking()
-            elif choice == "13":
-                self._show_users()
-            elif choice == "14":
-                self._show_user_detail()
             elif choice == "15":
-                self._apply_damage_penalty()
+                self._show_users()
             elif choice == "16":
-                self._apply_fixed_penalty("late_checkout")
+                self._show_user_detail()
             elif choice == "17":
-                self._apply_fixed_penalty("late_return")
+                self._apply_damage_penalty()
             elif choice == "18":
                 self._apply_fixed_penalty("late_cancel")
+            elif choice == "19":
+                ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
                     print_success("로그아웃 되었습니다.")
