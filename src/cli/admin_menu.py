@@ -1,7 +1,7 @@
 """
 관리자 메뉴 - 회의실/장비 관리, 예약 관리, 사용자 관리
 """
-
+from datetime import datetime
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
@@ -193,7 +193,8 @@ class AdminMenu:
             choice = input("선택: ").strip()
 
             if choice == "1":
-                self._show_all_room_bookings()
+                # 기존 self._show_rooms() 와 self._show_all_room_bookings() 를 합침
+                self._show_room_overview()
             elif choice == "2":
                 self._show_rooms_and_change_status()
             elif choice == "3":
@@ -201,11 +202,11 @@ class AdminMenu:
             elif choice == "4":
                 self._room_checkout()
             elif choice == "5":
+                # 타겟 함수 변경함
                 self._admin_modify_room_booking_time()
             elif choice == "6":
                 self._admin_cancel_room_booking()
-            elif choice == "7":
-                self._show_all_equipment_bookings()
+
             elif choice == "8":
                 self._show_equipment_and_change_status()
             elif choice == "9":
@@ -236,6 +237,108 @@ class AdminMenu:
                     return True
             else:
                 print_error("잘못된 선택입니다.")
+
+    def _show_room_overview(self):
+        """관리자 회의실 1번 : 전체 회의실 예약 조회"""
+        print_header("회의실 목록")
+        rooms =self.room_service.get_all_rooms()
+        if not rooms: 
+            print_info("등록된 회의실이 없습니다.")
+            pause()
+            return 
+        bookings = self._get_room_bookings_or_abort()
+        if bookings is None:
+            return 
+
+        current_time = self.policy_service.clock.now()
+        rooms = sorted(rooms, key=lambda room:(room.capacity, room.name))
+        header = (
+            f"{'이름':<14}"
+            f"{'수용인원':<10}"
+            f"{'위치':<8}"
+            f"{'현황':<10}"
+            f"예약일"
+        )
+        print(header)
+        print("-" * 70)
+
+        for room in rooms:
+            room_bookings = self._get_visible_room_bookings(room.id, bookings,
+        current_time)
+            room_status = self._get_room_overview_status(room_bookings,
+        current_time)
+
+            if not room_bookings:
+                print(
+                    f"{room.name:<14}"
+                    f"{f'{room.capacity}명':<10}"
+                    f"{room.location:<8}"
+                    f"{room_status:<10}"
+                    f"X"
+                )
+                continue
+
+            booking_ranges = [
+                self._format_booking_date_range(booking.start_time, booking.end_time)
+                for booking in room_bookings
+            ]
+
+            print(
+                f"{room.name:<14}"
+                f"{f'{room.capacity}명':<10}"
+                f"{room.location:<8}"
+                f"{room_status:<10}"
+                f"{booking_ranges[0]}"
+            )
+
+            for date_range in booking_ranges[1:]:
+                print(f"{'':<42}{date_range}")
+
+        pause()
+
+    def _get_visible_room_bookings(self, room_id, bookings, current_time):
+        """현재 시점 기준으로 의미 있는 유효 예약만 추리는 함수"""
+        active_statuses = {
+            RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
+            RoomBookingStatus.CHECKED_IN,
+            RoomBookingStatus.CHECKOUT_REQUESTED,
+        }
+
+        room_bookings = [
+            booking
+            for booking in bookings
+            if booking.room_id == room_id
+            and booking.status in active_statuses
+            and datetime.fromisoformat(booking.end_time) >= current_time
+        ]
+
+        room_bookings.sort(key=lambda booking: booking.start_time)
+        return room_bookings
+    def _get_room_overview_status(self, room_bookings, current_time):
+        """사용중 / 예약있음 / 예약없음 판정"""
+        if not room_bookings:
+            return "예약없음"
+
+        for booking in room_bookings:
+            start_time = datetime.fromisoformat(booking.start_time)
+            end_time = datetime.fromisoformat(booking.end_time)
+
+            if (
+                booking.status in {
+                  RoomBookingStatus.CHECKED_IN,
+                  RoomBookingStatus.CHECKOUT_REQUESTED,
+                }
+                and start_time <= current_time <= end_time
+            ):
+                return "사용중"
+
+        return "예약있음"
+
+    def _format_booking_date_range(self, start_time, end_time):
+        start_dt = datetime.fromisoformat(start_time)
+        end_dt = datetime.fromisoformat(end_time)
+        return f"{start_dt.strftime('%Y.%m.%d')} ~ {end_dt.strftime('%Y.%m.%d')}"
 
     def _show_rooms(self):
         """회의실 목록"""
@@ -302,6 +405,12 @@ class AdminMenu:
             return
 
         new_status = status_map[choice]
+        current_time = self.policy_service.clock.now()
+        if (new_status == ResourceStatus.MAINTENANCE and 
+            (current_time.hour, current_time.minute) != (18, 0)):
+            print_error(f"관리자가 회의실을 [점검중] 으로 변경할 수 있는 시점은 18:00 입니다.")
+            pause()
+            return
 
         if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
             print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
@@ -538,6 +647,152 @@ class AdminMenu:
             )
             print_success("직전 취소 패널티가 부여되었습니다. (+2점)")
         except (PenaltyError, AuthError) as e:
+            print_error(str(e))
+
+        pause()
+
+
+    def _admin_modify_or_swap_room_booking(self):
+        # 이제 사용하지 않는 함수
+        """관리자 회의실 예약 변경/교체 - 서브메뉴"""
+        print_header("회의실 예약 변경/교체 (관리자)")
+        
+        print("\n선택 사항:")
+        print("  1. 예약 시간 변경")
+        print("  2. 진행중 예약 회의실 교체")
+        print("  0. 취소")
+        print("-" * 50)
+        
+        choice = input("선택: ").strip()
+        
+        if choice == "1":
+            self._admin_modify_room_booking_time()
+        elif choice == "2":
+            self._admin_reassign_active_room_booking()
+        elif choice == "0":
+            return
+        else:
+            print_error("잘못된 선택입니다.")
+            pause()
+
+    def _admin_reassign_active_room_booking(self):
+        """관리자 진행중 회의실 예약 교체"""
+        print_header("진행중 회의실 예약 교체 (관리자)")
+
+        all_bookings = self._get_room_bookings_or_abort()
+        if all_bookings is None:
+            return
+        
+        checked_in_bookings = [
+            b for b in all_bookings if b.status == RoomBookingStatus.CHECKED_IN
+        ]
+
+        if not checked_in_bookings:
+            print_info("진행중인 회의실 예약이 없습니다.")
+            pause()
+            return
+
+        items = []
+        for booking in checked_in_bookings:
+            room = self.room_service.get_room(booking.room_id)
+            user = self._get_booking_user_or_abort(booking.user_id)
+            if user is None:
+                return
+            items.append(
+                (
+                    booking.id,
+                    f"{room.name if room else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                )
+            )
+
+        booking_id = select_from_list(items, "교체할 예약 선택")
+        if not booking_id:
+            return
+
+        selected_booking = next(
+            (b for b in checked_in_bookings if b.id == booking_id), None
+        )
+        if selected_booking is None:
+            print_error("선택한 예약을 찾을 수 없습니다.")
+            pause()
+            return
+
+        current_room = self.room_service.get_room(selected_booking.room_id)
+        booking_user = self._get_booking_user_or_abort(selected_booking.user_id)
+        if booking_user is None:
+            return
+
+        print_subheader("예약 정보")
+        print(f"  현재 회의실: {current_room.name if current_room else '-'}")
+        print(f"  사용자: {booking_user.username}")
+        print(
+            f"  기간: {format_booking_time_range(selected_booking.start_time, selected_booking.end_time)}"
+        )
+
+        all_rooms = self.room_service.get_all_rooms()
+        eligible_rooms = []
+        
+        for room in all_rooms:
+            if room.id == selected_booking.room_id:
+                continue
+            
+            if room.status != ResourceStatus.AVAILABLE:
+                continue
+            
+            conflicts = self.room_service.booking_repo.get_conflicting(
+                room.id,
+                selected_booking.start_time,
+                selected_booking.end_time,
+                exclude_id=booking_id,
+            )
+            if not conflicts:
+                eligible_rooms.append(room)
+
+        if not eligible_rooms:
+            print_info("교체 가능한 회의실이 없습니다.")
+            pause()
+            return
+
+        room_items = [
+            (
+                r.id,
+                f"{r.name} (수용인원: {r.capacity}명, 위치: {r.location})",
+            )
+            for r in eligible_rooms
+        ]
+        new_room_id = select_from_list(room_items, "새 회의실 선택")
+        if not new_room_id:
+            return
+
+        reason = input("교체 사유: ").strip()
+        if not reason:
+            print_error("사유를 입력해야 합니다.")
+            pause()
+            return
+
+        new_room = next((r for r in eligible_rooms if r.id == new_room_id), None)
+        if new_room is None:
+            print_error("선택한 회의실을 찾을 수 없습니다.")
+            pause()
+            return
+
+        print_warning(
+            f"회의실을 '{current_room.name if current_room else '-'}'에서 '{new_room.name}'으로 교체합니다."
+        )
+        if not confirm("교체하시겠습니까?"):
+            return
+
+        try:
+            updated_booking = self.room_service.admin_reassign_active_booking(
+                admin=self.user,
+                booking_id=booking_id,
+                new_room_id=new_room_id,
+                reason=reason,
+            )
+            print_success(
+                f"회의실이 교체되었습니다: {current_room.name if current_room else '-'} → {new_room.name}"
+            )
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
             print_error(str(e))
 
         pause()
