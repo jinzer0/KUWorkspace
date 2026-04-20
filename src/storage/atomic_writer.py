@@ -15,6 +15,7 @@
 import os
 import tempfile
 
+from src.storage.integrity import DataIntegrityError
 from src.storage.jsonl_handler import encode_record
 
 
@@ -31,12 +32,22 @@ def atomic_write(file_path, content):
         content: 쓸 내용
     """
     # 부모 디렉토리가 없으면 생성
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise DataIntegrityError(
+            f"데이터 파일을 저장할 수 없습니다: {file_path} ({error})"
+        ) from error
 
     # 같은 디렉토리에 임시 파일 생성 (다른 파일시스템으로 이동 방지)
     dir_path = file_path.parent
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
+    except OSError as error:
+        raise DataIntegrityError(
+            f"데이터 파일을 저장할 수 없습니다: {file_path} ({error})"
+        ) from error
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
@@ -45,6 +56,14 @@ def atomic_write(file_path, content):
 
         # 원자적 교체
         os.replace(tmp_path, file_path)
+    except OSError as error:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise DataIntegrityError(
+            f"데이터 파일을 저장할 수 없습니다: {file_path} ({error})"
+        ) from error
     except Exception:
         # 실패 시 임시 파일 삭제
         try:
@@ -141,6 +160,22 @@ def staged_atomic_write_multi(file_contents):
             except OSError:
                 pass
 
+    except DataIntegrityError:
+        raise
+    except OSError as error:
+        for tmp_path, _, _ in staged_files:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        for bak_path in backup_files.values():
+            try:
+                os.unlink(bak_path)
+            except OSError:
+                pass
+        raise DataIntegrityError(
+            f"데이터 파일을 저장할 수 없습니다: {error}"
+        ) from error
     except Exception:
         # Staging or backup failed - cleanup tmp and bak files
         for tmp_path, _, _ in staged_files:

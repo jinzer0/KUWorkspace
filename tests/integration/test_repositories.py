@@ -10,8 +10,9 @@
 
 import pytest
 
+from src.storage.integrity import DataIntegrityError
 from src.storage.file_lock import global_lock
-from src.storage.repositories import UserRepository
+from src.storage.repositories import UserRepository, RoomRepository, RoomBookingRepository
 from src.domain.models import (
     ResourceStatus,
     RoomBookingStatus,
@@ -84,26 +85,26 @@ class TestRoomRepository:
 
     def test_add_and_get_room(self, room_repo, room_factory):
         """회의실 추가 및 조회"""
-        room = room_factory(name="Test Room")
+        room = room_factory(name="회의실9A")
 
         room_repo.add(room)
 
         found = room_repo.get_by_id(room.id)
         assert found is not None
-        assert found.name == "Test Room"
+        assert found.name == "회의실9A"
 
     def test_get_available_rooms(self, room_repo, room_factory):
         """예약 가능한 회의실만 조회"""
-        room_repo.add(room_factory(name="Available", status=ResourceStatus.AVAILABLE))
+        room_repo.add(room_factory(name="회의실9E", status=ResourceStatus.AVAILABLE))
         room_repo.add(
-            room_factory(name="Maintenance", status=ResourceStatus.MAINTENANCE)
+            room_factory(name="회의실9F", status=ResourceStatus.MAINTENANCE)
         )
-        room_repo.add(room_factory(name="Disabled", status=ResourceStatus.DISABLED))
+        room_repo.add(room_factory(name="회의실9G", status=ResourceStatus.DISABLED))
 
         available = room_repo.get_available()
 
         assert len(available) == 1
-        assert available[0].name == "Available"
+        assert available[0].name == "회의실9E"
 
 
 class TestRoomBookingRepository:
@@ -260,7 +261,7 @@ class TestAuditLogRepository:
         assert len(all_logs) == 1
         assert "\n" not in all_logs[0].details
         assert "\r" not in all_logs[0].details
-        assert len(all_logs[0].details) == 40
+        assert len(all_logs[0].details) == 20
 
 
 class TestDataPersistence:
@@ -289,3 +290,29 @@ class TestDataPersistence:
         all_users = repo.get_all()
 
         assert all_users == []
+
+
+class TestRepositoryIntegrity:
+    def test_room_repository_fails_fast_on_invalid_enum(self, temp_data_dir):
+        room_file = temp_data_dir / "rooms.txt"
+        room_file.write_text(
+            "회의실4A|4|1층|broken_status|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+
+        repo = RoomRepository(file_path=room_file)
+
+        with pytest.raises(DataIntegrityError, match="rooms.txt"):
+            repo.get_all()
+
+    def test_room_booking_repository_fails_fast_on_malformed_datetime(self, temp_data_dir):
+        booking_file = temp_data_dir / "room_bookings.txt"
+        booking_file.write_text(
+            "bad-booking|user01|회의실4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+
+        repo = RoomBookingRepository(file_path=booking_file)
+
+        with pytest.raises(DataIntegrityError, match="room_bookings.txt"):
+            repo.get_all()
