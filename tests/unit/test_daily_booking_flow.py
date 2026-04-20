@@ -132,15 +132,15 @@ def test_room_capacity_falls_back_to_larger_room(
     fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
     with mock_now(fixed_time):
-        create_test_room(name="Small", capacity=4)
-        create_test_room(name="Large", capacity=8)
+        create_test_room(name="회의실1S", capacity=4)
+        create_test_room(name="회의실1L", capacity=8)
         start_time = datetime(2024, 6, 16, 9, 0, 0)
         end_time = datetime(2024, 6, 16, 18, 0, 0)
 
         rooms = room_service.get_available_rooms_for_attendees(5, start_time, end_time)
 
         assert len(rooms) == 1
-        assert rooms[0].name == "Large"
+        assert rooms[0].name == "회의실1L"
 
 
 def test_room_checkout_request_and_approval_completes_without_delay_penalty(
@@ -148,7 +148,7 @@ def test_room_checkout_request_and_approval_completes_without_delay_penalty(
 ):
     with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
         user = create_test_user()
-        admin = create_test_user(username="admin-room", role=UserRole.ADMIN)
+        admin = create_test_user(username="admin_room", role=UserRole.ADMIN)
         room = create_test_room(capacity=6)
         booking = room_service.create_daily_booking(
             user=user,
@@ -178,7 +178,7 @@ def test_equipment_return_request_and_approval_completes_without_delay_penalty(
 ):
     with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
         user = create_test_user()
-        admin = create_test_user(username="admin-equip", role=UserRole.ADMIN)
+        admin = create_test_user(username="admin_equip", role=UserRole.ADMIN)
         equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
         booking = equipment_service.create_daily_booking(
             user=user,

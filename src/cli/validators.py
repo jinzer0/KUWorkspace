@@ -92,12 +92,13 @@ def validate_date_plan(date_str):
     """
     if not isinstance(date_str, str):
         return False, None, "날짜는 텍스트여야 합니다."
-    
-    date_str = date_str.strip()
-    
-    if not date_str:
+
+    if not date_str or not date_str.strip():
         return False, None, "날짜를 입력해주세요."
-    
+
+    if date_str != date_str.strip():
+        return False, None, "날짜 앞뒤에 공백을 포함할 수 없습니다."
+
     # 구분자 선택 및 일관성 확인
     separator = None
     if '-' in date_str:
@@ -122,7 +123,10 @@ def validate_date_plan(date_str):
     
     try:
         year_str, month_str, day_str = parts
-        
+
+        if len(year_str) != 4:
+            return False, None, "연도는 4자리여야 합니다."
+
         # 0 패딩 확인 (월, 일은 2자리 필수)
         if len(month_str) != 2 or len(day_str) != 2:
             return False, None, "월과 일은 0을 포함한 2자리여야 합니다. (예: 2026-04-03)"
@@ -175,12 +179,13 @@ def validate_time_plan(time_str):
     """
     if not isinstance(time_str, str):
         return False, None, "시간은 텍스트여야 합니다."
-    
-    time_str = time_str.strip()
-    
-    if not time_str:
+
+    if not time_str or not time_str.strip():
         return False, None, "시간을 입력해주세요."
-    
+
+    if time_str != time_str.strip():
+        return False, None, "시간 앞뒤에 공백을 포함할 수 없습니다."
+
     # 공백 확인
     if ' ' in time_str or '\t' in time_str or '\n' in time_str:
         return False, None, "시간에 공백을 포함할 수 없습니다."
@@ -192,6 +197,13 @@ def validate_time_plan(time_str):
         if len(parts) != 2:
             return False, None, "시간 형식이 올바르지 않습니다. (예: 09:00 또는 1800)"
         hour_str, minute_str = parts
+        if (
+            len(hour_str) != 2
+            or len(minute_str) != 2
+            or not hour_str.isdigit()
+            or not minute_str.isdigit()
+        ):
+            return False, None, "시간 형식이 올바르지 않습니다. (예: 09:00 또는 1800)"
     else:
         # HHMM 형식
         if len(time_str) != 4 or not time_str.isdigit():
@@ -289,12 +301,12 @@ def validate_reason(reason_str):
 
 def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 날짜"):
     while True:
-        start_str = input(f"  {start_prompt} (YYYY-MM-DD): ").strip()
-        if start_str.lower() in ("q", "quit", "취소"):
+        start_str = input(f"  {start_prompt} (YYYY-MM-DD): ")
+        if start_str.strip().lower() in ("q", "quit", "취소"):
             return None, None
 
-        end_str = input(f"  {end_prompt} (YYYY-MM-DD): ").strip()
-        if end_str.lower() in ("q", "quit", "취소"):
+        end_str = input(f"  {end_prompt} (YYYY-MM-DD): ")
+        if end_str.strip().lower() in ("q", "quit", "취소"):
             return None, None
 
         start_valid, start_date, start_error = validate_date_plan(start_str)
@@ -314,7 +326,7 @@ def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 
         print(f"  ✗ {error}")
 
 
-def get_positive_int_input(prompt, min_val=1, max_val=100):
+def get_positive_int_input(prompt, min_val=1, max_val=100, min_error_msg=None, max_error_msg=None):
     while True:
         value_str = input(f"{prompt}: ").strip()
         if value_str.lower() in ("q", "quit", "취소"):
@@ -323,4 +335,14 @@ def get_positive_int_input(prompt, min_val=1, max_val=100):
         valid, value, error = validate_positive_int(value_str, min_val, max_val)
         if valid:
             return value
-        print(f"  ✗ {error}")
+
+        try:
+            parsed = int(value_str)
+            if min_error_msg and parsed < min_val:
+                print(f"  ✗ {min_error_msg}")
+            elif max_error_msg and parsed > max_val:
+                print(f"  ✗ {max_error_msg}")
+            else:
+                print(f"  ✗ {error}")
+        except ValueError:
+            print(f"  ✗ {error}")

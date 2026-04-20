@@ -15,6 +15,12 @@ class ClockError(Exception):
     """가상 시계 처리 중 발생하는 오류입니다."""
 
 
+def _persist_runtime_clock(current_time):
+    from src.clock_bootstrap import persist_clock
+
+    persist_clock(current_time)
+
+
 def normalize_slot(dt):
     if (dt.hour, dt.minute) not in ALLOWED_CLOCK_SLOTS:
         raise ClockError("운영 시점은 09:00 또는 18:00만 사용할 수 있습니다.")

@@ -282,13 +282,13 @@ def room_factory():
         id=None,
         name=None,
         capacity=10,
-        location="Building A",
+        location="1층",
         status=ResourceStatus.AVAILABLE,
-        description="",
+        description="회의실",
         **overrides,
     ):
         _counter[0] += 1
-        resolved_name = name or f"Room {_counter[0]}"
+        resolved_name = name or f"회의실{_counter[0] % 10}{chr(65 + ((_counter[0] - 1) % 3))}"
         return Room(
             id=id or resolved_name,
             name=resolved_name,
@@ -317,10 +317,10 @@ def equipment_factory():
         **overrides,
     ):
         _counter[0] += 1
-        resolved_serial = serial_number or f"SN-{_counter[0]:05d}"
+        resolved_serial = serial_number or f"NB-{_counter[0]:03d}"
         return EquipmentAsset(
             id=id or resolved_serial,
-            name=name or f"Equipment {_counter[0]}",
+            name=name or f"장비{_counter[0]}",
             asset_type=asset_type,
             serial_number=resolved_serial,
             status=status,
