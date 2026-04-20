@@ -32,13 +32,13 @@ from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
-    START_REQUEST_CUTOFF_HOUR,
-    END_REQUEST_CUTOFF_HOUR,
+    LATE_CANCEL_THRESHOLD_MINUTES,
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
 )
+from src.domain.field_rules import validate_reason_text
 
 
 class EquipmentBookingError(Exception):
@@ -142,20 +142,31 @@ class EquipmentService:
     def _require_start_request_window(self, booking):
         start_time = datetime.fromisoformat(booking.start_time)
         self._require_current_boundary(start_time, "픽업 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= START_REQUEST_CUTOFF_HOUR:
-            raise EquipmentBookingError(
-                f"픽업 요청은 {START_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
-            )
 
     def _require_end_request_window(self, booking):
         end_time = datetime.fromisoformat(booking.end_time)
         self._require_current_boundary(end_time, "반납 요청")
-        current_time = self.clock.now()
-        if current_time.hour >= END_REQUEST_CUTOFF_HOUR:
+
+    def _is_late_cancel(self, booking, current_time=None):
+        if current_time is None:
+            current_time = self.clock.now()
+        start_time = datetime.fromisoformat(booking.start_time)
+        if current_time >= start_time:
+            return True
+        return (start_time - current_time).total_seconds() / 60 <= LATE_CANCEL_THRESHOLD_MINUTES
+
+    def will_apply_late_cancel_penalty(self, user, booking_id):
+        user = self._get_existing_user(user)
+        booking = self.booking_repo.get_by_id(booking_id)
+        if booking is None:
+            raise EquipmentBookingError("존재하지 않는 예약입니다.")
+        if booking.user_id != user.id:
+            raise EquipmentBookingError("본인의 예약만 취소할 수 있습니다.")
+        if booking.status != EquipmentBookingStatus.RESERVED:
             raise EquipmentBookingError(
-                f"반납 요청은 {END_REQUEST_CUTOFF_HOUR}시 이전에만 가능합니다."
+                f"'{booking.status.value}' 상태의 예약은 취소할 수 없습니다."
             )
+        return self._is_late_cancel(booking)
 
     def get_all_equipment(self):
         """모든 장비 조회"""
@@ -535,11 +546,8 @@ class EquipmentService:
                         f"'{booking.status.value}' 상태의 예약은 취소할 수 없습니다."
                     )
 
-                is_late_cancel = False
-                start_time = datetime.fromisoformat(booking.start_time)
-                current_time = self.clock.now()
-                if current_time >= start_time:
-                    is_late_cancel = True
+                is_late_cancel = self._is_late_cancel(booking)
+                if is_late_cancel:
                     booking_user = self.user_repo.get_by_id(booking.user_id)
                     if booking_user is None:
                         raise EquipmentBookingError("존재하지 않는 사용자입니다.")
@@ -572,6 +580,10 @@ class EquipmentService:
     def admin_cancel_booking(self, admin, booking_id, reason=""):
         """관리자에 의한 예약 취소"""
         admin = self._get_existing_admin(admin)
+        try:
+            validate_reason_text(reason)
+        except ValueError as error:
+            raise EquipmentBookingError(str(error)) from error
         with global_lock():
             self._run_policy_checks()
             with UnitOfWork():
@@ -903,55 +915,6 @@ class EquipmentService:
 
             return updated, delay_minutes
 
-    def mark_no_show(self, booking_id, admin=None, actor_id="system"):
-        """노쇼 처리"""
-        if admin is None:
-            admin_user = self.user_repo.get_by_id(actor_id)
-            if admin_user is None:
-                raise EquipmentBookingError("노쇼 처리는 관리자 권한이 필요합니다.")
-            admin = admin_user
-        admin = self._get_existing_admin(admin)
-
-        with global_lock(), UnitOfWork():
-            booking = self.booking_repo.get_by_id(booking_id)
-            if booking is None:
-                raise EquipmentBookingError("존재하지 않는 예약입니다.")
-
-            if booking.status != EquipmentBookingStatus.RESERVED:
-                raise EquipmentBookingError("예약 대기 상태만 노쇼 처리할 수 있습니다.")
-            self._require_current_boundary(
-                datetime.fromisoformat(booking.start_time), "노쇼 처리"
-            )
-
-            updated = replace(
-                booking,
-                status=EquipmentBookingStatus.ADMIN_CANCELLED,
-                cancelled_at=now_iso(),
-                updated_at=now_iso(),
-            )
-
-            self.booking_repo.update(updated)
-
-            self.audit_repo.log_action(
-                actor_id=actor_id,
-                action="equipment_no_show",
-                target_type="equipment_booking",
-                target_id=booking_id,
-                details="",
-            )
-
-            booking_user = self.user_repo.get_by_id(booking.user_id)
-            if booking_user is None:
-                raise EquipmentBookingError("존재하지 않는 사용자입니다.")
-            self.penalty_service.apply_no_show(
-                user=booking_user,
-                booking_type="equipment_booking",
-                booking_id=booking_id,
-                actor_id=actor_id,
-            )
-
-            return updated
-
     def get_user_bookings(self, user_id):
         """사용자의 모든 예약 조회"""
         self._get_existing_user_by_id(user_id)
@@ -970,86 +933,6 @@ class EquipmentService:
     def get_equipment_bookings(self, equipment_id):
         """장비별 예약 조회"""
         return self.booking_repo.get_by_equipment(equipment_id)
-
-    def admin_reassign_active_booking(
-        self, admin, booking_id, new_equipment_id, reason
-    ):
-        """
-        진행중 예약 장비 교체 (관리자 전용)
-
-        Args:
-            admin: 관리자
-            booking_id: 예약 ID
-            new_equipment_id: 새 장비 ID
-            reason: 교체 사유
-
-        Returns:
-            교체된 예약
-
-        Raises:
-            EquipmentBookingError: 교체 불가 시
-        """
-        admin = self._get_existing_admin(admin)
-        with global_lock():
-            self._run_policy_checks()
-            with UnitOfWork():
-                booking = self.booking_repo.get_by_id(booking_id)
-                if booking is None:
-                    raise EquipmentBookingError("존재하지 않는 예약입니다.")
-
-                if booking.status != EquipmentBookingStatus.CHECKED_OUT:
-                    raise EquipmentBookingError(
-                        f"'{booking.status.value}' 상태의 예약은 장비를 교체할 수 없습니다. "
-                        "대여 중(checked_out) 상태만 교체 가능합니다."
-                    )
-
-                booking_user = self.user_repo.get_by_id(booking.user_id)
-                if booking_user is None:
-                    raise EquipmentBookingError("존재하지 않는 사용자입니다.")
-
-                if new_equipment_id == booking.equipment_id:
-                    raise EquipmentBookingError(
-                        "동일한 장비로는 교체할 수 없습니다. 다른 장비를 선택해주세요."
-                    )
-
-                new_equipment = self.equipment_repo.get_by_id(new_equipment_id)
-                if new_equipment is None:
-                    raise EquipmentBookingError("존재하지 않는 장비입니다.")
-
-                if new_equipment.status != ResourceStatus.AVAILABLE:
-                    raise EquipmentBookingError(
-                        f"교체 대상 장비가 현재 {new_equipment.status.value} 상태입니다. "
-                        "사용 가능한 장비만 선택할 수 있습니다."
-                    )
-
-                conflicts = self.booking_repo.get_conflicting(
-                    new_equipment_id,
-                    booking.start_time,
-                    booking.end_time,
-                    exclude_id=booking_id,
-                )
-                if conflicts:
-                    raise EquipmentBookingError(
-                        "교체 대상 장비가 해당 기간에 이미 예약되어 있습니다. "
-                        "다른 장비를 선택해주세요."
-                    )
-
-                old_equipment_id = booking.equipment_id
-                updated = replace(
-                    booking, equipment_id=new_equipment_id, updated_at=now_iso()
-                )
-
-                self.booking_repo.update(updated)
-
-                self.audit_repo.log_action(
-                    actor_id=admin.id,
-                    action="admin_reassign_active_equipment_booking",
-                    target_type="equipment_booking",
-                    target_id=booking_id,
-                    details=f"장비 교체: {old_equipment_id} -> {new_equipment_id}, 사유: {reason}",
-                )
-
-                return updated
 
     def update_equipment_status(self, admin, equipment_id, new_status):
         """

@@ -12,6 +12,7 @@ from src.cli.validators import (
     validate_time_plan,
     validate_equipment_serial,
     validate_reason,
+    get_daily_date_range_input,
 )
 
 
@@ -127,10 +128,17 @@ class TestValidateDatePlan:
         valid, date_obj, msg = validate_date_plan("2026-05-31")
         assert valid is True
     
-    def test_valid_date_with_leading_spaces_stripped(self):
+    def test_invalid_date_with_outer_whitespace(self):
         valid, date_obj, msg = validate_date_plan("  2026-04-15  ")
-        assert valid is True
-        assert date_obj == date(2026, 4, 15)
+        assert valid is False
+        assert date_obj is None
+        assert "공백" in msg
+
+    def test_invalid_date_year_not_four_digits(self):
+        valid, date_obj, msg = validate_date_plan("026-04-15")
+        assert valid is False
+        assert date_obj is None
+        assert "4자리" in msg or "형식" in msg
     
     # Invalid dates - format
     def test_invalid_date_empty(self):
@@ -223,30 +231,36 @@ class TestValidateTimePlan:
         valid, time_obj, msg = validate_time_plan("09:00")
         assert valid is True
         assert msg == ""
+        assert time_obj is not None
         assert time_obj.hour == 9
         assert time_obj.minute == 0
     
     def test_valid_time_1800_colon_format(self):
         valid, time_obj, msg = validate_time_plan("18:00")
         assert valid is True
+        assert time_obj is not None
         assert time_obj.hour == 18
         assert time_obj.minute == 0
     
     def test_valid_time_0900_no_separator(self):
         valid, time_obj, msg = validate_time_plan("0900")
         assert valid is True
+        assert time_obj is not None
         assert time_obj.hour == 9
         assert time_obj.minute == 0
     
     def test_valid_time_1800_no_separator(self):
         valid, time_obj, msg = validate_time_plan("1800")
         assert valid is True
+        assert time_obj is not None
         assert time_obj.hour == 18
         assert time_obj.minute == 0
     
-    def test_valid_time_with_leading_spaces(self):
+    def test_invalid_time_with_outer_whitespace(self):
         valid, time_obj, msg = validate_time_plan("  09:00  ")
-        assert valid is True
+        assert valid is False
+        assert time_obj is None
+        assert "공백" in msg
     
     # Invalid times - format
     def test_invalid_time_empty(self):
@@ -305,6 +319,12 @@ class TestValidateTimePlan:
     def test_invalid_time_non_numeric_colon_format(self):
         valid, time_obj, msg = validate_time_plan("ab:cd")
         assert valid is False
+
+    def test_invalid_time_requires_two_digit_hour_and_minute(self):
+        valid, time_obj, msg = validate_time_plan("9:00")
+        assert valid is False
+        assert time_obj is None
+        assert "형식" in msg
     
     def test_invalid_time_mixed_separators(self):
         # Plan: 구분자 혼합 불가
@@ -493,3 +513,32 @@ class TestValidatorEdgeCases:
         # 21 chars should fail
         valid, msg = validate_reason("123456789012345678901")
         assert valid is False
+
+
+class TestInputHelpers:
+    def test_get_daily_date_range_input_uses_current_time_for_validation(
+        self, monkeypatch
+    ):
+        inputs = iter(["2026-04-15", "2026-04-16"])
+        monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+        monkeypatch.setattr(
+            "src.cli.validators.get_current_time", lambda: datetime(2026, 4, 14, 9, 0)
+        )
+
+        start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
+
+        assert start_date == date(2026, 4, 15)
+        assert end_date == date(2026, 4, 16)
+
+    def test_get_daily_date_range_input_retries_on_outer_whitespace(self, monkeypatch, capsys):
+        inputs = iter([" 2026-04-15", "2026-04-16", "2026-04-15", "2026-04-16"])
+        monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+        monkeypatch.setattr(
+            "src.cli.validators.get_current_time", lambda: datetime(2026, 4, 14, 9, 0)
+        )
+
+        start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
+
+        assert start_date == date(2026, 4, 15)
+        assert end_date == date(2026, 4, 16)
+        assert "공백" in capsys.readouterr().out

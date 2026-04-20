@@ -39,13 +39,14 @@ def test_clock_menu_read_only_mode_shows_blockers_instead_of_advancing(monkeypat
     calls = {"advance": 0, "blockers": 0}
 
     class StubPolicyService:
-        def prepare_advance(self):
+        def prepare_advance(self, actor_id="system"):
             return {
                 "current_time": datetime(2024, 6, 15, 9, 0, 0),
                 "next_time": datetime(2024, 6, 15, 18, 0, 0),
                 "events": [],
                 "blockers": ["pending"],
                 "can_advance": False,
+                "force_notice": "",
             }
 
     menu = ClockMenu(StubPolicyService(), actor_id="guest", allow_advance=False)
@@ -65,6 +66,49 @@ def test_clock_menu_read_only_mode_shows_blockers_instead_of_advancing(monkeypat
 
     assert calls["advance"] == 0
     assert calls["blockers"] == 1
+
+
+def test_clock_menu_requires_force_confirmation_before_forced_advance(monkeypatch):
+    class StubPolicyService:
+        def __init__(self):
+            self.calls = []
+
+        def prepare_advance(self, actor_id="system"):
+            self.calls.append(("prepare", actor_id))
+            return {
+                "current_time": datetime(2024, 6, 15, 9, 0, 0),
+                "next_time": datetime(2024, 6, 15, 18, 0, 0),
+                "events": [],
+                "blockers": ["pending"],
+                "can_advance": False,
+                "force_notice": "penalty on actor",
+            }
+
+        def advance_time(self, actor_id="system", force=False):
+            self.calls.append(("advance", actor_id, force))
+            return {
+                "current_time": datetime(2024, 6, 15, 9, 0, 0),
+                "next_time": datetime(2024, 6, 15, 18, 0, 0),
+                "events": ["moved"],
+                "blockers": [],
+                "can_advance": True,
+            }
+
+    service = StubPolicyService()
+    menu = ClockMenu(service, actor_id="user-1", allow_advance=True)
+    inputs = iter(["FORCE"])
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr("src.cli.clock_menu.print_header", lambda *_: None)
+    monkeypatch.setattr("src.cli.clock_menu.print_warning", lambda *_: None)
+    monkeypatch.setattr("src.cli.clock_menu.print_success", lambda *_: None)
+    monkeypatch.setattr("src.cli.clock_menu.print_info", lambda *_: None)
+    monkeypatch.setattr("src.cli.clock_menu.pause", lambda: None)
+    monkeypatch.setattr("builtins.print", lambda *_args, **_kwargs: None)
+
+    menu._advance()
+
+    assert ("advance", "user-1", True) in service.calls
 
 
 def test_guest_menu_signup_creates_user(monkeypatch, auth_service, policy_service):

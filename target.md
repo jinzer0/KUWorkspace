@@ -4,18 +4,20 @@
 
 ## Ambiguous final_plan mismatches
 
-### 1) 체크인/픽업 요청 목록 노출 조건이 실제 요청 가능 시점보다 넓음
-- path / area: `src/cli/user_menu.py:382-423`, `src/cli/user_menu.py:730-760`
+### 1) 체크인/픽업/퇴실/반납 요청 목록 노출 조건 정렬 완료 (`jinyeong`)
+- path / area: `src/cli/user_menu.py:382-466`, `src/cli/user_menu.py:730-814`
 - evidence summary:
-  - CLI는 `reserved` 상태 예약을 모두 요청 후보로 노출한다.
-  - 실제 서비스 게이트는 정확한 운영 시점 일치를 요구한다: `src/domain/room_service.py:147-163`, `src/domain/equipment_service.py:142-158`
+  - 이전에는 CLI가 상태만 맞는 예약을 넓게 보여주고, 실제 서비스 게이트가 정확한 운영 시점 일치를 요구했다: `src/domain/room_service.py:147-163`, `src/domain/equipment_service.py:142-158`
+  - 현재 `jinyeong` 브랜치에서는 네 요청 메뉴가 실제 요청 가능한 예약만 노출하도록 정렬되었다.
 - final_plan anchor:
   - `final_plan.md` §6.5.1.6 회의실 입실 신청
+  - `final_plan.md` §6.5.1.7 회의실 퇴실 신청
   - `final_plan.md` §6.5.2.6 장비 픽업 신청
+  - `final_plan.md` §6.5.2.7 장비 반납 신청
 - why the item is ambiguous or deferred:
-  - 목록 노출 자체를 현재 시점 기준으로 더 좁혀야 하는지, 아니면 선택 후 에러 메시지로 처리하는 UX가 허용되는지 해석 여지가 있다.
+  - `jinyeong` 브랜치에서 네 요청 메뉴의 목록이 실제 요청 가능한 예약만 보이도록 정렬했고, 대응하는 `final_plan.md` 섹션도 같은 방향으로 수정했다.
 - recommended next action:
-  - 별도 spec-alignment 패스에서 메뉴 노출 조건과 서비스 게이트를 함께 검토한다.
+  - 추가 조치 없음. 이후에는 item 2 이후 항목을 별도 spec-alignment 대상으로 다룬다.
 
 ### 2) 요청 cutoff 상수(10/19시)가 이산 운영 시점(09/18시) 모델과 중첩됨
 - path / area: `src/config.py:34-39`, `src/domain/room_service.py:147-163`, `src/domain/equipment_service.py:142-158`

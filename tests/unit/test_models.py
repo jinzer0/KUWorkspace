@@ -86,7 +86,7 @@ class TestRoom:
     def test_room_to_dict_roundtrip(self, room_factory):
         """Room to_dict → from_dict 라운드트립"""
         room = room_factory(
-            name="회의실 A",
+            name="회의실4A",
             capacity=20,
             location="3층",
             status=ResourceStatus.MAINTENANCE,
@@ -117,9 +117,9 @@ class TestEquipmentAsset:
     def test_equipment_to_dict_roundtrip(self, equipment_factory):
         """EquipmentAsset to_dict → from_dict 라운드트립"""
         equipment = equipment_factory(
-            name="노트북 01",
+            name="노트북01",
             asset_type="노트북",
-            serial_number="SN-12345",
+            serial_number="NB-123",
             status=ResourceStatus.AVAILABLE,
             description="Dell XPS 15",
         )
@@ -231,7 +231,7 @@ class TestPenalty:
         assert memo is not None
         assert "\n" not in memo
         assert "\r" not in memo
-        assert len(memo) == 40
+        assert len(memo) == 20
 
 
 class TestAuditLog:
@@ -292,7 +292,7 @@ class TestAuditLog:
         assert details is not None
         assert "\n" not in details
         assert "\r" not in details
-        assert len(details) == 40
+        assert len(details) == 20
 
 
 class TestHelperFunctions:
