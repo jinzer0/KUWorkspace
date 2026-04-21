@@ -288,7 +288,7 @@ def room_factory():
         **overrides,
     ):
         _counter[0] += 1
-        resolved_name = name or f"회의실{_counter[0] % 10}{chr(65 + ((_counter[0] - 1) % 3))}"
+        resolved_name = name or f"회의실 {_counter[0] % 10}{chr(65 + ((_counter[0] - 1) % 3))}"
         return Room(
             id=id or resolved_name,
             name=resolved_name,

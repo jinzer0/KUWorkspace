@@ -9,10 +9,19 @@
 """
 
 import pytest
+from uuid import uuid4
 
-from src.storage.integrity import DataIntegrityError
+from src.storage.integrity import DataIntegrityError, validate_all_data_files
 from src.storage.file_lock import global_lock
-from src.storage.repositories import UserRepository, RoomRepository, RoomBookingRepository
+from src.storage.repositories import (
+    UserRepository,
+    RoomRepository,
+    RoomBookingRepository,
+    EquipmentAssetRepository,
+    EquipmentBookingRepository,
+    PenaltyRepository,
+    AuditLogRepository,
+)
 from src.domain.models import (
     ResourceStatus,
     RoomBookingStatus,
@@ -85,26 +94,26 @@ class TestRoomRepository:
 
     def test_add_and_get_room(self, room_repo, room_factory):
         """회의실 추가 및 조회"""
-        room = room_factory(name="회의실9A")
+        room = room_factory(name="회의실 9A")
 
         room_repo.add(room)
 
         found = room_repo.get_by_id(room.id)
         assert found is not None
-        assert found.name == "회의실9A"
+        assert found.name == "회의실 9A"
 
     def test_get_available_rooms(self, room_repo, room_factory):
         """예약 가능한 회의실만 조회"""
-        room_repo.add(room_factory(name="회의실9E", status=ResourceStatus.AVAILABLE))
+        room_repo.add(room_factory(name="회의실 9E", status=ResourceStatus.AVAILABLE))
         room_repo.add(
-            room_factory(name="회의실9F", status=ResourceStatus.MAINTENANCE)
+            room_factory(name="회의실 9F", status=ResourceStatus.MAINTENANCE)
         )
-        room_repo.add(room_factory(name="회의실9G", status=ResourceStatus.DISABLED))
+        room_repo.add(room_factory(name="회의실 9G", status=ResourceStatus.DISABLED))
 
         available = room_repo.get_available()
 
         assert len(available) == 1
-        assert available[0].name == "회의실9E"
+        assert available[0].name == "회의실 9E"
 
 
 class TestRoomBookingRepository:
@@ -236,6 +245,7 @@ class TestAuditLogRepository:
         assert len(all_logs) == 1
         assert all_logs[0].action == "test_action"
         assert all_logs[0].details == "테스트 세부사항"
+        assert all_logs[0].updated_at is None
 
     def test_get_by_actor(self, audit_repo):
         """수행자별 로그 조회"""
@@ -296,7 +306,7 @@ class TestRepositoryIntegrity:
     def test_room_repository_fails_fast_on_invalid_enum(self, temp_data_dir):
         room_file = temp_data_dir / "rooms.txt"
         room_file.write_text(
-            "회의실4A|4|1층|broken_status|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            "회의실 4A|4|1층|broken_status|설명|2026-06-15T09:00|2026-06-15T09:00\n",
             encoding="utf-8",
         )
 
@@ -308,7 +318,7 @@ class TestRepositoryIntegrity:
     def test_room_booking_repository_fails_fast_on_malformed_datetime(self, temp_data_dir):
         booking_file = temp_data_dir / "room_bookings.txt"
         booking_file.write_text(
-            "bad-booking|user01|회의실4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            "bad-booking|user01|회의실 4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
             encoding="utf-8",
         )
 
@@ -316,3 +326,209 @@ class TestRepositoryIntegrity:
 
         with pytest.raises(DataIntegrityError, match="room_bookings.txt"):
             repo.get_all()
+
+    def test_validate_all_data_files_fails_on_missing_cross_file_reference(self, temp_data_dir):
+        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
+        (temp_data_dir / "users.txt").write_text(
+            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "rooms.txt").write_text(
+            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipments.txt").write_text(
+            "노트북|laptop|NB-001|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "room_bookings.txt").write_text(
+            f"{uuid4()}|missing-user|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
+
+        repositories = [
+            UserRepository(file_path=temp_data_dir / "users.txt"),
+            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
+            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
+            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
+            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
+            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
+            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
+        ]
+
+        with pytest.raises(DataIntegrityError, match="users.txt"):
+            validate_all_data_files(
+                repositories=repositories,
+                clock_file=temp_data_dir / "clock.txt",
+            )
+
+    def test_validate_all_data_files_fails_on_overlapping_active_room_bookings(self, temp_data_dir):
+        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
+        (temp_data_dir / "users.txt").write_text(
+            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "rooms.txt").write_text(
+            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipments.txt").write_text(
+            "노트북|laptop|NB-001|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "room_bookings.txt").write_text(
+            f"{uuid4()}|user01|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n"
+            f"{uuid4()}|user01|회의실 4A|2026-06-16T12:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
+
+        repositories = [
+            UserRepository(file_path=temp_data_dir / "users.txt"),
+            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
+            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
+            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
+            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
+            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
+            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
+        ]
+
+        with pytest.raises(DataIntegrityError, match="겹칩니다"):
+            validate_all_data_files(
+                repositories=repositories,
+                clock_file=temp_data_dir / "clock.txt",
+            )
+
+    def test_validate_all_data_files_fails_on_invalid_clock_slot(self, temp_data_dir):
+        (temp_data_dir / "clock.txt").write_text("2026-06-15T10:00\n", encoding="utf-8")
+        (temp_data_dir / "users.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "rooms.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "room_bookings.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
+
+        repositories = [
+            UserRepository(file_path=temp_data_dir / "users.txt"),
+            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
+            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
+            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
+            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
+            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
+            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
+        ]
+
+        with pytest.raises(DataIntegrityError, match="clock.txt"):
+            validate_all_data_files(
+                repositories=repositories,
+                clock_file=temp_data_dir / "clock.txt",
+            )
+
+    def test_validate_all_data_files_fails_on_non_canonical_clock_format(self, temp_data_dir):
+        (temp_data_dir / "clock.txt").write_text("2026-06-15 09:00\n", encoding="utf-8")
+        (temp_data_dir / "users.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "rooms.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "room_bookings.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
+
+        repositories = [
+            UserRepository(file_path=temp_data_dir / "users.txt"),
+            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
+            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
+            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
+            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
+            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
+            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
+        ]
+
+        with pytest.raises(DataIntegrityError, match="clock.txt"):
+            validate_all_data_files(
+                repositories=repositories,
+                clock_file=temp_data_dir / "clock.txt",
+            )
+
+    def test_validate_all_data_files_fails_on_non_uuid_booking_id(self, temp_data_dir):
+        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
+        (temp_data_dir / "users.txt").write_text(
+            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "rooms.txt").write_text(
+            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "room_bookings.txt").write_text(
+            "booking-1|user01|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
+
+        repositories = [
+            UserRepository(file_path=temp_data_dir / "users.txt"),
+            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
+            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
+            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
+            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
+            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
+            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
+        ]
+
+        with pytest.raises(DataIntegrityError, match="UUID v4"):
+            validate_all_data_files(
+                repositories=repositories,
+                clock_file=temp_data_dir / "clock.txt",
+            )
+
+    def test_validate_all_data_files_fails_on_non_uuid_penalty_and_audit_ids(self, temp_data_dir):
+        booking_id = str(uuid4())
+        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
+        (temp_data_dir / "users.txt").write_text(
+            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "rooms.txt").write_text(
+            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "room_bookings.txt").write_text(
+            f"{booking_id}|user01|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
+        (temp_data_dir / "penalties.txt").write_text(
+            f"penalty-1|user01|late_cancel|2|room_booking|{booking_id}|memo|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+        (temp_data_dir / "audit_log.txt").write_text(
+            "audit-1|user01|action|room_booking|target|details|2026-06-15T09:00|2026-06-15T09:00\n",
+            encoding="utf-8",
+        )
+
+        repositories = [
+            UserRepository(file_path=temp_data_dir / "users.txt"),
+            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
+            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
+            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
+            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
+            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
+            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
+        ]
+
+        with pytest.raises(DataIntegrityError, match="UUID v4"):
+            validate_all_data_files(
+                repositories=repositories,
+                clock_file=temp_data_dir / "clock.txt",
+            )
