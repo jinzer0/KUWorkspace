@@ -109,13 +109,13 @@ class TestLogin:
         with pytest.raises(AuthError) as exc_info:
             auth_service.login(username="passuser", password="wrongpass")
 
-        assert "비밀번호가 일치하지 않습니다" in str(exc_info.value)
+        assert "존재하지 않는 사용자입니다." == str(exc_info.value)
 
     def test_login_blank_username_fails(self, auth_service):
         with pytest.raises(AuthError) as exc_info:
             auth_service.login(username="   ", password="pass")
 
-        assert "사용자명을 입력" in str(exc_info.value)
+        assert "존재하지 않는 사용자입니다." == str(exc_info.value)
 
     def test_login_rejects_whitespace_in_credentials(self, auth_service):
         auth_service.signup(username="trimmed", password="secret123")
@@ -123,7 +123,7 @@ class TestLogin:
         with pytest.raises(AuthError) as exc_info:
             auth_service.login(username="  trimmed  ", password="  secret123  ")
 
-        assert "공백" in str(exc_info.value)
+        assert "존재하지 않는 사용자입니다." == str(exc_info.value)
 
 
 class TestUserQueries:

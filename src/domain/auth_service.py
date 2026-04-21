@@ -78,13 +78,8 @@ class AuthService:
         username = normalize_credential(username)
         password = normalize_credential(password)
 
-        valid, error = validate_username(username)
-        if not valid:
-            raise AuthError(error)
-
-        valid, error = validate_password(password)
-        if not valid:
-            raise AuthError(error)
+        if not username or not password:
+            raise AuthError("존재하지 않는 사용자입니다.")
 
         user = self.user_repo.get_by_username(username)
 
@@ -92,7 +87,7 @@ class AuthService:
             raise AuthError("존재하지 않는 사용자입니다.")
 
         if user.password != password:
-            raise AuthError("비밀번호가 일치하지 않습니다.")
+            raise AuthError("존재하지 않는 사용자입니다.")
 
         return user
 

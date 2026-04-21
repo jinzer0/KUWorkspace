@@ -45,8 +45,8 @@ def validate_reason_text(reason: str, field_name: str = "사유") -> None:
 def validate_room_name(name: str) -> None:
     if not isinstance(name, str) or not name:
         raise ValueError("회의실 이름을 입력해주세요.")
-    if not re.fullmatch(r"회의실[0-9][A-Z]", name):
-        raise ValueError("회의실 이름은 '회의실' + 숫자 1자리 + 대문자 1자 형식이어야 합니다.")
+    if not re.fullmatch(r"회의실 [0-9][A-Z]", name):
+        raise ValueError("회의실 이름은 '회의실' + 공백 + 숫자 1자리 + 대문자 1자 형식이어야 합니다.")
 
 
 def validate_room_capacity(capacity: int) -> None:
