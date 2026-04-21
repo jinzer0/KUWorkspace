@@ -17,6 +17,8 @@ from src.storage.repositories import (
     UserRepository,
     PenaltyRepository,
     AuditLogRepository,
+    RoomBookingRepository,
+    EquipmentBookingRepository,
     UnitOfWork,
 )
 from src.storage.file_lock import global_lock
@@ -33,6 +35,7 @@ from src.config import (
     PENALTY_RESET_DAYS,
     STREAK_BONUS_COUNT,
 )
+from src.domain.field_rules import validate_reason_text
 
 
 class PenaltyError(Exception):
@@ -83,51 +86,45 @@ class PenaltyService:
         if self.penalty_repo.exists(user_id, reason, related_type, related_id, memo=memo):
             raise PenaltyError("동일한 패널티는 중복 부과할 수 없습니다.")
 
-    def apply_no_show(self, user, booking_type, booking_id, actor_id="system"):
-        """
-        노쇼 패널티 적용 (+3점)
+    def _validate_fixed_penalty_reference(self, penalty_type, booking_type, booking_id):
+        allowed_types = {
+            "late_checkout": {"room_booking"},
+            "late_return": {"equipment_booking"},
+            "late_cancel": {"room_booking", "equipment_booking"},
+        }
+        allowed = allowed_types.get(penalty_type)
+        if allowed is None:
+            raise PenaltyError("지원하지 않는 패널티 유형입니다.")
+        if booking_type not in allowed:
+            raise PenaltyError("패널티 유형과 관련 예약 유형이 일치하지 않습니다.")
+        if not booking_id:
+            raise PenaltyError("관련 예약을 선택해야 합니다.")
 
-        Args:
-            user: 대상 사용자
-            booking_type: 'room_booking' or 'equipment_booking'
-            booking_id: 예약 ID
-            actor_id: 수행자 ID
-
-        Returns:
-            생성된 패널티
-        """
-        user = self._get_existing_user(user)
-        with global_lock(), UnitOfWork():
-            self._ensure_no_duplicate_penalty(
-                user.id,
-                PenaltyReason.OTHER,
-                booking_type,
-                booking_id,
-                memo="no_show",
+        if booking_type == "room_booking":
+            booking_repo = RoomBookingRepository(
+                file_path=self.user_repo.file_path.parent / "room_bookings.txt"
             )
-            penalty = Penalty(
-                id=generate_id(),
-                user_id=user.id,
-                reason=PenaltyReason.OTHER,
-                points=LATE_CANCEL_PENALTY,
-                related_type=booking_type,
-                related_id=booking_id,
-                memo="no_show",
-                updated_at=now_iso(),
+        else:
+            booking_repo = EquipmentBookingRepository(
+                file_path=self.user_repo.file_path.parent / "equipment_booking.txt"
             )
 
-            self.penalty_repo.add(penalty)
-            self._update_user_penalty_points(user, LATE_CANCEL_PENALTY)
+        if booking_repo.get_by_id(booking_id) is None:
+            raise PenaltyError("존재하지 않는 관련 예약입니다.")
 
-            self.audit_repo.log_action(
-                actor_id=actor_id,
-                action="apply_no_show_penalty",
-                target_type="user",
-                target_id=user.id,
-                details=f"노쇼 패널티 +{LATE_CANCEL_PENALTY}점, 예약: {booking_type}/{booking_id}",
-            )
+        return booking_repo.get_by_id(booking_id)
 
-            return penalty
+    def _is_late_cancelled_booking(self, booking):
+        if getattr(booking, "status", None) is None or booking.status.value != "cancelled":
+            return False
+        cancelled_at = getattr(booking, "cancelled_at", None)
+        if not cancelled_at:
+            return False
+        cancelled_dt = datetime.fromisoformat(cancelled_at)
+        start_dt = datetime.fromisoformat(booking.start_time)
+        if cancelled_dt >= start_dt:
+            return True
+        return (start_dt - cancelled_dt).total_seconds() / 60 <= 60
 
     def apply_late_cancel(self, user, booking_type, booking_id, actor_id="system"):
         """
@@ -157,8 +154,7 @@ class PenaltyService:
                 points=LATE_CANCEL_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo="예약 시작 1시간 이내 취소",
-                updated_at=now_iso(),
+                memo="예약시작1시간이내취소",
             )
 
             self.penalty_repo.add(penalty)
@@ -208,8 +204,7 @@ class PenaltyService:
                 points=LATE_RETURN_PENALTY,
                 related_type=booking_type,
                 related_id=booking_id,
-                memo=f"지연 {delay_minutes}분 처리",
-                updated_at=now_iso(),
+                memo=f"지연{delay_minutes}분처리",
             )
 
             self.penalty_repo.add(penalty)
@@ -251,6 +246,10 @@ class PenaltyService:
             raise PenaltyError(
                 f"파손/오염 패널티는 1~{MAX_DAMAGE_PENALTY}점 사이여야 합니다."
             )
+        try:
+            validate_reason_text(memo)
+        except ValueError as error:
+            raise PenaltyError(str(error)) from error
 
         with global_lock(), UnitOfWork():
             self._ensure_no_duplicate_penalty(
@@ -267,7 +266,6 @@ class PenaltyService:
                 related_type=booking_type,
                 related_id=booking_id,
                 memo=memo,
-                updated_at=now_iso(),
             )
 
             self.penalty_repo.add(penalty)
@@ -459,3 +457,78 @@ class PenaltyService:
         """사용자의 패널티 이력 조회"""
         self._get_existing_user_by_id(user_id)
         return self.penalty_repo.get_by_user(user_id)
+    def apply_fixed_penalty(
+        self,
+        admin,
+        user,
+        penalty_type,
+        points,
+        memo,
+        booking_type,
+        booking_id,
+    ):
+        admin = self._get_existing_admin(admin)
+        user = self._get_existing_user(user)
+        try:
+            validate_reason_text(memo)
+        except ValueError as error:
+            raise PenaltyError(str(error)) from error
+
+        reason_map = {
+            "late_checkout": PenaltyReason.LATE_RETURN,
+            "late_return": PenaltyReason.LATE_RETURN,
+            "late_cancel": PenaltyReason.LATE_CANCEL
+        }
+        reason = reason_map.get(penalty_type, PenaltyReason.DAMAGE)
+        if points != 2:
+            raise PenaltyError("고정 패널티 점수는 2점이어야 합니다.")
+
+        with global_lock(), UnitOfWork():
+            booking = self._validate_fixed_penalty_reference(
+                penalty_type, booking_type, booking_id
+            )
+            if booking.user_id != user.id:
+                raise PenaltyError("선택한 예약은 해당 사용자의 예약이 아닙니다.")
+
+            now = self.clock.now()
+            if penalty_type == "late_cancel":
+                if not self._is_late_cancelled_booking(booking):
+                    raise PenaltyError("직전 취소에 해당하는 예약만 선택할 수 있습니다.")
+            elif penalty_type == "late_checkout":
+                if booking_type != "room_booking" or booking.status.value != "checked_in":
+                    raise PenaltyError("퇴실 지연 처리 대상 예약만 선택할 수 있습니다.")
+                if datetime.fromisoformat(booking.end_time) != now:
+                    raise PenaltyError("퇴실 지연 처리 시점의 예약만 선택할 수 있습니다.")
+            elif penalty_type == "late_return":
+                if booking_type != "equipment_booking" or booking.status.value != "checked_out":
+                    raise PenaltyError("반납 지연 처리 대상 예약만 선택할 수 있습니다.")
+                if datetime.fromisoformat(booking.end_time) != now:
+                    raise PenaltyError("반납 지연 처리 시점의 예약만 선택할 수 있습니다.")
+            self._ensure_no_duplicate_penalty(
+                user.id,
+                reason,
+                booking_type,
+                booking_id,
+            )
+            penalty = Penalty(
+                id=generate_id(),
+                user_id=user.id,
+                reason=reason,
+                points=points,
+                related_type=booking_type,
+                related_id=booking_id,
+                memo=memo,
+            )
+
+            self.penalty_repo.add(penalty)
+            self._update_user_penalty_points(user, points)
+
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action=f"apply_{penalty_type}_penalty",
+                target_type="user",
+                target_id=user.id,
+                details=f"{penalty_type} 패널티 +{points}점, 사유: {memo}",
+            )
+
+            return penalty

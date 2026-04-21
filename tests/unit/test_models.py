@@ -10,6 +10,8 @@
 import json
 from datetime import datetime
 
+import pytest
+
 from src.domain.models import (
     User,
     UserRole,
@@ -86,7 +88,7 @@ class TestRoom:
     def test_room_to_dict_roundtrip(self, room_factory):
         """Room to_dict → from_dict 라운드트립"""
         room = room_factory(
-            name="회의실 A",
+            name="회의실 4A",
             capacity=20,
             location="3층",
             status=ResourceStatus.MAINTENANCE,
@@ -117,9 +119,9 @@ class TestEquipmentAsset:
     def test_equipment_to_dict_roundtrip(self, equipment_factory):
         """EquipmentAsset to_dict → from_dict 라운드트립"""
         equipment = equipment_factory(
-            name="노트북 01",
+            name="노트북01",
             asset_type="노트북",
-            serial_number="SN-12345",
+            serial_number="NB-123",
             status=ResourceStatus.AVAILABLE,
             description="Dell XPS 15",
         )
@@ -164,6 +166,26 @@ class TestRoomBooking:
             restored = RoomBooking.from_dict(d)
             assert restored.status == status
 
+    def test_room_booking_from_record_rejects_blank_id(self):
+        with pytest.raises(ValueError, match="room booking id"):
+            RoomBooking.from_record(
+                [
+                    "",
+                    "user01",
+                    "회의실 4A",
+                    "2026-06-16T09:00",
+                    "2026-06-16T18:00",
+                    "reserved",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "2026-06-15T09:00",
+                    "2026-06-15T09:00",
+                ]
+            )
+
 
 class TestEquipmentBooking:
     """EquipmentBooking 모델 테스트"""
@@ -192,6 +214,26 @@ class TestEquipmentBooking:
 
             restored = EquipmentBooking.from_dict(d)
             assert restored.status == status
+
+    def test_equipment_booking_from_record_rejects_blank_id(self):
+        with pytest.raises(ValueError, match="equipment booking id"):
+            EquipmentBooking.from_record(
+                [
+                    "",
+                    "user01",
+                    "NB-001",
+                    "2026-06-16T09:00",
+                    "2026-06-16T18:00",
+                    "reserved",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "2026-06-15T09:00",
+                    "2026-06-15T09:00",
+                ]
+            )
 
 
 class TestPenalty:
@@ -231,7 +273,23 @@ class TestPenalty:
         assert memo is not None
         assert "\n" not in memo
         assert "\r" not in memo
-        assert len(memo) == 40
+        assert len(memo) == 20
+
+    def test_penalty_from_record_rejects_blank_id(self):
+        with pytest.raises(ValueError, match="penalty id"):
+            Penalty.from_record(
+                [
+                    "",
+                    "user01",
+                    "late_cancel",
+                    "2",
+                    "room_booking",
+                    generate_id(),
+                    "memo",
+                    "2026-06-15T09:00",
+                    None,
+                ]
+            )
 
 
 class TestAuditLog:
@@ -292,7 +350,22 @@ class TestAuditLog:
         assert details is not None
         assert "\n" not in details
         assert "\r" not in details
-        assert len(details) == 40
+        assert len(details) == 20
+
+    def test_audit_log_from_record_rejects_blank_id(self):
+        with pytest.raises(ValueError, match="audit log id"):
+            AuditLog.from_record(
+                [
+                    "",
+                    "system",
+                    "policy_review",
+                    "room_booking",
+                    "target-1",
+                    "details",
+                    "2026-06-15T09:00",
+                    None,
+                ]
+            )
 
 
 class TestHelperFunctions:

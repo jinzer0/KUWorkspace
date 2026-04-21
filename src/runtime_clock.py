@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta
 
+from src.storage.file_lock import global_lock
+from src.storage.integrity import DataIntegrityError
+
 
 ALLOWED_CLOCK_SLOTS = {(9, 0), (18, 0)}
 
@@ -9,6 +12,12 @@ _runtime_clock = None
 
 class ClockError(Exception):
     """가상 시계 처리 중 발생하는 오류입니다."""
+
+
+def _persist_runtime_clock(current_time):
+    from src.clock_bootstrap import persist_clock
+
+    persist_clock(current_time)
 
 
 def normalize_slot(dt):
@@ -30,6 +39,7 @@ class SystemClock:
 
     def __init__(self, start_time):
         self._current_time = normalize_slot(start_time)
+        _save_persisted_time(self._current_time)
 
     def now(self):
         return self._current_time
@@ -45,10 +55,12 @@ class SystemClock:
 
     def advance(self):
         self._current_time = self.next_slot()
+        _save_persisted_time(self._current_time)
         return self._current_time
 
     def set_time(self, new_time):
         self._current_time = normalize_slot(new_time)
+        _save_persisted_time(self._current_time)
         return self._current_time
 
 
@@ -56,6 +68,7 @@ class RuntimeClock:
     """현재 활성 시계를 투명하게 위임하는 런타임 시계입니다."""
 
     def now(self):
+        _sync_active_clock_from_state()
         if _active_clock is not None:
             return _active_clock.now()
         return datetime.now().replace(microsecond=0)
@@ -67,19 +80,46 @@ class RuntimeClock:
         return self.now().strftime("%H:%M")
 
     def next_slot(self):
-        if _active_clock is not None:
-            return _active_clock.next_slot()
         return compute_next_slot(self.now())
 
     def advance(self):
-        if _active_clock is None:
-            raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
-        return _active_clock.advance()
+        with global_lock():
+            _sync_active_clock_from_state()
+            if _active_clock is None:
+                raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
+            next_time = _active_clock.advance()
+            return next_time
+
+
+def _load_persisted_time():
+    from src.clock_bootstrap import load_persisted_clock
+
+    try:
+        return load_persisted_clock()
+    except DataIntegrityError:
+        return None
+
+
+def _save_persisted_time(current_time):
+    from src.clock_bootstrap import persist_clock
+
+    persist_clock(normalize_slot(current_time))
+
+
+def _sync_active_clock_from_state():
+    saved_time = _load_persisted_time()
+    if saved_time is None or _active_clock is None:
+        return
+
+    if _active_clock.now() != saved_time:
+        _active_clock.set_time(saved_time)
 
 
 def set_active_clock(clock):
     global _active_clock
     _active_clock = clock
+    with global_lock():
+        _sync_active_clock_from_state()
     return _active_clock
 
 
@@ -101,4 +141,3 @@ def get_runtime_clock():
 
 def get_current_time():
     return get_runtime_clock().now()
-

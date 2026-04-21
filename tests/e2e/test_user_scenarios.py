@@ -64,7 +64,7 @@ class TestBookingCompleteFlow:
             admin = auth_service.signup("admin_user", "pass", role=UserRole.ADMIN)
 
             # 2. 회의실 생성
-            room = create_test_room(name="E2E Room")
+            room = create_test_room(name="회의실 9C")
 
             # 3. 예약 생성
             booking = room_service.create_booking(
@@ -109,7 +109,7 @@ class TestBookingCompleteFlow:
             user = auth_service.signup("eq_user", "pass")
             admin = auth_service.signup("eq_admin", "pass", role=UserRole.ADMIN)
 
-            equipment = create_test_equipment(name="E2E Laptop")
+            equipment = create_test_equipment(name="장비102")
 
             # 예약
             booking = equipment_service.create_booking(
@@ -164,7 +164,8 @@ class TestBookingModificationFlow:
             )
 
             assert modified.id == booking.id
-            assert datetime.fromisoformat(modified.start_time).hour == 9
+            assert datetime.fromisoformat(modified.start_time) == fixed_time + timedelta(days=3)
+            assert datetime.fromisoformat(modified.end_time) == fixed_time + timedelta(days=4)
 
     def test_cancel_booking_normal_flow(
         self, auth_service, room_service, create_test_room, mock_now
@@ -209,8 +210,7 @@ class TestPenaltyAccumulationFlow:
         with mock_now(fixed_time):
             user = auth_service.signup("penalty_user", "pass")
 
-            # 노쇼로 3점 부여
-            penalty_service.apply_no_show(user, "room_booking", "fake-booking-1")
+            penalty_service.apply_late_cancel(user, "room_booking", "fake-booking-1")
 
             # 상태 확인
             status = penalty_service.get_user_status(user)
@@ -234,24 +234,24 @@ class TestPenaltyAccumulationFlow:
 
         with mock_now(fixed_time):
             user = auth_service.signup("banned_user", "pass")
-            room = create_test_room(name="restricted-room")
-            equipment = create_test_equipment(name="restricted-equip")
+            room = create_test_room(name="회의실 9D")
+            equipment = create_test_equipment(name="장비103")
 
-            penalty_service.apply_damage(
-                admin=auth_service.signup("restricted_admin", "pass", role=UserRole.ADMIN),
-                user=user,
-                booking_type="room_booking",
-                booking_id="b1",
-                points=3,
-                memo="제한 테스트",
-            )
-
-            room_service.create_daily_booking(
+            room_booking = room_service.create_daily_booking(
                 user,
                 room.id,
                 fixed_time.date() + timedelta(days=1),
                 fixed_time.date() + timedelta(days=1),
                 attendee_count=4,
+            )
+
+            penalty_service.apply_damage(
+                admin=auth_service.signup("restricted_admin", "pass", role=UserRole.ADMIN),
+                user=user,
+                booking_type="room_booking",
+                booking_id=room_booking.id,
+                points=3,
+                memo="제한 테스트",
             )
 
             booking = equipment_service.create_daily_booking(
@@ -327,8 +327,9 @@ class TestLateReturnPenaltyFlow:
 
         late_time = datetime(2024, 6, 15, 18, 25, 0)
         with mock_now(late_time):
+            room_service.request_checkout(user, booking.id)
             with pytest.raises(RoomBookingError) as exc_info:
-                room_service.check_out(admin, booking.id)
+                room_service.approve_checkout_request(admin, booking.id)
             assert "현재 운영 시점" in str(exc_info.value)
 
 
@@ -350,7 +351,7 @@ class TestMultipleBookingsFlow:
         with mock_now(fixed_time):
             user = auth_service.signup("multi_booking_user", "pass")
 
-            rooms = [create_test_room(name=f"Room {i}") for i in range(2)]
+            rooms = [create_test_room(name=f"회의실 {i}A") for i in range(2)]
 
             room_service.create_booking(
                 user,

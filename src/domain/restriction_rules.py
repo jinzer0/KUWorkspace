@@ -24,17 +24,20 @@ def evaluate_user_restriction(user, current_time=None):
         MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS
     )
 
-    if restriction_until and points >= PENALTY_RESTRICTION_THRESHOLD:
+    if restriction_until:
         restriction_end = datetime.fromisoformat(restriction_until)
-        if restriction_end > current_time:
-            if points >= PENALTY_BAN_THRESHOLD:
-                is_banned = True
-                max_active_bookings = 0
-            else:
-                is_restricted = True
-                max_active_bookings = 1
-        else:
+        if restriction_end <= current_time:
             restriction_until = None
+
+    if points >= PENALTY_BAN_THRESHOLD and restriction_until is not None:
+        is_banned = True
+    elif PENALTY_RESTRICTION_THRESHOLD <= points < PENALTY_BAN_THRESHOLD and restriction_until is not None:
+        is_restricted = True
+
+    if is_banned:
+        max_active_bookings = 0
+    elif is_restricted:
+        max_active_bookings = 1
 
     return {
         "points": points,

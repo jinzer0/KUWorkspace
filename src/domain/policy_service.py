@@ -2,21 +2,28 @@
 
 from datetime import datetime
 from dataclasses import replace
+from typing import cast
 
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
+    ResourceStatus,
+    UserRole,
     now_iso,
 )
+from src.domain.restriction_rules import evaluate_user_restriction
 from src.storage.repositories import (
     UserRepository,
+    RoomRepository,
     RoomBookingRepository,
+    EquipmentAssetRepository,
     EquipmentBookingRepository,
     PenaltyRepository,
     AuditLogRepository,
     UnitOfWork,
 )
 from src.storage.file_lock import global_lock
+from src.storage.integrity import validate_all_data_files
 from src.domain.penalty_service import PenaltyService, PenaltyError
 from src.config import (
     PENALTY_BAN_THRESHOLD,
@@ -24,6 +31,7 @@ from src.config import (
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
 )
 from src.runtime_clock import get_runtime_clock
+from src.runtime_clock import compute_next_slot
 
 
 class PolicyService:
@@ -32,21 +40,29 @@ class PolicyService:
     def __init__(
         self,
         user_repo=None,
+        room_repo=None,
         room_booking_repo=None,
         equipment_booking_repo=None,
         penalty_repo=None,
         audit_repo=None,
         penalty_service=None,
+        equipment_repo=None,
         clock=None,
     ):
         self.clock = clock or get_runtime_clock()
         self.user_repo = user_repo or UserRepository()
+        self.room_repo = room_repo or RoomRepository(
+            file_path=self.user_repo.file_path.parent / 'rooms.txt'
+        )
         self.room_booking_repo = room_booking_repo or RoomBookingRepository()
         self.equipment_booking_repo = (
             equipment_booking_repo or EquipmentBookingRepository()
         )
         self.penalty_repo = penalty_repo or PenaltyRepository()
         self.audit_repo = audit_repo or AuditLogRepository()
+        self.equipment_repo = equipment_repo or EquipmentAssetRepository(
+            file_path=self.equipment_booking_repo.file_path.parent / 'equipments.txt'
+        )
         self.penalty_service = penalty_service or PenaltyService(
             user_repo=self.user_repo,
             penalty_repo=self.penalty_repo,
@@ -58,15 +74,26 @@ class PolicyService:
         if current_time is None:
             current_time = self.clock.now()
 
-        with global_lock(), UnitOfWork():
-            return self._run_checks_locked(current_time)
+        with global_lock():
+            validate_all_data_files(
+                repositories=self._integrity_repositories(),
+                clock_file=self._clock_file_path(),
+            )
+            with UnitOfWork():
+                return self._run_checks_locked(current_time)
 
     def _run_checks_locked(self, current_time):
         results = {
+            "restored_room_resources": [],
+            "restored_equipment_resources": [],
             "penalty_reset_users": [],
             "restriction_expired_users": [],
             "banned_user_cancelled_bookings": [],
         }
+
+        restored = self._restore_overnight_resources(current_time)
+        results["restored_room_resources"] = restored["rooms"]
+        results["restored_equipment_resources"] = restored["equipment"]
 
         reset_users = self._check_penalty_resets(current_time)
         results["penalty_reset_users"] = [u.id for u in reset_users]
@@ -78,29 +105,46 @@ class PolicyService:
         results["banned_user_cancelled_bookings"] = cancelled
         return results
 
-    def prepare_advance(self, current_time=None):
+    def prepare_advance(self, current_time=None, actor_id="system", actor_role="user"):
         if current_time is None:
             current_time = self.clock.now()
-        return self._build_advance_state(current_time)
+        return self._build_advance_state(
+            current_time,
+            actor_id=actor_id,
+            actor_role=actor_role,
+        )
 
-    def advance_time(self, actor_id="system"):
+    def advance_time(self, actor_id="system", actor_role="user", force=False):
         with global_lock(), UnitOfWork():
+            validate_all_data_files(
+                repositories=self._integrity_repositories(),
+                clock_file=self._clock_file_path(),
+            )
             current_time = self.clock.now()
-            auto_events = self._handle_boundary_automation(current_time)
-            state = self._build_advance_state(current_time)
-            if not state["can_advance"]:
+            state = self._build_advance_state(
+                current_time,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            )
+            if not state["can_advance"] and not force:
                 self.audit_repo.log_action(
                     actor_id=actor_id,
                     action="clock_advance_blocked",
                     target_type="system_clock",
                     target_id=current_time.isoformat(),
-                    details=" | ".join(state["blockers"]),
+                    details=" | ".join(cast(list[str], state["blockers"])),
                 )
                 return state
 
+            penalty_owner_id = self._resolve_forced_penalty_owner_id(actor_id, force)
             next_time = self.clock.advance()
+            auto_events = self._handle_boundary_automation(
+                next_time,
+                actor_id=actor_id,
+                penalty_owner_id=penalty_owner_id,
+            )
             maintenance = self._run_checks_locked(next_time)
-            events = list(state["events"])
+            events = list(cast(list[str], state["events"]))
             events.extend(auto_events)
             events.extend(self._build_post_advance_events(next_time, maintenance))
 
@@ -113,18 +157,59 @@ class PolicyService:
             )
 
             state["next_time"] = next_time
-            state["events"] = events
+            state["events"] = self._build_display_result_events(
+                previous_time=current_time,
+                current_time=next_time,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            )
             state["maintenance"] = maintenance
+            state["forced"] = force
+            state["can_advance"] = True
             return state
 
-    def _handle_boundary_automation(self, current_time):
+    def _clock_file_path(self):
+        return self.user_repo.file_path.parent / 'clock.txt'
+
+    def _integrity_repositories(self):
+        return [
+            self.user_repo,
+            self.room_repo,
+            self.equipment_repo,
+            self.room_booking_repo,
+            self.equipment_booking_repo,
+            self.penalty_repo,
+            self.audit_repo,
+        ]
+
+    def _resolve_forced_penalty_owner_id(self, actor_id, force):
+        if not force:
+            return None
+        actor = self.user_repo.get_by_id(actor_id)
+        if actor is None or actor.role == UserRole.ADMIN:
+            return None
+        return actor.id
+
+    def _get_penalty_user(self, booking_user_id, penalty_owner_id=None):
+        target_user_id = penalty_owner_id or booking_user_id
+        return self.user_repo.get_by_id(target_user_id)
+
+    def _handle_boundary_automation(self, current_time, actor_id="system", penalty_owner_id=None):
         if current_time.hour == 9:
-            return self._auto_handle_start_slot(current_time)
+            return self._auto_handle_start_slot(
+                current_time,
+                actor_id=actor_id,
+                penalty_owner_id=penalty_owner_id,
+            )
         if current_time.hour == 18:
-            return self._auto_handle_end_slot(current_time)
+            return self._auto_handle_end_slot(
+                current_time,
+                actor_id=actor_id,
+                penalty_owner_id=penalty_owner_id,
+            )
         return []
 
-    def _auto_handle_start_slot(self, current_time):
+    def _auto_handle_start_slot(self, current_time, actor_id="system", penalty_owner_id=None):
         events = []
         now = now_iso()
 
@@ -150,15 +235,15 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self.user_repo.get_by_id(booking.user_id)
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
-                    self.penalty_service.apply_no_show(
+                    self.penalty_service.apply_late_cancel(
                         user=user,
                         booking_type="room_booking",
                         booking_id=booking.id,
-                        actor_id="system",
+                        actor_id=actor_id,
                     )
-                events.append(f"회의실 예약 {booking.id[:8]} 노쇼 자동 처리")
+                events.append(f"회의실 예약 {booking.id[:8]} 시작 미처리 자동 취소")
 
         for booking in self.equipment_booking_repo.get_all():
             if datetime.fromisoformat(booking.start_time) != current_time:
@@ -182,19 +267,106 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self.user_repo.get_by_id(booking.user_id)
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
-                    self.penalty_service.apply_no_show(
+                    self.penalty_service.apply_late_cancel(
                         user=user,
                         booking_type="equipment_booking",
                         booking_id=booking.id,
-                        actor_id="system",
+                        actor_id=actor_id,
                     )
-                events.append(f"장비 예약 {booking.id[:8]} 노쇼 자동 처리")
+                events.append(f"장비 예약 {booking.id[:8]} 시작 미처리 자동 취소")
 
         return events
 
-    def _auto_handle_end_slot(self, current_time):
+    def _restore_overnight_resources(self, current_time):
+        if current_time.hour != 9:
+            return {"rooms": [], "equipment": []}
+
+        restored_rooms = []
+        restored_equipment = []
+
+        for room in self.room_repo.get_all():
+            if room.status not in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
+                continue
+            if datetime.fromisoformat(room.updated_at) >= current_time:
+                continue
+            if self._room_has_active_usage_at(room.id, current_time):
+                continue
+            self.room_repo.update(
+                replace(
+                    room,
+                    status=ResourceStatus.AVAILABLE,
+                    updated_at=now_iso(),
+                )
+            )
+            restored_rooms.append(room.id)
+            self.audit_repo.log_action(
+                actor_id="system",
+                action="auto_restore_room_status",
+                target_type="room",
+                target_id=room.id,
+                details="익일 09:00 자동 복원",
+            )
+
+        for equipment in self.equipment_repo.get_all():
+            if equipment.status not in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
+                continue
+            if datetime.fromisoformat(equipment.updated_at) >= current_time:
+                continue
+            if self._equipment_has_active_usage_at(equipment.id, current_time):
+                continue
+            self.equipment_repo.update(
+                replace(
+                    equipment,
+                    status=ResourceStatus.AVAILABLE,
+                    updated_at=now_iso(),
+                )
+            )
+            restored_equipment.append(equipment.id)
+            self.audit_repo.log_action(
+                actor_id="system",
+                action="auto_restore_equipment_status",
+                target_type="equipment",
+                target_id=equipment.id,
+                details="익일 09:00 자동 복원",
+            )
+
+        return {"rooms": restored_rooms, "equipment": restored_equipment}
+
+    def _room_has_active_usage_at(self, room_id, current_time):
+        active_statuses = {
+            RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
+            RoomBookingStatus.CHECKED_IN,
+            RoomBookingStatus.CHECKOUT_REQUESTED,
+        }
+        for booking in self.room_booking_repo.get_by_room(room_id):
+            if booking.status not in active_statuses:
+                continue
+            start_time = datetime.fromisoformat(booking.start_time)
+            end_time = datetime.fromisoformat(booking.end_time)
+            if start_time <= current_time < end_time:
+                return True
+        return False
+
+    def _equipment_has_active_usage_at(self, equipment_id, current_time):
+        active_statuses = {
+            EquipmentBookingStatus.RESERVED,
+            EquipmentBookingStatus.PICKUP_REQUESTED,
+            EquipmentBookingStatus.CHECKED_OUT,
+            EquipmentBookingStatus.RETURN_REQUESTED,
+        }
+        for booking in self.equipment_booking_repo.get_by_equipment(equipment_id):
+            if booking.status not in active_statuses:
+                continue
+            start_time = datetime.fromisoformat(booking.start_time)
+            end_time = datetime.fromisoformat(booking.end_time)
+            if start_time <= current_time < end_time:
+                return True
+        return False
+
+    def _auto_handle_end_slot(self, current_time, actor_id="system", penalty_owner_id=None):
         events = []
         now = now_iso()
 
@@ -223,14 +395,14 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self.user_repo.get_by_id(booking.user_id)
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
                     self.penalty_service.apply_late_return(
                         user=user,
                         booking_type="room_booking",
                         booking_id=booking.id,
                         delay_minutes=60,
-                        actor_id="system",
+                        actor_id=actor_id,
                     )
                 events.append(f"회의실 예약 {booking.id[:8]} 지연 퇴실 자동 패널티")
 
@@ -259,43 +431,126 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self.user_repo.get_by_id(booking.user_id)
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
                     self.penalty_service.apply_late_return(
                         user=user,
                         booking_type="equipment_booking",
                         booking_id=booking.id,
                         delay_minutes=60,
-                        actor_id="system",
+                        actor_id=actor_id,
                     )
                 events.append(f"장비 예약 {booking.id[:8]} 지연 반납 자동 패널티")
 
         return events
 
-    def _build_advance_state(self, current_time):
+    def _build_force_notice(self, actor_id, blockers):
+        if not blockers:
+            return ""
+        actor = self.user_repo.get_by_id(actor_id)
+        if actor is None or actor.role == UserRole.ADMIN:
+            return "미해결 사건이 있어도 강행할 수 있습니다. 자동 패널티는 기존 책임 사용자 기준으로 처리됩니다."
+        return "강행하면 이 이동으로 발생하는 자동 패널티가 모두 현재 사용자에게 부과됩니다."
+
+    def _build_advance_state(self, current_time, actor_id="system", actor_role="user"):
         next_time = self.clock.next_slot()
         blockers = []
 
         if current_time.hour == 9:
             blockers.extend(self._collect_start_blockers(current_time))
-            events = [
-                f"{next_time.strftime('%Y-%m-%d %H:%M')}로 이동 준비",
-                f"당일 종료 예정 회의실 {self._count_room_endings(next_time)}건, 장비 {self._count_equipment_endings(next_time)}건",
-            ]
         else:
             blockers.extend(self._collect_end_blockers(current_time))
-            events = [
-                f"{next_time.strftime('%Y-%m-%d %H:%M')}로 이동 준비",
-                f"다음 시점 시작 예정 회의실 {self._count_room_starts(next_time)}건, 장비 {self._count_equipment_starts(next_time)}건",
-            ]
 
         return {
             "can_advance": len(blockers) == 0,
             "current_time": current_time,
             "next_time": next_time,
             "blockers": blockers,
-            "events": events,
+            "events": self._build_display_events(
+                current_time=current_time,
+                actor_id=actor_id,
+                actor_role=actor_role,
+            ),
+            "force_notice": self._build_force_notice(actor_id, blockers),
         }
+
+    def _build_display_events(self, current_time, actor_id="system", actor_role="user"):
+        next_time = compute_next_slot(current_time)
+        events = [f"{next_time.strftime('%Y-%m-%d %H:%M')}로 이동 준비"]
+
+        if actor_role == "admin":
+            if current_time.hour == 9:
+                events.append(
+                    f"회의실 예약 종료 예정 {self._count_room_endings(next_time)}건, 장비 반납 예정 {self._count_equipment_endings(next_time)}건"
+                )
+            else:
+                events.append(
+                    f"회의실 예약 시작 예정 {self._count_room_starts(next_time)}건, 장비 픽업 예정 {self._count_equipment_starts(next_time)}건"
+                )
+            return events
+
+        if current_time.hour == 9:
+            events.append(
+                f"당일 종료 예정 회의실 {self._count_room_endings(next_time, actor_id)}건, 장비 {self._count_equipment_endings(next_time, actor_id)}건"
+            )
+        else:
+            events.append(
+                f"다음 시점 시작 예정 회의실 {self._count_room_starts(next_time, actor_id)}건, 장비 {self._count_equipment_starts(next_time, actor_id)}건"
+            )
+        return events
+
+    def _build_display_result_events(self, previous_time, current_time, actor_id="system", actor_role="user"):
+        events = []
+
+        room_completed = [
+            booking
+            for booking in self.room_booking_repo.get_all()
+            if booking.completed_at == current_time.isoformat()
+            and (actor_role == "admin" or booking.user_id == actor_id)
+        ]
+        equipment_returned = [
+            booking
+            for booking in self.equipment_booking_repo.get_all()
+            if booking.returned_at == current_time.isoformat()
+            and (actor_role == "admin" or booking.user_id == actor_id)
+        ]
+        room_started = [
+            booking
+            for booking in self.room_booking_repo.get_all()
+            if booking.checked_in_at == current_time.isoformat()
+            and (actor_role == "admin" or booking.user_id == actor_id)
+        ]
+        equipment_started = [
+            booking
+            for booking in self.equipment_booking_repo.get_all()
+            if booking.checked_out_at == current_time.isoformat()
+            and (actor_role == "admin" or booking.user_id == actor_id)
+        ]
+
+        if actor_role == "admin":
+            if current_time.hour == 18:
+                if room_completed:
+                    events.append(f"회의실 예약 종료 처리 {len(room_completed)}건")
+                if equipment_returned:
+                    events.append(f"장비 반납 처리 {len(equipment_returned)}건")
+            else:
+                if room_started:
+                    events.append(f"회의실 예약 시작 처리 {len(room_started)}건")
+                if equipment_started:
+                    events.append(f"장비 픽업 처리 {len(equipment_started)}건")
+            return events
+
+        if current_time.hour == 18:
+            if room_completed:
+                events.append("본인의 회의실 예약이 종료되었습니다.")
+            if equipment_returned:
+                events.append("본인의 장비 반납이 완료되었습니다.")
+        else:
+            if room_started:
+                events.append("본인의 회의실 예약이 시작되었습니다.")
+            if equipment_started:
+                events.append("본인의 장비 픽업이 완료되었습니다.")
+        return events
 
     def _user_label(self, user_id):
         user = self.user_repo.get_by_id(user_id)
@@ -320,7 +575,7 @@ class PolicyService:
                 )
             else:
                 blockers.append(
-                    f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 체크인 요청 또는 노쇼 처리가 필요합니다."
+                    f"회의실 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 체크인 요청 또는 자동 취소 처리가 필요합니다."
                 )
 
         for booking in self.equipment_booking_repo.get_all():
@@ -337,7 +592,7 @@ class PolicyService:
                 )
             else:
                 blockers.append(
-                    f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 픽업 요청 또는 노쇼 처리가 필요합니다."
+                    f"장비 예약 {booking.id[:8]} ({self._user_label(booking.user_id)})은 픽업 요청 또는 자동 취소 처리가 필요합니다."
                 )
 
         return blockers
@@ -371,40 +626,43 @@ class PolicyService:
 
         return blockers
 
-    def _count_room_starts(self, target_time):
+    def _count_room_starts(self, target_time, user_id=None):
         return len(
             [
                 booking
                 for booking in self.room_booking_repo.get_all()
                 if booking.status
                 in {RoomBookingStatus.RESERVED, RoomBookingStatus.CHECKIN_REQUESTED}
+                and (user_id is None or booking.user_id == user_id)
                 and datetime.fromisoformat(booking.start_time) == target_time
             ]
         )
 
-    def _count_equipment_starts(self, target_time):
+    def _count_equipment_starts(self, target_time, user_id=None):
         return len(
             [
                 booking
                 for booking in self.equipment_booking_repo.get_all()
                 if booking.status
                 in {EquipmentBookingStatus.RESERVED, EquipmentBookingStatus.PICKUP_REQUESTED}
+                and (user_id is None or booking.user_id == user_id)
                 and datetime.fromisoformat(booking.start_time) == target_time
             ]
         )
 
-    def _count_room_endings(self, target_time):
+    def _count_room_endings(self, target_time, user_id=None):
         return len(
             [
                 booking
                 for booking in self.room_booking_repo.get_all()
                 if booking.status
                 in {RoomBookingStatus.CHECKED_IN, RoomBookingStatus.CHECKOUT_REQUESTED}
+                and (user_id is None or booking.user_id == user_id)
                 and datetime.fromisoformat(booking.end_time) == target_time
             ]
         )
 
-    def _count_equipment_endings(self, target_time):
+    def _count_equipment_endings(self, target_time, user_id=None):
         return len(
             [
                 booking
@@ -414,6 +672,7 @@ class PolicyService:
                     EquipmentBookingStatus.CHECKED_OUT,
                     EquipmentBookingStatus.RETURN_REQUESTED,
                 }
+                and (user_id is None or booking.user_id == user_id)
                 and datetime.fromisoformat(booking.end_time) == target_time
             ]
         )
@@ -424,6 +683,8 @@ class PolicyService:
         reset_count = len(maintenance["penalty_reset_users"])
         expired_count = len(maintenance["restriction_expired_users"])
         cancelled_count = len(maintenance["banned_user_cancelled_bookings"])
+        restored_room_count = len(maintenance["restored_room_resources"])
+        restored_equipment_count = len(maintenance["restored_equipment_resources"])
 
         if reset_count:
             events.append(f"90일 경과 패널티 초기화 {reset_count}건")
@@ -431,6 +692,10 @@ class PolicyService:
             events.append(f"이용 제한 만료 처리 {expired_count}건")
         if cancelled_count:
             events.append(f"이용 금지 사용자 미래 예약 자동 취소 {cancelled_count}건")
+        if restored_room_count:
+            events.append(f"회의실 상태 익일 09:00 자동 복원 {restored_room_count}건")
+        if restored_equipment_count:
+            events.append(f"장비 상태 익일 09:00 자동 복원 {restored_equipment_count}건")
 
         return events
 
@@ -476,7 +741,8 @@ class PolicyService:
         cancelled_ids = []
 
         for user in self.user_repo.get_all():
-            if user.penalty_points >= PENALTY_BAN_THRESHOLD:
+            status = evaluate_user_restriction(user, current_time)
+            if status["is_banned"]:
                 # 회의실 미래 예약 취소
                 for booking in self.room_booking_repo.get_by_user(user.id):
                     if booking.status == RoomBookingStatus.RESERVED:

@@ -242,6 +242,24 @@ class EquipmentAssetRepository(BaseRepository):
             to_json=lambda e: e.to_record(),
         )
 
+    def get_by_id(self, serial_number):
+        """serial_number로 장비 조회 (id 역할)"""
+        for item in self.get_all():
+            if item.serial_number == serial_number:
+                return item
+        return None
+
+    def update(self, record):
+        """serial_number 기준으로 장비 업데이트"""
+        records = self.get_all()
+        for i, item in enumerate(records):
+            if item.serial_number == record.serial_number:
+                object.__setattr__(record, "updated_at", now_iso())
+                records[i] = record
+                self.save_all(records)
+                return record
+        return None
+
     def get_available(self):
         """사용 가능한 장비 조회"""
         from src.domain.models import ResourceStatus
@@ -461,7 +479,6 @@ class AuditLogRepository:
             target_type=target_type,
             target_id=target_id,
             details=details,
-            updated_at=now_iso(),
         )
         return self.add(log)
 

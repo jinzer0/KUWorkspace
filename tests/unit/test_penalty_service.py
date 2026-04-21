@@ -2,7 +2,6 @@
 패널티 서비스 테스트
 
 테스트 대상:
-- 노쇼 패널티 (+3점)
 - 직전 취소 패널티 (+2점)
 - 지연 반납 패널티 (ceil(분/10)점)
 - 파손/오염 패널티 (1~5점)
@@ -15,52 +14,9 @@ import pytest
 from datetime import datetime, timedelta
 
 from src.domain.penalty_service import PenaltyError, AdminRequiredError
-from src.domain.models import UserRole, PenaltyReason
+from src.domain.models import UserRole, PenaltyReason, generate_id
 from src.storage.file_lock import global_lock
-
-
-class TestNoShowPenalty:
-    """노쇼 패널티 테스트"""
-
-    def test_apply_no_show_adds_2_points(self, penalty_service, create_test_user):
-        """노쇼 시 2점 추가"""
-        user = create_test_user(penalty_points=0)
-
-        penalty = penalty_service.apply_no_show(
-            user=user, booking_type="room_booking", booking_id="booking-123"
-        )
-
-        assert penalty.reason == PenaltyReason.OTHER
-        assert penalty.memo == "no_show"
-        assert penalty.points == 2
-
-        # 사용자 점수 확인
-
-        updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 2
-
-    def test_no_show_resets_streak(self, penalty_service, create_test_user):
-        """노쇼 발생 시 정상 이용 연속 횟수 리셋"""
-        user = create_test_user(penalty_points=0, normal_use_streak=8)
-
-        penalty_service.apply_no_show(
-            user=user, booking_type="room_booking", booking_id="booking-123"
-        )
-
-        updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.normal_use_streak == 0
-
-    def test_apply_no_show_nonexistent_user_fails(self, penalty_service, user_factory):
-        fake_user = user_factory(id="missing-user")
-
-        with pytest.raises(PenaltyError) as exc_info:
-            penalty_service.apply_no_show(
-                user=fake_user,
-                booking_type="room_booking",
-                booking_id="booking-123",
-            )
-
-        assert "존재하지 않는 사용자" in str(exc_info.value)
+from src.storage.integrity import validate_all_data_files
 
 
 class TestLateCancelPenalty:
@@ -76,6 +32,7 @@ class TestLateCancelPenalty:
 
         assert penalty.reason == PenaltyReason.LATE_CANCEL
         assert penalty.points == 2
+        assert penalty.updated_at is None
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
         assert updated_user.penalty_points == 2
@@ -248,6 +205,243 @@ class TestDamagePenalty:
         )
 
         assert penalty.points == 5
+        assert penalty.updated_at is None
+
+    def test_apply_fixed_penalty_keeps_updated_at_empty_on_create(
+        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
+    ):
+        create_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(create_time):
+            user = create_test_user(penalty_points=0)
+            admin = create_test_user(username="fixed_penalty_admin", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                create_time,
+                create_time.replace(hour=18),
+            )
+            room_service.request_check_in(user, booking.id)
+            room_service.check_in(admin, booking.id)
+
+        with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
+            penalty = penalty_service.apply_fixed_penalty(
+                admin=admin,
+                user=user,
+                penalty_type="late_checkout",
+                points=2,
+                memo="테스트",
+                booking_type="room_booking",
+                booking_id=booking.id,
+            )
+
+        assert penalty.updated_at is None
+        assert penalty.related_type == "room_booking"
+
+    def test_apply_fixed_penalty_persists_integrity_safe_record(
+        self,
+        penalty_service,
+        create_test_user,
+        create_test_room,
+        room_service,
+        room_repo,
+        equipment_repo,
+        room_booking_repo,
+        equipment_booking_repo,
+        penalty_repo,
+        audit_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(penalty_points=0)
+            admin = create_test_user(username="fix_pen_admin2", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time,
+                fixed_time.replace(hour=18),
+            )
+            room_service.request_check_in(user, booking.id)
+            room_service.check_in(admin, booking.id)
+
+        with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
+            penalty_service.apply_fixed_penalty(
+                admin=admin,
+                user=user,
+                penalty_type="late_checkout",
+                points=2,
+                memo="테스트",
+                booking_type="room_booking",
+                booking_id=booking.id,
+            )
+
+            validate_all_data_files(
+                repositories=[
+                    penalty_service.user_repo,
+                    room_repo,
+                    equipment_repo,
+                    room_booking_repo,
+                    equipment_booking_repo,
+                    penalty_repo,
+                    audit_repo,
+                ],
+                clock_file=penalty_service.user_repo.file_path.parent / "clock.txt",
+            )
+
+    def test_apply_fixed_penalty_rejects_invalid_booking_type(
+        self, penalty_service, create_test_user
+    ):
+        user = create_test_user(penalty_points=0)
+        admin = create_test_user(username="fix_pen_admin3", role=UserRole.ADMIN)
+
+        with pytest.raises(PenaltyError) as exc_info:
+            penalty_service.apply_fixed_penalty(
+                admin=admin,
+                user=user,
+                penalty_type="late_checkout",
+                points=2,
+                memo="테스트",
+                booking_type="equipment_booking",
+                booking_id=generate_id(),
+            )
+
+        assert "일치하지 않습니다" in str(exc_info.value)
+
+    def test_apply_fixed_penalty_rejects_nonexistent_booking_id(
+        self, penalty_service, create_test_user
+    ):
+        user = create_test_user(penalty_points=0)
+        admin = create_test_user(username="fix_pen_admin4", role=UserRole.ADMIN)
+
+        with pytest.raises(PenaltyError) as exc_info:
+            penalty_service.apply_fixed_penalty(
+                admin=admin,
+                user=user,
+                penalty_type="late_cancel",
+                points=2,
+                memo="테스트",
+                booking_type="room_booking",
+                booking_id=generate_id(),
+            )
+
+        assert "존재하지 않는 관련 예약" in str(exc_info.value)
+
+    def test_apply_fixed_penalty_rejects_non_late_cancel_booking(
+        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(penalty_points=0)
+            admin = create_test_user(username="fix_pen_admin6", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(days=5),
+                fixed_time + timedelta(days=6),
+            )
+            room_service.cancel_booking(user, booking.id)
+
+            with pytest.raises(PenaltyError) as exc_info:
+                penalty_service.apply_fixed_penalty(
+                    admin=admin,
+                    user=user,
+                    penalty_type="late_cancel",
+                    points=2,
+                    memo="테스트",
+                    booking_type="room_booking",
+                    booking_id=booking.id,
+                )
+
+        assert "직전 취소" in str(exc_info.value)
+
+    def test_apply_fixed_penalty_rejects_non_late_checkout_booking(
+        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(penalty_points=0)
+            admin = create_test_user(username="fix_pen_admin7", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=2),
+            )
+
+            with pytest.raises(PenaltyError) as exc_info:
+                penalty_service.apply_fixed_penalty(
+                    admin=admin,
+                    user=user,
+                    penalty_type="late_checkout",
+                    points=2,
+                    memo="테스트",
+                    booking_type="room_booking",
+                    booking_id=booking.id,
+                )
+
+        assert "퇴실 지연 처리 대상" in str(exc_info.value)
+
+    def test_apply_fixed_penalty_rejects_non_late_return_booking(
+        self, penalty_service, create_test_user, create_test_equipment, equipment_service, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(penalty_points=0)
+            admin = create_test_user(username="fix_pen_admin8", role=UserRole.ADMIN)
+            equipment = create_test_equipment()
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=2),
+            )
+
+            with pytest.raises(PenaltyError) as exc_info:
+                penalty_service.apply_fixed_penalty(
+                    admin=admin,
+                    user=user,
+                    penalty_type="late_return",
+                    points=2,
+                    memo="테스트",
+                    booking_type="equipment_booking",
+                    booking_id=booking.id,
+                )
+
+        assert "반납 지연 처리 대상" in str(exc_info.value)
+
+    def test_apply_fixed_penalty_rejects_booking_owned_by_other_user(
+        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(penalty_points=0)
+            other = create_test_user(username="other_user")
+            admin = create_test_user(username="fix_pen_admin5", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_booking(
+                other,
+                room.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=2),
+            )
+
+            with pytest.raises(PenaltyError) as exc_info:
+                penalty_service.apply_fixed_penalty(
+                    admin=admin,
+                    user=user,
+                    penalty_type="late_cancel",
+                    points=2,
+                    memo="테스트",
+                    booking_type="room_booking",
+                    booking_id=booking.id,
+                )
+
+        assert "해당 사용자의 예약이 아닙니다" in str(exc_info.value)
 
     def test_apply_damage_0_points_fails(self, penalty_service, create_test_user):
         """0점 부과 시 실패"""
@@ -467,11 +661,10 @@ class TestPenaltyThresholds:
     """패널티 임계값 제한 테스트"""
 
     def test_3_points_triggers_restriction(self, penalty_service, create_test_user):
-        """2점 단일 노쇼는 제한을 유발하지 않는다"""
+        """2점 단일 직전 취소는 제한을 유발하지 않는다"""
         user = create_test_user(penalty_points=0)
 
-        # 3점 패널티 적용
-        penalty_service.apply_no_show(
+        penalty_service.apply_late_cancel(
             user=user, booking_type="room_booking", booking_id="booking-1"
         )
 
@@ -481,19 +674,19 @@ class TestPenaltyThresholds:
 
     def test_6_points_triggers_ban(self, penalty_service, create_test_user):
         """6점 달성 시 30일 이용 금지"""
-        user = create_test_user(penalty_points=3)
+        user = create_test_user(penalty_points=4)
 
-        penalty_service.apply_no_show(
+        penalty_service.apply_late_cancel(
             user=user, booking_type="room_booking", booking_id="booking-2"
         )
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
-        assert updated_user.penalty_points == 5
+        assert updated_user.penalty_points == 6
         assert updated_user.restriction_until is not None
 
-        # restriction_until이 약 7일 후인지 확인
+        # restriction_until이 약 30일 후인지 확인
         restriction_end = datetime.fromisoformat(updated_user.restriction_until)
-        expected_end = datetime.now() + timedelta(days=7)
+        expected_end = datetime.now() + timedelta(days=30)
         assert abs((restriction_end - expected_end).total_seconds()) < 60
 
 
@@ -539,6 +732,19 @@ class TestUserStatus:
         assert status["is_banned"] is True
         assert status["max_active_bookings"] == 0
 
+    def test_status_clears_restriction_after_expired_until(
+        self, penalty_service, create_test_user
+    ):
+        user = create_test_user(
+            penalty_points=3,
+            restriction_until=(datetime.now() - timedelta(days=1)).isoformat(),
+        )
+
+        status = penalty_service.get_user_status(user)
+
+        assert status["is_restricted"] is False
+        assert status["restriction_until"] is None
+
     def test_status_nonexistent_user_fails(self, penalty_service, user_factory):
         fake_user = user_factory(id="missing-user")
 
@@ -556,18 +762,16 @@ class TestPenaltyHistory:
         user = create_test_user(penalty_points=0)
 
         # 여러 패널티 적용
-        penalty_service.apply_no_show(user, "room_booking", "b1")
-        penalty_service.apply_late_cancel(user, "room_booking", "b2")
+        penalty_service.apply_late_cancel(user, "room_booking", "b1")
         penalty_service.apply_late_return(
-            user, "equipment_booking", "b3", delay_minutes=15
+            user, "equipment_booking", "b2", delay_minutes=15
         )
 
         penalties = penalty_service.get_user_penalties(user.id)
 
-        assert len(penalties) == 3
+        assert len(penalties) == 2
 
         reasons = {p.reason for p in penalties}
-        assert PenaltyReason.OTHER in reasons
         assert PenaltyReason.LATE_CANCEL in reasons
         assert PenaltyReason.LATE_RETURN in reasons
 

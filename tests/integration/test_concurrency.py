@@ -54,6 +54,7 @@ def worker_create_booking(
                 UserRepository,
                 RoomRepository,
                 RoomBookingRepository,
+                EquipmentBookingRepository,
                 AuditLogRepository,
             )
 
@@ -62,6 +63,9 @@ def worker_create_booking(
             room_repo = RoomRepository(file_path=data_path / "rooms.txt")
             booking_repo = RoomBookingRepository(
                 file_path=data_path / "room_bookings.txt"
+            )
+            equipment_booking_repo = EquipmentBookingRepository(
+                file_path=data_path / "equipment_booking.txt"
             )
             audit_repo = AuditLogRepository(file_path=data_path / "audit_log.txt")
 
@@ -74,6 +78,7 @@ def worker_create_booking(
             room_service = RoomService(
                 room_repo=room_repo,
                 booking_repo=booking_repo,
+                equipment_booking_repo=equipment_booking_repo,
                 user_repo=user_repo,
                 audit_repo=audit_repo,
             )
@@ -139,7 +144,7 @@ class TestConcurrentBooking:
         # 데이터 준비
         user1 = user_factory(username="concurrent1")
         user2 = user_factory(username="concurrent2")
-        room = room_factory(name="Concurrent Room")
+        room = room_factory(name="회의실 9B")
 
         with global_lock():
             user_repo.add(user1)
@@ -246,7 +251,7 @@ class TestConcurrentMultipleRooms:
         """
         # 여러 사용자와 회의실
         users = [user_factory(username=f"multi_user_{i}") for i in range(3)]
-        rooms = [room_factory(name=f"Multi Room {i}") for i in range(3)]
+        rooms = [room_factory(name=f"회의실 {i}B") for i in range(3)]
 
         with global_lock():
             for u in users:
@@ -391,10 +396,10 @@ class TestConcurrentEquipmentBooking:
         user1 = user_factory(username="equip_concurrent1")
         user2 = user_factory(username="equip_concurrent2")
         equipment = EquipmentAsset(
-            id="SN-CONC-001",
-            name="Concurrent Equipment",
+            id="WC-101",
+            name="장비101",
             asset_type="laptop",
-            serial_number="SN-CONC-001",
+            serial_number="WC-101",
             status=ResourceStatus.AVAILABLE,
         )
 

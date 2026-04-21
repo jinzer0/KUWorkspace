@@ -12,14 +12,24 @@ from src.cli.formatters import (
 class ClockMenu:
     """공용 운영 시계 메뉴"""
 
-    def __init__(self, policy_service, actor_id="system", allow_advance=True):
+    def __init__(
+        self,
+        policy_service,
+        actor_id="system",
+        actor_role="user",
+        allow_advance=True,
+    ):
         self.policy_service = policy_service
         self.actor_id = actor_id
+        self.actor_role = actor_role
         self.allow_advance = allow_advance
 
     def run(self):
         while True:
-            preview = self.policy_service.prepare_advance()
+            preview = self.policy_service.prepare_advance(
+                actor_id=self.actor_id,
+                actor_role=self.actor_role,
+            )
 
             print_header("운영 시계")
             print(f"  현재 운영 시점: {format_datetime(preview['current_time'].isoformat())}")
@@ -29,8 +39,6 @@ class ClockMenu:
             if self.allow_advance:
                 print("  2. 다음 시점으로 이동")
                 print("  3. 미해결 사건 보기")
-            else:
-                print("  2. 미해결 사건 보기")
             print("  0. 돌아가기")
             print("-" * 50)
 
@@ -40,11 +48,6 @@ class ClockMenu:
                 self._show_preview(preview)
             elif self.allow_advance and choice == "2":
                 self._advance()
-            elif choice == "2":
-                if not self.allow_advance:
-                    self._show_blockers(preview)
-                else:
-                    print_error("잘못된 선택입니다.")
             elif choice == "3" and self.allow_advance:
                 self._show_blockers(preview)
             elif choice == "0":
@@ -54,7 +57,12 @@ class ClockMenu:
                 pause()
 
     def _show_preview(self, preview):
-        print_header("운영 시점 정보")
+        title = (
+            "운영 시점 정보 (관리자)"
+            if self.actor_role == "admin"
+            else "운영 시점 정보"
+        )
+        print_header(title)
         print(f"  현재 운영 시점: {format_datetime(preview['current_time'].isoformat())}")
         print(f"  다음 시점: {format_datetime(preview['next_time'].isoformat())}")
         if preview["events"]:
@@ -77,7 +85,30 @@ class ClockMenu:
         pause()
 
     def _advance(self):
-        result = self.policy_service.advance_time(actor_id=self.actor_id)
+        preview = self.policy_service.prepare_advance(
+            actor_id=self.actor_id,
+            actor_role=self.actor_role,
+        )
+        force = False
+
+        if preview["blockers"]:
+            print_header("시점 이동 경고")
+            print_warning("다음 시점으로 이동하기 전에 아래 작업이 남아 있습니다.")
+            for blocker in preview["blockers"]:
+                print(f"  - {blocker}")
+            if preview.get("force_notice"):
+                print()
+                print_warning(preview["force_notice"])
+            if not input("강행하려면 'FORCE'를 입력하세요: ").strip().upper() == "FORCE":
+                pause()
+                return
+            force = True
+
+        result = self.policy_service.advance_time(
+            actor_id=self.actor_id,
+            actor_role=self.actor_role,
+            force=force,
+        )
         print_header("시점 이동 결과")
 
         if not result["can_advance"]:
