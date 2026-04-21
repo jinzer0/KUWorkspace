@@ -132,15 +132,15 @@ def test_room_capacity_falls_back_to_larger_room(
     fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
     with mock_now(fixed_time):
-        create_test_room(name="회의실1S", capacity=4)
-        create_test_room(name="회의실1L", capacity=8)
+        create_test_room(name="회의실 1S", capacity=4)
+        create_test_room(name="회의실 1L", capacity=8)
         start_time = datetime(2024, 6, 16, 9, 0, 0)
         end_time = datetime(2024, 6, 16, 18, 0, 0)
 
         rooms = room_service.get_available_rooms_for_attendees(5, start_time, end_time)
 
         assert len(rooms) == 1
-        assert rooms[0].name == "회의실1L"
+        assert rooms[0].name == "회의실 1L"
 
 
 def test_room_checkout_request_and_approval_completes_without_delay_penalty(
@@ -173,6 +173,32 @@ def test_room_checkout_request_and_approval_completes_without_delay_penalty(
         assert auth_service.get_user(user.id).penalty_points == 0
 
 
+def test_room_daily_modify_blocks_already_started_reservation(
+    room_service, create_test_user, create_test_room, mock_now
+):
+    with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
+        user = create_test_user()
+        room = create_test_room(capacity=6)
+        booking = room_service.create_daily_booking(
+            user=user,
+            room_id=room.id,
+            start_date=date(2024, 6, 16),
+            end_date=date(2024, 6, 16),
+            attendee_count=4,
+        )
+
+    with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+        with pytest.raises(RoomBookingError) as exc_info:
+            room_service.modify_daily_booking(
+                user=user,
+                booking_id=booking.id,
+                start_date=date(2024, 6, 17),
+                end_date=date(2024, 6, 17),
+            )
+
+        assert "이미 시작된 예약은 변경할 수 없습니다." in str(exc_info.value)
+
+
 def test_equipment_return_request_and_approval_completes_without_delay_penalty(
     equipment_service, auth_service, create_test_user, create_test_equipment, mock_now
 ):
@@ -202,3 +228,25 @@ def test_equipment_return_request_and_approval_completes_without_delay_penalty(
         assert approved.status == EquipmentBookingStatus.RETURNED
         assert delay_minutes == 0
         assert auth_service.get_user(user.id).penalty_points == 0
+
+
+def test_equipment_return_request_is_allowed_before_end_boundary(
+    equipment_service, create_test_user, create_test_equipment, mock_now
+):
+    with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
+        user = create_test_user()
+        admin = create_test_user(username="admin_early_return", role=UserRole.ADMIN)
+        equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
+        booking = equipment_service.create_daily_booking(
+            user=user,
+            equipment_id=equipment.id,
+            start_date=date(2024, 6, 16),
+            end_date=date(2024, 6, 16),
+        )
+
+    with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+        equipment_service.request_pickup(user, booking.id)
+        equipment_service.checkout(admin, booking.id)
+        requested = equipment_service.request_return(user, booking.id)
+
+    assert requested.status == EquipmentBookingStatus.RETURN_REQUESTED

@@ -246,7 +246,7 @@ class TestUserMenuRequestableLists:
         fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
         user = create_test_user(username="room_ckin_user")
-        room = create_test_room(name="회의실2A")
+        room = create_test_room(name="회의실 2A")
 
         eligible = room_booking_factory(
             user_id=user.id,
@@ -298,7 +298,7 @@ class TestUserMenuRequestableLists:
         fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
         user = create_test_user(username="room_ckin_empty")
-        room = create_test_room(name="회의실2C")
+        room = create_test_room(name="회의실 2C")
 
         future_booking = room_booking_factory(
             user_id=user.id,
@@ -339,16 +339,16 @@ class TestUserMenuRequestableLists:
         room_booking_repo,
         room_booking_factory,
     ):
-        fixed_time = datetime(2026, 4, 15, 18, 0, 0)
+        fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
         user = create_test_user(username="room_ckout_user")
-        room = create_test_room(name="회의실2B")
+        room = create_test_room(name="회의실 2B")
 
         eligible = room_booking_factory(
             user_id=user.id,
             room_id=room.id,
             start_time=fixed_time.replace(hour=9).isoformat(),
-            end_time=fixed_time.isoformat(),
+            end_time=(fixed_time + timedelta(days=1)).replace(hour=18).isoformat(),
             status=RoomBookingStatus.CHECKED_IN,
         )
         ineligible = room_booking_factory(
@@ -356,7 +356,7 @@ class TestUserMenuRequestableLists:
             room_id=room.id,
             start_time=fixed_time.replace(hour=9).isoformat(),
             end_time=(fixed_time + timedelta(days=1)).isoformat(),
-            status=RoomBookingStatus.CHECKED_IN,
+            status=RoomBookingStatus.CHECKOUT_REQUESTED,
         )
         with global_lock():
             room_booking_repo.add(eligible)
@@ -391,17 +391,17 @@ class TestUserMenuRequestableLists:
         room_booking_repo,
         room_booking_factory,
     ):
-        fixed_time = datetime(2026, 4, 15, 18, 0, 0)
+        fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
         user = create_test_user(username="room_ckout_empty")
-        room = create_test_room(name="회의실2D")
+        room = create_test_room(name="회의실 2D")
 
         not_yet_due = room_booking_factory(
             user_id=user.id,
             room_id=room.id,
             start_time=fixed_time.replace(hour=9).isoformat(),
             end_time=(fixed_time + timedelta(days=1)).isoformat(),
-            status=RoomBookingStatus.CHECKED_IN,
+            status=RoomBookingStatus.RESERVED,
         )
         with global_lock():
             room_booking_repo.add(not_yet_due)
@@ -420,6 +420,53 @@ class TestUserMenuRequestableLists:
         menu._request_room_checkout()
 
         assert messages == ["퇴실 신청 가능한 회의실 예약이 없습니다."]
+
+    def test_modify_room_booking_blocks_already_started_reservation(
+        self,
+        monkeypatch,
+        fake_clock,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        room_booking_factory,
+    ):
+        fixed_time = datetime(2026, 4, 15, 9, 0, 0)
+        fake_clock(fixed_time)
+        user = create_test_user(username="room_modify_started")
+        room = create_test_room(name="회의실 2E")
+        booking = room_booking_factory(
+            user_id=user.id,
+            room_id=room.id,
+            start_time=fixed_time.isoformat(),
+            end_time=fixed_time.replace(hour=18).isoformat(),
+            status=RoomBookingStatus.RESERVED,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
+
+        menu = self._make_menu(
+            user,
+            auth_service,
+            room_service,
+            equipment_service,
+            penalty_service,
+            policy_service,
+        )
+
+        monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+        monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.user_menu.select_from_list", lambda *_: booking.id)
+        messages = []
+        monkeypatch.setattr("src.cli.user_menu.print_error", messages.append)
+
+        menu._modify_room_booking()
+
+        assert messages == ["이미 시작된 예약은 변경할 수 없습니다."]
 
     def test_equipment_pickup_lists_only_currently_requestable_bookings(
         self,
@@ -531,7 +578,7 @@ class TestUserMenuRequestableLists:
         equipment_booking_repo,
         equipment_booking_factory,
     ):
-        fixed_time = datetime(2026, 4, 15, 18, 0, 0)
+        fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
         user = create_test_user(username="equip_return_usr")
         equipment = create_test_equipment(name="노트북A")
@@ -540,7 +587,7 @@ class TestUserMenuRequestableLists:
             user_id=user.id,
             equipment_id=equipment.id,
             start_time=fixed_time.replace(hour=9).isoformat(),
-            end_time=fixed_time.isoformat(),
+            end_time=fixed_time.replace(hour=18).isoformat(),
             status=EquipmentBookingStatus.CHECKED_OUT,
         )
         ineligible = equipment_booking_factory(
@@ -548,7 +595,7 @@ class TestUserMenuRequestableLists:
             equipment_id=equipment.id,
             start_time=fixed_time.replace(hour=9).isoformat(),
             end_time=(fixed_time + timedelta(days=1)).isoformat(),
-            status=EquipmentBookingStatus.CHECKED_OUT,
+            status=EquipmentBookingStatus.RETURN_REQUESTED,
         )
         with global_lock():
             equipment_booking_repo.add(eligible)
@@ -583,7 +630,7 @@ class TestUserMenuRequestableLists:
         equipment_booking_repo,
         equipment_booking_factory,
     ):
-        fixed_time = datetime(2026, 4, 15, 18, 0, 0)
+        fixed_time = datetime(2026, 4, 15, 9, 0, 0)
         fake_clock(fixed_time)
         user = create_test_user(username="equip_return_emp")
         equipment = create_test_equipment(name="노트북B")
@@ -593,7 +640,7 @@ class TestUserMenuRequestableLists:
             equipment_id=equipment.id,
             start_time=fixed_time.replace(hour=9).isoformat(),
             end_time=(fixed_time + timedelta(days=1)).isoformat(),
-            status=EquipmentBookingStatus.CHECKED_OUT,
+            status=EquipmentBookingStatus.RETURN_REQUESTED,
         )
         with global_lock():
             equipment_booking_repo.add(not_yet_due)

@@ -24,6 +24,7 @@ from src.storage.repositories import (
     RoomRepository,
     RoomBookingRepository,
     EquipmentBookingRepository,
+    PenaltyRepository,
     AuditLogRepository,
     UnitOfWork,
 )
@@ -32,10 +33,6 @@ from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_ACTIVE_ROOM_BOOKINGS,
     LATE_CANCEL_THRESHOLD_MINUTES,
-    FIXED_BOOKING_START_HOUR,
-    FIXED_BOOKING_START_MINUTE,
-    FIXED_BOOKING_END_HOUR,
-    FIXED_BOOKING_END_MINUTE,
 )
 from src.domain.field_rules import validate_reason_text
 
@@ -92,6 +89,9 @@ class RoomService:
         self.audit_repo = audit_repo or AuditLogRepository()
         self.penalty_service = penalty_service or PenaltyService(
             user_repo=self.user_repo,
+            penalty_repo=PenaltyRepository(
+                file_path=self.user_repo.file_path.parent / 'penalties.txt'
+            ),
             audit_repo=self.audit_repo,
             clock=self.clock,
         )
@@ -138,6 +138,7 @@ class RoomService:
 
         PolicyService(
             user_repo=self.user_repo,
+            room_repo=self.room_repo,
             room_booking_repo=self.booking_repo,
             equipment_booking_repo=self.equipment_booking_repo,
             penalty_repo=self.penalty_service.penalty_repo,
@@ -289,6 +290,9 @@ class RoomService:
                         f"'{booking.status.value}' 상태의 예약은 변경할 수 없습니다."
                     )
 
+                if datetime.fromisoformat(booking.start_time) <= self.clock.now():
+                    raise RoomBookingError("이미 시작된 예약은 변경할 수 없습니다.")
+
                 valid, error, _ = validate_daily_booking_dates(
                     start_date, end_date, self.clock.now()
                 )
@@ -340,6 +344,9 @@ class RoomService:
                 booking_user = self.user_repo.get_by_id(booking.user_id)
                 if booking_user is None:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
+
+                if datetime.fromisoformat(booking.start_time) <= self.clock.now():
+                    raise RoomBookingError("이미 시작된 예약은 변경할 수 없습니다.")
 
                 valid, error, _ = validate_daily_booking_dates(
                     start_date, end_date, self.clock.now()
@@ -454,30 +461,15 @@ class RoomService:
         if start_time.minute % 30 != 0 or end_time.minute % 30 != 0:
             raise RoomBookingError("시간은 30분 단위로만 입력 가능합니다.")
 
-        normalized_start = datetime.combine(
-            start_time.date(),
-            datetime.min.time().replace(
-                hour=FIXED_BOOKING_START_HOUR,
-                minute=FIXED_BOOKING_START_MINUTE,
-            ),
-        )
-        normalized_end = datetime.combine(
-            end_time.date(),
-            datetime.min.time().replace(
-                hour=FIXED_BOOKING_END_HOUR,
-                minute=FIXED_BOOKING_END_MINUTE,
-            ),
-        )
-
         today = now.date()
-        if normalized_start.date() < today:
+        if start_time.date() < today:
             raise RoomBookingError("과거 시간은 선택할 수 없습니다.")
-        if normalized_start.date() > today + timedelta(days=180):
+        if start_time.date() > today + timedelta(days=180):
             raise RoomBookingError("예약 시작일은 오늘로부터 180일 이내여야 합니다.")
-        duration_days = (normalized_end.date() - normalized_start.date()).days + 1
+        duration_days = (end_time.date() - start_time.date()).days + 1
         if duration_days > 14:
             raise RoomBookingError("예약 기간은 최대 14일까지 가능합니다.")
-        return normalized_start, normalized_end
+        return start_time, end_time
 
     def modify_booking(self, user, booking_id, new_start_time, new_end_time):
         """
@@ -508,6 +500,9 @@ class RoomService:
                         f"'{booking.status.value}' 상태의 예약은 변경할 수 없습니다. "
                         "예약 대기(reserved) 상태만 변경 가능합니다."
                     )
+
+                if datetime.fromisoformat(booking.start_time) <= self.clock.now():
+                    raise RoomBookingError("이미 시작된 예약은 변경할 수 없습니다.")
 
                 new_start_time, new_end_time = self._validate_booking_time(
                     new_start_time, new_end_time
@@ -618,6 +613,9 @@ class RoomService:
                 booking_user = self.user_repo.get_by_id(booking.user_id)
                 if booking_user is None:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
+
+                if datetime.fromisoformat(booking.start_time).date() == self.clock.now().date():
+                    raise RoomBookingError("당일 예약은 취소할 수 없습니다.")
 
                 updated = replace(
                     booking,
@@ -767,44 +765,7 @@ class RoomService:
             return updated
 
     def check_out(self, admin, booking_id):
-        admin = self._get_existing_admin(admin)
-        with global_lock(), UnitOfWork():
-            booking = self.booking_repo.get_by_id(booking_id)
-            if booking is None:
-                raise RoomBookingError("존재하지 않는 예약입니다.")
-
-            if booking.status != RoomBookingStatus.CHECKED_IN:
-                raise RoomBookingError(
-                    f"'{booking.status.value}' 상태의 예약은 퇴실 처리할 수 없습니다."
-                )
-
-            end_time = datetime.fromisoformat(booking.end_time)
-            self._require_current_boundary(end_time, "퇴실 처리")
-            delay_minutes = 0
-
-            updated = replace(
-                booking,
-                status=RoomBookingStatus.COMPLETED,
-                completed_at=now_iso(),
-                updated_at=now_iso(),
-            )
-
-            self.booking_repo.update(updated)
-
-            self.audit_repo.log_action(
-                actor_id=admin.id,
-                action="room_check_out",
-                target_type="room_booking",
-                target_id=booking_id,
-                details=f"지연: {delay_minutes}분",
-            )
-
-            booking_user = self.user_repo.get_by_id(booking.user_id)
-            if booking_user is None:
-                raise RoomBookingError("존재하지 않는 사용자입니다.")
-            self.penalty_service.record_normal_use(booking_user)
-
-            return updated, delay_minutes
+        return self.approve_checkout_request(admin, booking_id)
 
     def force_complete_checkout(self, admin, booking_id):
         admin = self._get_existing_admin(admin)

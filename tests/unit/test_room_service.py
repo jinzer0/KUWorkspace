@@ -12,6 +12,7 @@
 
 import pytest
 from datetime import datetime, timedelta
+from uuid import uuid4
 from dataclasses import replace
 
 from src.domain.room_service import AdminRequiredError, RoomBookingError
@@ -23,6 +24,7 @@ from src.domain.models import (
     UserRole,
 )
 from src.storage.file_lock import global_lock
+from src.storage.integrity import DataIntegrityError
 
 
 class TestCreateBooking:
@@ -179,7 +181,7 @@ class TestCreateBooking:
             rooms = []
             with global_lock():
                 for i in range(2):
-                    room = room_factory(name=f"회의실{i}C")
+                    room = room_factory(name=f"회의실 {i}C")
                     room_repo.add(room)
                     rooms.append(room)
 
@@ -208,7 +210,7 @@ class TestCreateBooking:
 
         with mock_now(fixed_time):
             user = create_test_user()
-            rooms = [create_test_room(name=f"회의실{i}D") for i in range(2)]
+            rooms = [create_test_room(name=f"회의실 {i}D") for i in range(2)]
 
             room_service.create_booking(
                 user,
@@ -236,6 +238,7 @@ class TestCreateBooking:
         create_test_room,
         equipment_booking_repo,
         equipment_booking_factory,
+        create_test_equipment,
         mock_now,
     ):
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
@@ -246,9 +249,11 @@ class TestCreateBooking:
                 restriction_until=(fixed_time + timedelta(days=7)).isoformat(),
             )
             room = create_test_room()
+            equipment = create_test_equipment()
 
             existing = equipment_booking_factory(
                 user_id=user.id,
+                equipment_id=equipment.id,
                 start_time=(fixed_time + timedelta(hours=1)).isoformat(),
                 end_time=(fixed_time + timedelta(days=1)).isoformat(),
                 status=EquipmentBookingStatus.RESERVED,
@@ -403,7 +408,8 @@ class TestModifyBooking:
             )
 
             assert modified.id == booking.id
-            assert datetime.fromisoformat(modified.start_time).hour == 9
+            assert datetime.fromisoformat(modified.start_time) == fixed_time + timedelta(hours=3)
+            assert datetime.fromisoformat(modified.end_time) == fixed_time + timedelta(hours=4)
 
     def test_modify_booking_not_owner(
         self, room_service, create_test_user, create_test_room, mock_now
@@ -473,7 +479,7 @@ class TestModifyBooking:
     def test_modify_booking_runs_policy_checks_before_action(
         self, room_service, auth_service, create_test_user, create_test_room, mock_now
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -485,7 +491,7 @@ class TestModifyBooking:
                 fixed_time + timedelta(hours=2),
             )
 
-        with mock_now(datetime(2024, 6, 15, 11, 16, 0)):
+        with mock_now(datetime(2024, 6, 15, 8, 16, 0)):
             modified = room_service.modify_booking(
                 user,
                 booking.id,
@@ -632,7 +638,7 @@ class TestCheckInOut:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
             booking = RoomBooking(
-                id="room-checkin-boundary",
+                id=str(uuid4()),
                 user_id=user.id,
                 room_id=room.id,
                 start_time=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
@@ -663,7 +669,7 @@ class TestCheckInOut:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
             booking = RoomBooking(
-                id="room-missing-user-checkin",
+                id=str(uuid4()),
                 user_id="missing-user",
                 room_id=room.id,
                 start_time=fixed_time.isoformat(),
@@ -675,10 +681,10 @@ class TestCheckInOut:
                 room_booking_repo.add(booking)
 
         with mock_now(fixed_time):
-            with pytest.raises(RoomBookingError) as exc_info:
+            with pytest.raises(DataIntegrityError) as exc_info:
                 room_service.check_in(admin, booking.id)
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+            assert "users.txt" in str(exc_info.value)
 
     def test_default_room_service_keeps_reserved_booking_without_auto_start_penalty(
         self,
@@ -753,7 +759,8 @@ class TestCheckInOut:
         # 12:00에 퇴실 (종료 시간 정각)
         checkout_time = datetime(2024, 6, 15, 18, 0, 0)
         with mock_now(checkout_time):
-            completed, delay = room_service.check_out(admin, booking.id)
+            room_service.request_checkout(user, booking.id)
+            completed, delay = room_service.approve_checkout_request(admin, booking.id)
 
             assert completed.status == RoomBookingStatus.COMPLETED
             assert delay == 0
@@ -788,8 +795,9 @@ class TestCheckInOut:
 
         late_time = datetime(2024, 6, 15, 18, 30, 0)
         with mock_now(late_time):
+            room_service.request_checkout(user, booking.id)
             with pytest.raises(RoomBookingError) as exc_info:
-                room_service.check_out(admin, booking.id)
+                room_service.approve_checkout_request(admin, booking.id)
             assert "현재 운영 시점" in str(exc_info.value)
 
     def test_check_out_missing_booking_user_fails(
@@ -811,14 +819,15 @@ class TestCheckInOut:
                 room_id=room.id,
                 start_time=fixed_time.isoformat(),
                 end_time=fixed_time.replace(hour=18).isoformat(),
-                status=RoomBookingStatus.CHECKED_IN,
+                status=RoomBookingStatus.CHECKOUT_REQUESTED,
+                requested_checkout_at=fixed_time.replace(hour=18).isoformat(),
             )
             with global_lock():
                 room_booking_repo.add(booking)
 
         with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
             with pytest.raises(RoomBookingError) as exc_info:
-                room_service.check_out(admin, booking.id)
+                room_service.approve_checkout_request(admin, booking.id)
 
             assert "존재하지 않는 사용자" in str(exc_info.value)
 
@@ -875,6 +884,28 @@ class TestAdminFunctions:
 
             assert cancelled.status == RoomBookingStatus.ADMIN_CANCELLED
 
+    def test_admin_cancel_booking_blocks_same_day_booking(
+        self, room_service, create_test_user, create_test_room, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            admin = create_test_user(username="admin_same_day", role=UserRole.ADMIN)
+            room = create_test_room()
+
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time.replace(hour=18),
+                fixed_time + timedelta(days=1),
+            )
+
+            with pytest.raises(RoomBookingError) as exc_info:
+                room_service.admin_cancel_booking(admin, booking.id, "시설 점검")
+
+            assert "당일 예약은 취소할 수 없습니다." in str(exc_info.value)
+
     def test_admin_cancel_booking_missing_owner_fails(
         self,
         room_service,
@@ -889,7 +920,7 @@ class TestAdminFunctions:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
             booking = RoomBooking(
-                id="room-admin-cancel-missing-user",
+                id=str(uuid4()),
                 user_id="missing-user",
                 room_id=room.id,
                 start_time=(fixed_time + timedelta(hours=1)).isoformat(),
@@ -899,10 +930,10 @@ class TestAdminFunctions:
             with global_lock():
                 room_booking_repo.add(booking)
 
-            with pytest.raises(RoomBookingError) as exc_info:
+            with pytest.raises(DataIntegrityError) as exc_info:
                 room_service.admin_cancel_booking(admin, booking.id, "시설 점검")
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+            assert "users.txt" in str(exc_info.value)
 
     def test_admin_modify_booking(
         self, room_service, create_test_user, create_test_room, mock_now
@@ -929,7 +960,34 @@ class TestAdminFunctions:
                 fixed_time + timedelta(days=4),
             )
 
-            assert datetime.fromisoformat(modified.start_time).hour == 9
+            assert datetime.fromisoformat(modified.start_time) == fixed_time + timedelta(days=3)
+            assert datetime.fromisoformat(modified.end_time) == fixed_time + timedelta(days=4)
+
+    def test_admin_modify_daily_booking_blocks_started_booking(
+        self, room_service, create_test_user, create_test_room, mock_now
+    ):
+        with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
+            user = create_test_user()
+            admin = create_test_user(username="admin_daily_started", role=UserRole.ADMIN)
+            room = create_test_room()
+            booking = room_service.create_daily_booking(
+                user=user,
+                room_id=room.id,
+                start_date=datetime(2024, 6, 16).date(),
+                end_date=datetime(2024, 6, 16).date(),
+                attendee_count=4,
+            )
+
+        with mock_now(datetime(2024, 6, 16, 9, 0, 0)):
+            with pytest.raises(RoomBookingError) as exc_info:
+                room_service.admin_modify_daily_booking(
+                    admin,
+                    booking.id,
+                    datetime(2024, 6, 17).date(),
+                    datetime(2024, 6, 17).date(),
+                )
+
+            assert "이미 시작된 예약은 변경할 수 없습니다." in str(exc_info.value)
 
     def test_admin_modify_booking_missing_owner_fails(
         self,
@@ -945,7 +1003,7 @@ class TestAdminFunctions:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             room = create_test_room()
             booking = RoomBooking(
-                id="room-admin-modify-missing-user",
+                id=str(uuid4()),
                 user_id="missing-user",
                 room_id=room.id,
                 start_time=(fixed_time + timedelta(hours=1)).isoformat(),
@@ -955,7 +1013,7 @@ class TestAdminFunctions:
             with global_lock():
                 room_booking_repo.add(booking)
 
-            with pytest.raises(RoomBookingError) as exc_info:
+            with pytest.raises(DataIntegrityError) as exc_info:
                 room_service.admin_modify_booking(
                     admin,
                     booking.id,
@@ -963,7 +1021,7 @@ class TestAdminFunctions:
                     fixed_time + timedelta(hours=4),
                 )
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+            assert "users.txt" in str(exc_info.value)
 
     def test_admin_modify_booking_rejects_checked_in_status(
         self,
@@ -1083,9 +1141,9 @@ class TestAdminFunctions:
         with mock_now(fixed_time):
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             user = create_test_user(username="user1")
-            room_in_use = create_test_room(name="회의실4A")
-            room_reserved = create_test_room(name="회의실4B")
-            room_empty = create_test_room(name="회의실4C")
+            room_in_use = create_test_room(name="회의실 4A")
+            room_reserved = create_test_room(name="회의실 4B")
+            room_empty = create_test_room(name="회의실 4C")
 
             with global_lock():
                 room_service.booking_repo.add(
@@ -1148,7 +1206,7 @@ class TestAdminFunctions:
         with mock_now(fixed_time):
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             user = create_test_user(username="user1")
-            room = create_test_room(name="회의실4D")
+            room = create_test_room(name="회의실 4D")
 
             with global_lock():
                 room_service.booking_repo.add(
@@ -1176,7 +1234,7 @@ class TestAdminFunctions:
         with mock_now(fixed_time):
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             user = create_test_user(username="user1")
-            room = create_test_room(name="회의실4E")
+            room = create_test_room(name="회의실 4E")
 
             with global_lock():
                 room_service.booking_repo.add(

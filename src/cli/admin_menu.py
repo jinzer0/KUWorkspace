@@ -30,6 +30,7 @@ from src.config import (
     FIXED_BOOKING_END_MINUTE,
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
+    LATE_CANCEL_THRESHOLD_MINUTES,
 )
 from src.cli.menu import confirm, pause, select_from_list
 from src.cli.clock_menu import ClockMenu
@@ -118,7 +119,7 @@ class AdminMenu:
     def _get_room_bookings_or_abort(self):
         try:
             return self.room_service.get_all_bookings(self.user)
-        except (RoomAdminRequiredError, AuthError) as e:
+        except (RoomBookingError, RoomAdminRequiredError, AuthError) as e:
             print_error(str(e))
             pause()
             return None
@@ -182,9 +183,9 @@ class AdminMenu:
             print("  13. 사용자 목록")
             print("  14. 사용자 상세 조회")
             print("  15. 파손/오염 패널티 부여")
-            print("  16. 예약 직전 취소 패널티 부여")
-            print("  17. 회의실 퇴실 지연 처리")
-            print("  18. 장비 반납 지연 처리")
+            print("  16. 회의실 퇴실 지연 처리")
+            print("  17. 장비 반납 지연 처리")
+            print("  18. 예약 직전 취소 패널티 부여")
             print("  19. 운영 시계")
 
             print("\n  0. 로그아웃")
@@ -193,8 +194,7 @@ class AdminMenu:
             choice = input("선택: ").strip()
 
             if choice == "1":
-                # 기존 self._show_rooms() 와 self._show_all_room_bookings() 를 합침
-                self._show_room_overview()
+                self._show_all_room_bookings()
             elif choice == "2":
                 self._show_rooms_and_change_status()
             elif choice == "3":
@@ -225,13 +225,17 @@ class AdminMenu:
             elif choice == "15":
                 self._apply_damage_penalty()
             elif choice == "16":
-                self._force_late_cancel_penalty()
+                self._apply_fixed_penalty("late_checkout")
             elif choice == "17":
-                self._force_room_late_checkout()
+                self._apply_fixed_penalty("late_return")
             elif choice == "18":
-                self._force_equipment_late_return()
+                self._apply_fixed_penalty("late_cancel")
             elif choice == "19":
-                ClockMenu(self.policy_service, actor_id=self.user.id).run()
+                ClockMenu(
+                    self.policy_service,
+                    actor_id=self.user.id,
+                    actor_role="admin",
+                ).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
                     print_success("로그아웃 되었습니다.")
@@ -391,13 +395,11 @@ class AdminMenu:
         print("\n변경할 상태:")
         print("  1. 사용가능 (available)")
         print("  2. 점검중 (maintenance)")
-        print("  3. 사용불가 (disabled)")
 
         choice = input("\n선택: ").strip()
         status_map = {
             "1": ResourceStatus.AVAILABLE,
             "2": ResourceStatus.MAINTENANCE,
-            "3": ResourceStatus.DISABLED,
         }
 
         if choice not in status_map:
@@ -413,10 +415,10 @@ class AdminMenu:
             pause()
             return
 
-        if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
-            print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
-            if not confirm("계속하시겠습니까?"):
-                return
+        if new_status == ResourceStatus.MAINTENANCE:
+            print_warning("점검중으로 변경 시 미래 예약이 자동 취소됩니다.")
+        if not confirm("정말로 수정하시겠습니까?"):
+            return
 
         try:
             room, cancelled = self.room_service.update_room_status(
@@ -434,32 +436,7 @@ class AdminMenu:
 
     def _show_all_room_bookings(self):
         """전체 회의실 예약 조회"""
-        print_header("회의실 목록")
-
-        overview = self._get_room_overview_or_abort()
-        if overview is None:
-            return
-        if not overview:
-            print_info("등록된 회의실이 없습니다.")
-            pause()
-            return
-
-        headers = ["이름", "수용인원", "위치", "현황", "예약일"]
-        rows = []
-        for item in overview:
-            rows.append(
-                [
-                    item.room_name,
-                    f"{item.capacity}명",
-                    item.location,
-                    item.operational_status,
-                    item.reservation_summary,
-                ]
-            )
-
-        print(format_table(headers, rows))
-
-        pause()
+        self._show_room_overview()
 
     def _room_checkin(self):
         """회의실 체크인 처리"""
@@ -494,9 +471,12 @@ class AdminMenu:
         if not booking_id:
             return
 
+        if not confirm("승인 처리하시겠습니까?"):
+            return
+
         try:
             booking = self.room_service.check_in(self.user, booking_id)
-            print_success("체크인 처리되었습니다.")
+            print_success("체크인 처리됐습니다.")
         except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
             print_error(str(e))
 
@@ -534,6 +514,9 @@ class AdminMenu:
 
         booking_id = select_from_list(items, "퇴실 승인할 예약 선택")
         if not booking_id:
+            return
+
+        if not confirm("퇴실 승인 처리하시겠습니까?"):
             return
 
         try:
@@ -611,12 +594,12 @@ class AdminMenu:
         room_bookings = [
             b
             for b in (self.room_service.get_user_bookings(user.id) or [])
-            if b.status == RoomBookingStatus.CANCELLED
+            if b.status == RoomBookingStatus.CANCELLED and self._is_late_cancelled_booking(b)
         ]
         equip_bookings = [
             b
             for b in (self.equipment_service.get_user_bookings(user.id) or [])
-            if b.status == EquipmentBookingStatus.CANCELLED
+            if b.status == EquipmentBookingStatus.CANCELLED and self._is_late_cancelled_booking(b)
         ]
 
         items = [(b.id, f"회의실 / {format_booking_time_range(b.start_time, b.end_time)}") for b in room_bookings]
@@ -651,6 +634,15 @@ class AdminMenu:
             print_error(str(e))
 
         pause()
+
+    def _is_late_cancelled_booking(self, booking):
+        if not booking.cancelled_at:
+            return False
+        cancelled_at = datetime.fromisoformat(booking.cancelled_at)
+        start_time = datetime.fromisoformat(booking.start_time)
+        if cancelled_at >= start_time:
+            return True
+        return (start_time - cancelled_at).total_seconds() / 60 <= LATE_CANCEL_THRESHOLD_MINUTES
 
 
     def _admin_modify_or_swap_room_booking(self):
@@ -783,18 +775,7 @@ class AdminMenu:
         if not confirm("교체하시겠습니까?"):
             return
 
-        try:
-            updated_booking = self.room_service.admin_reassign_active_booking(
-                admin=self.user,
-                booking_id=booking_id,
-                new_room_id=new_room_id,
-                reason=reason,
-            )
-            print_success(
-                f"회의실이 교체되었습니다: {current_room.name if current_room else '-'} → {new_room.name}"
-            )
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
+        print_info("활성 회의실 예약 교체는 현재 서비스 계층에서 지원되지 않습니다.")
 
         pause()
 
@@ -805,7 +786,13 @@ class AdminMenu:
         all_bookings = self._get_room_bookings_or_abort()
         if all_bookings is None:
             return
-        modifiable = [b for b in all_bookings if b.status == RoomBookingStatus.RESERVED]
+        now = self.policy_service.clock.now()
+        modifiable = [
+            b
+            for b in all_bookings
+            if b.status == RoomBookingStatus.RESERVED
+            and datetime.fromisoformat(b.start_time) > now
+        ]
 
         if not modifiable:
             print_info("변경 가능한 예약이 없습니다.")
@@ -872,12 +859,23 @@ class AdminMenu:
             items.append(
                 (
                     booking.id,
-                    f"{room.name if room else '-'} / {user.username} / {format_status_badge(booking.status.value)}",
+                    f"{room.name if room else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
                 )
             )
 
         booking_id = select_from_list(items, "취소할 예약 선택")
         if not booking_id:
+            return
+
+        selected_booking = next((b for b in cancellable if b.id == booking_id), None)
+        if selected_booking is None:
+            print_error("선택한 예약을 찾을 수 없습니다.")
+            pause()
+            return
+
+        if datetime.fromisoformat(selected_booking.start_time).date() == self.policy_service.clock.now().date():
+            print_error("당일 예약은 취소할 수 없습니다.")
+            pause()
             return
 
         reason = input("취소 사유: ").strip()
@@ -898,34 +896,40 @@ class AdminMenu:
 
         pause()
 
-    def _show_equipment_and_change_status(self):
-        """장비 목록 조회 및 상태 변경 (통합)"""
-        while True:
-            print_header("장비 목록")
+    def _show_equipment(self):
+        """장비 목록 조회"""
+        print_header("장비 목록")
 
-            equipment_list = self.equipment_service.get_all_equipment()
+        equipment_list = self.equipment_service.get_all_equipment()
+        if not equipment_list:
+            print_info("등록된 장비가 없습니다.")
+            pause()
+            return None
+
+        equipment_list.sort(key=lambda e: e.serial_number)
+
+        status_label = {
+            "available": "[사용가능]",
+            "maintenance": "[점검중]",
+            "disabled": "[사용불가]",
+        }
+
+        headers = ["번호", "이름", "종류", "시리얼번호", "상태"]
+        rows = []
+        for i, equip in enumerate(equipment_list, 1):
+            label = status_label.get(equip.status.value, f"[{equip.status.value}]")
+            rows.append([str(i), equip.name, equip.asset_type, equip.serial_number, label])
+
+        print(format_table(headers, rows))
+        return equipment_list
+
+    def _change_equipment_status(self):
+        """장비 상태 변경"""
+        while True:
+            equipment_list = self._show_equipment()
             if not equipment_list:
-                print_info("등록된 장비가 없습니다.")
-                pause()
                 return
 
-            # 시리얼번호 오름차순 정렬
-            equipment_list.sort(key=lambda e: e.serial_number)
-
-            # 상태 한글 매핑
-            status_label = {
-                "available": "[사용가능]",
-                "maintenance": "[점검중]",
-                "disabled": "[사용불가]",
-            }
-
-            headers = ["번호", "이름", "종류", "시리얼번호", "상태"]
-            rows = []
-            for i, equip in enumerate(equipment_list, 1):
-                label = status_label.get(equip.status.value, f"[{equip.status.value}]")
-                rows.append([str(i), equip.name, equip.asset_type, equip.serial_number, label])
-
-            print(format_table(headers, rows))
             print("\n  0. 메뉴로 돌아가기")
 
             # 가. 장비 선택
@@ -964,6 +968,15 @@ class AdminMenu:
                     new_status = status_map[raw2]
                     status_name = "사용가능" if raw2 == "1" else "점검중"
 
+                    current_time = self.policy_service.clock.now()
+                    if (
+                        new_status == ResourceStatus.MAINTENANCE
+                        and (current_time.hour, current_time.minute) != (18, 0)
+                    ):
+                        print_error("관리자가 장비를 [점검중] 으로 변경할 수 있는 시점은 18:00 입니다.")
+                        pause()
+                        return
+
                     # 다. 확인
                     print(f"\n  선택: {raw2}")
                     while True:
@@ -988,6 +1001,10 @@ class AdminMenu:
                     break
                 print("  목록에 존재하는 번호를 입력해주세요.")
 
+    def _show_equipment_and_change_status(self):
+        """장비 목록 조회 및 상태 변경"""
+        self._change_equipment_status()
+
     def _show_all_equipment_bookings(self):
         """전체 장비 예약 조회"""
         print_header("최근 장비 예약")
@@ -1005,6 +1022,7 @@ class AdminMenu:
                 EquipmentBookingStatus.RESERVED,
                 EquipmentBookingStatus.PICKUP_REQUESTED,
                 EquipmentBookingStatus.CHECKED_OUT,
+                EquipmentBookingStatus.RETURN_REQUESTED,
             )
         ]
 
@@ -1019,7 +1037,8 @@ class AdminMenu:
         # 상태 한글 매핑
         status_label = {
             EquipmentBookingStatus.CHECKED_OUT: "[사용중]",
-            EquipmentBookingStatus.PICKUP_REQUESTED: "[사용중]",
+            EquipmentBookingStatus.RETURN_REQUESTED: "[사용중]",
+            EquipmentBookingStatus.PICKUP_REQUESTED: "[예약있음]",
             EquipmentBookingStatus.RESERVED: "[예약있음]",
         }
 
@@ -1056,10 +1075,11 @@ class AdminMenu:
             return
 
         # 시리얼번호 오름차순 정렬
-        pending.sort(key=lambda b: (
-            self.equipment_service.get_equipment(b.equipment_id).serial_number
-            if self.equipment_service.get_equipment(b.equipment_id) else ""
-        ))
+        pending.sort(
+            key=lambda b: (
+                equip.serial_number if (equip := self.equipment_service.get_equipment(b.equipment_id)) else ""
+            )
+        )
 
         print()
         items = []
@@ -1122,10 +1142,11 @@ class AdminMenu:
             return
 
         # 시리얼번호 오름차순 정렬
-        requested.sort(key=lambda b: (
-            self.equipment_service.get_equipment(b.equipment_id).serial_number
-            if self.equipment_service.get_equipment(b.equipment_id) else ""
-        ))
+        requested.sort(
+            key=lambda b: (
+                equip.serial_number if (equip := self.equipment_service.get_equipment(b.equipment_id)) else ""
+            )
+        )
 
         print()
         items = []
@@ -1350,18 +1371,7 @@ class AdminMenu:
         if not confirm("교체하시겠습니까?"):
             return
 
-        try:
-            updated_booking = self.equipment_service.admin_reassign_active_booking(
-                admin=self.user,
-                booking_id=booking_id,
-                new_equipment_id=new_equipment_id,
-                reason=reason,
-            )
-            print_success(
-                f"장비가 교체되었습니다: {current_equipment.name if current_equipment else '-'} → {new_equipment.name}"
-            )
-        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
+        print_info("활성 장비 예약 교체는 현재 서비스 계층에서 지원되지 않습니다.")
 
         pause()
 
@@ -1561,19 +1571,18 @@ class AdminMenu:
             pause()
             return
 
-        headers = ["ID", "사용자명", "역할", "패널티", "상태"]
+        headers = ["사용자명", "역할", "패널티", "상태"]
         rows = []
         try:
             for user in users:
                 status = self.penalty_service.get_user_status(user)
                 state = (
-                    "이용금지"
+                    "금지"
                     if status.get("is_banned")
-                    else "제한중" if status.get("is_restricted") else "정상"
+                    else "제한" if status.get("is_restricted") else "정상"
                 )
                 rows.append(
                     [
-                        user.id[:8],
                         user.username,
                         format_status_badge(user.role.value),
                         f"{status['points']}점",
@@ -1627,8 +1636,9 @@ class AdminMenu:
             print(f"  누적 점수: {status['points']}점")
             print(f"  정상 이용 연속: {status.get('normal_use_streak', 0)}회")
 
-            if status.get("restriction_until"):
-                print(f"  제한 해제일: {status['restriction_until'][:10]}")
+            restriction_until = status.get("restriction_until")
+            if isinstance(restriction_until, str) and restriction_until:
+                print(f"  제한 해제일: {restriction_until[:10]}")
 
             print_subheader("활성 예약")
             room_active = self.room_service.get_user_active_bookings(user.id)
@@ -1777,7 +1787,7 @@ class AdminMenu:
         title = type_info.get(penalty_type, "패널티")
         print_header(f"{title} 패널티 부여")
         users = self.auth_service.get_all_users(self.user)
-        users = [u for u in users if u.username != "admin"]
+        users = [u for u in users if u.role == UserRole.USER]
         if not users:
             return
 
@@ -1790,6 +1800,85 @@ class AdminMenu:
         if not user:
             print_error("사용자를 찾을 수 없습니다.")
             pause()
+            return
+
+        try:
+            if penalty_type == "late_checkout":
+                bookings = self.room_service.get_user_bookings(user.id)
+                booking_type = "room_booking"
+                bookings = [
+                    b
+                    for b in bookings
+                    if b.status
+                    in {
+                        RoomBookingStatus.CHECKED_IN,
+                    }
+                    and b.end_time == self.policy_service.clock.now().isoformat()
+                ]
+            elif penalty_type == "late_return":
+                bookings = self.equipment_service.get_user_bookings(user.id)
+                booking_type = "equipment_booking"
+                bookings = [
+                    b
+                    for b in bookings
+                    if b.status
+                    in {
+                        EquipmentBookingStatus.CHECKED_OUT,
+                    }
+                    and b.end_time == self.policy_service.clock.now().isoformat()
+                ]
+            else:
+                print("\n예약 유형:")
+                print("  1. 회의실 예약")
+                print("  2. 장비 예약")
+                type_choice = input("\n선택: ").strip()
+                if type_choice == "1":
+                    bookings = self.room_service.get_user_bookings(user.id)
+                    booking_type = "room_booking"
+                    bookings = [
+                        b
+                        for b in bookings
+                        if b.status
+                        in {
+                            RoomBookingStatus.CANCELLED,
+                        }
+                        and self._is_late_cancelled_booking(b)
+                    ]
+                elif type_choice == "2":
+                    bookings = self.equipment_service.get_user_bookings(user.id)
+                    booking_type = "equipment_booking"
+                    bookings = [
+                        b
+                        for b in bookings
+                        if b.status
+                        in {
+                            EquipmentBookingStatus.CANCELLED,
+                        }
+                        and self._is_late_cancelled_booking(b)
+                    ]
+                else:
+                    print_error("잘못된 선택입니다.")
+                    pause()
+                    return
+        except (PenaltyError, RoomBookingError, EquipmentBookingError) as e:
+            print_error(str(e))
+            pause()
+            return
+
+        if not bookings:
+            print_info("예약 내역이 없습니다.")
+            pause()
+            return
+
+        booking_items = [
+            (
+                b.id,
+                f"{b.id[:8]} - {format_booking_time_range(b.start_time, b.end_time)} {format_status_badge(b.status.value)}",
+            )
+            for b in bookings[:20]
+        ]
+        booking_id = select_from_list(booking_items, "관련 예약 선택")
+        if not booking_id:
             return
 
         penalty_points = 2
@@ -1809,7 +1898,9 @@ class AdminMenu:
                 user=user,
                 penalty_type=penalty_type,
                 points=penalty_points,
-                memo=reason
+                memo=reason,
+                booking_type=booking_type,
+                booking_id=booking_id,
             )
             print_success(f"✓ 패널티가 부여되었습니다. (+{penalty.points}점)")
 

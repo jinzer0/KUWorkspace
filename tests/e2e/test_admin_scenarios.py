@@ -2,6 +2,7 @@
 
 import pytest
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 from src.domain.room_service import RoomBookingError
 from src.domain.penalty_service import PenaltyError
@@ -36,7 +37,8 @@ class TestAdminPenaltyManagement:
             room_service.check_in(admin, booking.id)
 
         with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
-            room_service.check_out(admin, booking.id)
+            room_service.request_checkout(user, booking.id)
+            room_service.approve_checkout_request(admin, booking.id)
 
             penalty = penalty_service.apply_damage(
                 admin=admin,
@@ -188,23 +190,24 @@ class TestAdminPolicyExecution:
         auth_service,
         policy_service,
         create_test_room,
+        create_test_user,
         room_booking_repo,
         fake_clock,
     ):
-        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 18, 0, 0)
         fake_clock(fixed_time)
-        user = auth_service.signup("late_cancel_user", "pass")
-        admin = auth_service.signup("clock_admin", "pass", role=UserRole.ADMIN)
+        user = create_test_user(username="late_cancel_user")
+        admin = create_test_user(username="clock_admin", role=UserRole.ADMIN)
         room = create_test_room()
 
         from src.domain.models import RoomBooking
 
         booking = RoomBooking(
-            id="late-cancel-booking",
+            id=str(uuid4()),
             user_id=user.id,
             room_id=room.id,
-            start_time=fixed_time.isoformat(),
-            end_time=fixed_time.replace(hour=18).isoformat(),
+            start_time=(fixed_time + timedelta(days=1)).replace(hour=9).isoformat(),
+            end_time=(fixed_time + timedelta(days=1)).replace(hour=18).isoformat(),
             status=RoomBookingStatus.RESERVED,
         )
         with global_lock():
