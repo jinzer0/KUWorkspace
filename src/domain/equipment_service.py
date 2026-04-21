@@ -25,6 +25,7 @@ from src.storage.repositories import (
     RoomBookingRepository,
     EquipmentAssetRepository,
     EquipmentBookingRepository,
+    PenaltyRepository,
     AuditLogRepository,
     UnitOfWork,
 )
@@ -33,8 +34,6 @@ from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
     LATE_CANCEL_THRESHOLD_MINUTES,
-    FIXED_BOOKING_START_HOUR,
-    FIXED_BOOKING_START_MINUTE,
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
 )
@@ -78,6 +77,9 @@ class EquipmentService:
         self.audit_repo = audit_repo or AuditLogRepository()
         self.penalty_service = penalty_service or PenaltyService(
             user_repo=self.user_repo,
+            penalty_repo=PenaltyRepository(
+                file_path=self.user_repo.file_path.parent / 'penalties.txt'
+            ),
             audit_repo=self.audit_repo,
             clock=self.clock,
         )
@@ -129,6 +131,7 @@ class EquipmentService:
             penalty_repo=self.penalty_service.penalty_repo,
             audit_repo=self.audit_repo,
             penalty_service=self.penalty_service,
+            equipment_repo=self.equipment_repo,
             clock=self.clock,
         ).run_all_checks()
 
@@ -443,13 +446,6 @@ class EquipmentService:
         if start_time.minute % 30 != 0 or end_time.minute % 30 != 0:
             raise EquipmentBookingError("시간은 30분 단위로만 입력 가능합니다.")
 
-        normalized_start = datetime.combine(
-            start_time.date(),
-            datetime.min.time().replace(
-                hour=FIXED_BOOKING_START_HOUR,
-                minute=FIXED_BOOKING_START_MINUTE,
-            ),
-        )
         normalized_end = datetime.combine(
             end_time.date(),
             datetime.min.time().replace(
@@ -459,14 +455,14 @@ class EquipmentService:
         )
 
         today = now.date()
-        if normalized_start.date() < today:
+        if start_time.date() < today:
             raise EquipmentBookingError("과거 시간은 선택할 수 없습니다.")
-        if normalized_start.date() > today + timedelta(days=180):
+        if start_time.date() > today + timedelta(days=180):
             raise EquipmentBookingError("예약 시작일은 오늘로부터 180일 이내여야 합니다.")
-        duration_days = (normalized_end.date() - normalized_start.date()).days + 1
+        duration_days = (normalized_end.date() - start_time.date()).days + 1
         if duration_days > 14:
             raise EquipmentBookingError("예약 기간은 최대 14일까지 가능합니다.")
-        return normalized_start, normalized_end
+        return start_time, normalized_end
 
     def modify_booking(self, user, booking_id, new_start_time, new_end_time):
         """
@@ -867,7 +863,6 @@ class EquipmentService:
                 raise EquipmentBookingError(
                     f"'{booking.status.value}' 상태의 예약은 반납 신청할 수 없습니다."
                 )
-            self._require_end_request_window(booking)
 
             updated = replace(
                 booking,
@@ -957,6 +952,14 @@ class EquipmentService:
             equipment = self.equipment_repo.get_by_id(equipment_id)
             if equipment is None:
                 raise EquipmentBookingError("존재하지 않는 장비입니다.")
+
+            if (
+                new_status == ResourceStatus.MAINTENANCE
+                and (self.clock.now().hour, self.clock.now().minute) != (18, 0)
+            ):
+                raise EquipmentBookingError(
+                    "관리자가 장비를 [점검중] 으로 변경할 수 있는 시점은 18:00 입니다."
+                )
 
             cancelled_bookings = []
 

@@ -272,7 +272,7 @@ class Room:
         )
 
 
-@dataclass
+@dataclass(init=False)
 class EquipmentAsset:
     """장비 자산 (개별 자산 단위 관리)
     
@@ -287,6 +287,37 @@ class EquipmentAsset:
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
+    def __init__(
+        self,
+        name: str,
+        asset_type: str,
+        serial_number: Optional[str] = None,
+        status: ResourceStatus = ResourceStatus.AVAILABLE,
+        description: str = "",
+        created_at: Optional[str] = None,
+        updated_at: Optional[str] = None,
+        **legacy_kwargs,
+    ) -> None:
+        legacy_id = legacy_kwargs.pop("id", None)
+        if legacy_kwargs:
+            unexpected = ", ".join(sorted(legacy_kwargs.keys()))
+            raise TypeError(f"Unexpected EquipmentAsset fields: {unexpected}")
+
+        normalized_serial = serial_number or legacy_id
+        if serial_number and legacy_id and serial_number != legacy_id:
+            raise ValueError("EquipmentAsset id and serial_number must match when both are provided")
+
+        if normalized_serial is None:
+            raise TypeError("EquipmentAsset requires serial_number or legacy id")
+
+        self.name = name
+        self.asset_type = asset_type
+        self.serial_number = normalized_serial
+        self.status = status
+        self.description = description
+        self.created_at = created_at if created_at is not None else now_iso()
+        self.updated_at = updated_at if updated_at is not None else now_iso()
+
     @property
     def id(self) -> str:
         """serial_number를 장비 ID로 사용"""
@@ -300,7 +331,11 @@ class EquipmentAsset:
     @classmethod
     def from_dict(cls, data: dict) -> "EquipmentAsset":
         data = data.copy()
-        data.pop("id", None)  # id 필드가 있으면 제거 (serial_number로 대체)
+        legacy_id = data.pop("id", None)
+        if "serial_number" not in data and legacy_id is not None:
+            data["serial_number"] = legacy_id
+        elif legacy_id is not None and data.get("serial_number") != legacy_id:
+            raise ValueError("EquipmentAsset id and serial_number must match when both are provided")
         data["status"] = ResourceStatus(data["status"])
         return cls(**data)
 
@@ -415,8 +450,10 @@ class RoomBooking:
             created_at,
             updated_at,
         ) = record
+        if not booking_id:
+            raise ValueError("room booking id는 비어 있을 수 없습니다.")
         return cls(
-            id=booking_id or generate_id(),
+            id=booking_id,
             user_id=user_id or "",
             room_id=room_id or "",
             start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
@@ -502,8 +539,10 @@ class EquipmentBooking:
             created_at,
             updated_at,
         ) = record
+        if not booking_id:
+            raise ValueError("equipment booking id는 비어 있을 수 없습니다.")
         return cls(
-            id=booking_id or generate_id(),
+            id=booking_id,
             user_id=user_id or "",
             equipment_id=equipment_id or "",
             start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
@@ -567,8 +606,10 @@ class Penalty:
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "Penalty":
         penalty_id, user_id, reason, points, related_type, related_id, memo, created_at, updated_at = record
+        if not penalty_id:
+            raise ValueError("penalty id는 비어 있을 수 없습니다.")
         return cls(
-            id=penalty_id or generate_id(),
+            id=penalty_id,
             user_id=user_id or "",
             reason=PenaltyReason(reason),
             points=int(points or "0"),
@@ -622,8 +663,10 @@ class AuditLog:
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "AuditLog":
         log_id, actor_id, action, target_type, target_id, details, created_at, updated_at = record
+        if not log_id:
+            raise ValueError("audit log id는 비어 있을 수 없습니다.")
         return cls(
-            id=log_id or generate_id(),
+            id=log_id,
             actor_id=actor_id or "",
             action=action or "",
             target_type=target_type or "",

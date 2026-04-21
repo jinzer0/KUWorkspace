@@ -11,6 +11,7 @@
 
 import pytest
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 from src.domain.equipment_service import EquipmentBookingError
 from src.domain.models import (
@@ -21,6 +22,7 @@ from src.domain.models import (
     UserRole,
 )
 from src.storage.file_lock import global_lock
+from src.storage.integrity import DataIntegrityError
 
 
 class TestCreateEquipmentBooking:
@@ -167,6 +169,7 @@ class TestCreateEquipmentBooking:
         equipment_service,
         create_test_user,
         create_test_equipment,
+        create_test_room,
         room_booking_repo,
         room_booking_factory,
         mock_now,
@@ -179,9 +182,11 @@ class TestCreateEquipmentBooking:
                 restriction_until=(fixed_time + timedelta(days=7)).isoformat(),
             )
             equipment = create_test_equipment()
+            room = create_test_room()
 
             existing = room_booking_factory(
                 user_id=user.id,
+                room_id=room.id,
                 start_time=(fixed_time + timedelta(hours=1)).isoformat(),
                 end_time=(fixed_time + timedelta(hours=2)).isoformat(),
                 status=RoomBookingStatus.RESERVED,
@@ -427,7 +432,7 @@ class TestCheckoutReturn:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = EquipmentBooking(
-                id="equipment-checkout-boundary",
+                id=str(uuid4()),
                 user_id=user.id,
                 equipment_id=equipment.id,
                 start_time=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
@@ -458,7 +463,7 @@ class TestCheckoutReturn:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = EquipmentBooking(
-                id="equipment-missing-user-checkout",
+                id=str(uuid4()),
                 user_id="missing-user",
                 equipment_id=equipment.id,
                 start_time=fixed_time.isoformat(),
@@ -470,10 +475,10 @@ class TestCheckoutReturn:
                 equipment_booking_repo.add(booking)
 
         with mock_now(fixed_time):
-            with pytest.raises(EquipmentBookingError) as exc_info:
+            with pytest.raises(DataIntegrityError) as exc_info:
                 equipment_service.checkout(admin, booking.id)
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+            assert "users.txt에 없습니다" in str(exc_info.value)
 
     def test_default_equipment_service_keeps_reserved_booking_without_auto_start_penalty(
         self,
@@ -679,7 +684,7 @@ class TestAdminEquipmentFunctions:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = EquipmentBooking(
-                id="equipment-admin-cancel-missing-user",
+                id=str(uuid4()),
                 user_id="missing-user",
                 equipment_id=equipment.id,
                 start_time=(fixed_time + timedelta(hours=1)).isoformat(),
@@ -689,10 +694,10 @@ class TestAdminEquipmentFunctions:
             with global_lock():
                 equipment_booking_repo.add(booking)
 
-            with pytest.raises(EquipmentBookingError) as exc_info:
+            with pytest.raises(DataIntegrityError) as exc_info:
                 equipment_service.admin_cancel_booking(admin, booking.id, "장비 점검")
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+            assert "users.txt에 없습니다" in str(exc_info.value)
 
     def test_admin_modify_booking_missing_owner_fails(
         self,
@@ -708,7 +713,7 @@ class TestAdminEquipmentFunctions:
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
             equipment = create_test_equipment()
             booking = EquipmentBooking(
-                id="equipment-admin-modify-missing-user",
+                id=str(uuid4()),
                 user_id="missing-user",
                 equipment_id=equipment.id,
                 start_time=(fixed_time + timedelta(hours=1)).isoformat(),
@@ -718,7 +723,7 @@ class TestAdminEquipmentFunctions:
             with global_lock():
                 equipment_booking_repo.add(booking)
 
-            with pytest.raises(EquipmentBookingError) as exc_info:
+            with pytest.raises(DataIntegrityError) as exc_info:
                 equipment_service.admin_modify_booking(
                     admin,
                     booking.id,
@@ -726,13 +731,13 @@ class TestAdminEquipmentFunctions:
                     fixed_time + timedelta(days=2),
                 )
 
-            assert "존재하지 않는 사용자" in str(exc_info.value)
+            assert "users.txt에 없습니다" in str(exc_info.value)
 
     def test_update_equipment_status_cancels_future_bookings(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
     ):
         """장비 상태 변경 시 미래 예약 자동 취소"""
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 18, 0, 0)
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -756,6 +761,22 @@ class TestAdminEquipmentFunctions:
             assert len(cancelled) == 1
             assert cancelled[0].status == EquipmentBookingStatus.ADMIN_CANCELLED
 
+    def test_update_equipment_status_blocks_maintenance_outside_1800(
+        self, equipment_service, create_test_user, create_test_equipment, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            admin = create_test_user(username="admin_maint_block", role=UserRole.ADMIN)
+            equipment = create_test_equipment()
+
+            with pytest.raises(EquipmentBookingError) as exc_info:
+                equipment_service.update_equipment_status(
+                    admin, equipment.id, ResourceStatus.MAINTENANCE
+                )
+
+            assert "18:00" in str(exc_info.value)
+
     def test_update_equipment_status_missing_booking_owner_fails(
         self,
         equipment_service,
@@ -764,7 +785,7 @@ class TestAdminEquipmentFunctions:
         equipment_booking_repo,
         mock_now,
     ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 18, 0, 0)
 
         with mock_now(fixed_time):
             admin = create_test_user(username="admin", role=UserRole.ADMIN)
