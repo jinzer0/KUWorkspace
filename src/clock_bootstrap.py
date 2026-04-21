@@ -1,28 +1,15 @@
+# pyright: reportImportCycles=false
+
 import atexit
-import os
 from datetime import datetime
 
-from src import config
 from src.cli.validators import validate_date_plan, validate_time_plan
-from src.runtime_clock import (
-    SystemClock,
-    set_active_clock,
-    get_active_clock,
-    ClockError,
-)
-from src.storage.integrity import DataIntegrityError
-from src.storage.repositories import (
-    UserRepository,
-    RoomRepository,
-    EquipmentAssetRepository,
-    RoomBookingRepository,
-    EquipmentBookingRepository,
-    PenaltyRepository,
-    AuditLogRepository,
-)
 
 
 def read_clock_marker():
+    from src import config
+    from src.storage.integrity import DataIntegrityError
+
     config.ensure_data_dir()
     try:
         return (
@@ -38,8 +25,8 @@ def read_clock_marker():
 
 
 def load_persisted_clock():
-    if "PYTEST_CURRENT_TEST" in os.environ:
-        return None
+    from src import config
+    from src.storage.integrity import DataIntegrityError
 
     marker = read_clock_marker()
     if marker == config.CLOCK_SENTINEL:
@@ -53,6 +40,9 @@ def load_persisted_clock():
 
 
 def persist_clock(current_time):
+    from src import config
+    from src.storage.integrity import DataIntegrityError
+
     if isinstance(current_time, datetime):
         current_time = current_time.replace(second=0, microsecond=0).isoformat(
             timespec="minutes"
@@ -77,6 +67,18 @@ def _iter_datetime_strings(record):
 
 
 def get_latest_data_timestamp():
+    from src import config
+
+    from src.storage.repositories import (
+        UserRepository,
+        RoomRepository,
+        EquipmentAssetRepository,
+        RoomBookingRepository,
+        EquipmentBookingRepository,
+        PenaltyRepository,
+        AuditLogRepository,
+    )
+
     repositories = [
         UserRepository(),
         RoomRepository(),
@@ -96,17 +98,23 @@ def get_latest_data_timestamp():
     return latest
 
 
-def prompt_initial_clock():
+def prompt_initial_clock(latest_data_time_getter=None, saved_clock_time_getter=None):
     """프로그램 시작 시 운영 시작 시점을 입력받습니다."""
-    latest_data_time = get_latest_data_timestamp()
-    saved_clock_time = load_persisted_clock()
+    if latest_data_time_getter is None:
+        latest_data_time = get_latest_data_timestamp()
+    else:
+        latest_data_time = latest_data_time_getter()
+    if saved_clock_time_getter is None:
+        saved_clock_time = load_persisted_clock()
+    else:
+        saved_clock_time = saved_clock_time_getter()
 
     if saved_clock_time is not None:
         print(
             "\n이전 종료 시점부터 운영을 재개합니다. "
             f"({saved_clock_time.strftime('%Y-%m-%d %H:%M')})"
         )
-        return SystemClock(saved_clock_time)
+        return saved_clock_time
 
     while True:
         print("\n운영 시작 시점을 설정합니다.")
@@ -138,13 +146,12 @@ def prompt_initial_clock():
             )
             continue
 
-        try:
-            return SystemClock(start_time)
-        except ClockError as error:
-            print(f"✗ {error}")
+        return start_time
 
 
 def persist_clock_state():
+    from src.runtime_clock import get_active_clock
+
     active_clock = get_active_clock()
     if active_clock is None:
         return
@@ -152,6 +159,5 @@ def persist_clock_state():
 
 
 def initialize_runtime_clock(clock):
-    set_active_clock(clock)
     atexit.register(persist_clock_state)
     return clock

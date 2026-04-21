@@ -11,9 +11,16 @@ def test_guest_menu_opens_clock_in_read_only_mode(
     created = {}
 
     class FakeClockMenu:
-        def __init__(self, policy_service, actor_id="system", allow_advance=True):
+        def __init__(
+            self,
+            policy_service,
+            actor_id="system",
+            actor_role="user",
+            allow_advance=True,
+        ):
             created["policy_service"] = policy_service
             created["actor_id"] = actor_id
+            created["actor_role"] = actor_role
             created["allow_advance"] = allow_advance
 
         def run(self):
@@ -31,15 +38,16 @@ def test_guest_menu_opens_clock_in_read_only_mode(
     assert result is None
     assert created["policy_service"] is policy_service
     assert created["actor_id"] == "guest"
+    assert created["actor_role"] == "guest"
     assert created["allow_advance"] is False
     assert created["ran"] is True
 
 
-def test_clock_menu_read_only_mode_shows_blockers_instead_of_advancing(monkeypatch):
-    calls = {"advance": 0, "blockers": 0}
+def test_clock_menu_read_only_mode_does_not_offer_blockers(monkeypatch):
+    messages = []
 
     class StubPolicyService:
-        def prepare_advance(self, actor_id="system"):
+        def prepare_advance(self, actor_id="system", actor_role="user"):
             return {
                 "current_time": datetime(2024, 6, 15, 9, 0, 0),
                 "next_time": datetime(2024, 6, 15, 18, 0, 0),
@@ -55,17 +63,34 @@ def test_clock_menu_read_only_mode_shows_blockers_instead_of_advancing(monkeypat
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
     monkeypatch.setattr("src.cli.clock_menu.print_header", lambda *_: None)
     monkeypatch.setattr("src.cli.clock_menu.pause", lambda: None)
-    monkeypatch.setattr(menu, "_advance", lambda: calls.__setitem__("advance", calls["advance"] + 1))
-    monkeypatch.setattr(
-        menu,
-        "_show_blockers",
-        lambda _preview: calls.__setitem__("blockers", calls["blockers"] + 1),
-    )
+    monkeypatch.setattr("src.cli.clock_menu.print_error", messages.append)
 
     menu.run()
 
-    assert calls["advance"] == 0
-    assert calls["blockers"] == 1
+    assert messages == ["잘못된 선택입니다."]
+
+
+def test_clock_menu_admin_preview_uses_admin_title(monkeypatch, capsys):
+    class StubPolicyService:
+        def prepare_advance(self, actor_id="system", actor_role="user"):
+            return {
+                "current_time": datetime(2024, 6, 15, 9, 0, 0),
+                "next_time": datetime(2024, 6, 15, 18, 0, 0),
+                "events": [],
+                "blockers": [],
+                "can_advance": True,
+                "force_notice": "",
+            }
+
+    menu = ClockMenu(StubPolicyService(), actor_id="admin-1", actor_role="admin")
+
+    monkeypatch.setattr("src.cli.clock_menu.print_header", lambda title: print(title))
+    monkeypatch.setattr("src.cli.clock_menu.pause", lambda: None)
+
+    menu._show_preview(StubPolicyService().prepare_advance())
+
+    output = capsys.readouterr().out
+    assert "운영 시점 정보 (관리자)" in output
 
 
 def test_clock_menu_requires_force_confirmation_before_forced_advance(monkeypatch):
@@ -73,8 +98,8 @@ def test_clock_menu_requires_force_confirmation_before_forced_advance(monkeypatc
         def __init__(self):
             self.calls = []
 
-        def prepare_advance(self, actor_id="system"):
-            self.calls.append(("prepare", actor_id))
+        def prepare_advance(self, actor_id="system", actor_role="user"):
+            self.calls.append(("prepare", actor_id, actor_role))
             return {
                 "current_time": datetime(2024, 6, 15, 9, 0, 0),
                 "next_time": datetime(2024, 6, 15, 18, 0, 0),
@@ -84,8 +109,8 @@ def test_clock_menu_requires_force_confirmation_before_forced_advance(monkeypatc
                 "force_notice": "penalty on actor",
             }
 
-        def advance_time(self, actor_id="system", force=False):
-            self.calls.append(("advance", actor_id, force))
+        def advance_time(self, actor_id="system", actor_role="user", force=False):
+            self.calls.append(("advance", actor_id, actor_role, force))
             return {
                 "current_time": datetime(2024, 6, 15, 9, 0, 0),
                 "next_time": datetime(2024, 6, 15, 18, 0, 0),
@@ -108,7 +133,7 @@ def test_clock_menu_requires_force_confirmation_before_forced_advance(monkeypatc
 
     menu._advance()
 
-    assert ("advance", "user-1", True) in service.calls
+    assert ("advance", "user-1", "user", True) in service.calls
 
 
 def test_guest_menu_signup_creates_user(monkeypatch, auth_service, policy_service):

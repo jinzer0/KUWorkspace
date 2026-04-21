@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 
 from src.storage.file_lock import global_lock
@@ -102,9 +101,6 @@ def _load_persisted_time():
 
 
 def _save_persisted_time(current_time):
-    if "PYTEST_CURRENT_TEST" in os.environ:
-        return
-
     from src.clock_bootstrap import persist_clock
 
     persist_clock(normalize_slot(current_time))

@@ -90,9 +90,10 @@ def test_user_menu_opens_clock_with_user_actor(
     inputs = iter(["16", "0"])
 
     class FakeClockMenu:
-        def __init__(self, policy_service, actor_id="system", allow_advance=True):
+        def __init__(self, policy_service, actor_id="system", actor_role="user", allow_advance=True):
             created["policy_service"] = policy_service
             created["actor_id"] = actor_id
+            created["actor_role"] = actor_role
             created["allow_advance"] = allow_advance
 
         def run(self):
@@ -111,6 +112,7 @@ def test_user_menu_opens_clock_with_user_actor(
     assert created == {
         "policy_service": policy_service,
         "actor_id": user.id,
+        "actor_role": "user",
         "allow_advance": True,
         "ran": True,
     }
@@ -134,9 +136,9 @@ def test_user_menu_opens_clock_with_user_actor(
         ("13", "_show_users"),
         ("14", "_show_user_detail"),
         ("15", "_apply_damage_penalty"),
-        ("16", "_force_late_cancel_penalty"),
-        ("17", "_force_room_late_checkout"),
-        ("18", "_force_equipment_late_return"),
+        ("16", "_apply_fixed_penalty"),
+        ("17", "_apply_fixed_penalty"),
+        ("18", "_apply_fixed_penalty"),
         ("19", "_open_clock"),
     ],
 )
@@ -175,12 +177,20 @@ def test_admin_menu_dispatches_actions(
             lambda *_args, **_kwargs: type("FakeClock", (), {"run": lambda _self: calls.append(method_name)})(),
         )
     elif method_name == "_apply_fixed_penalty":
-        monkeypatch.setattr(menu, "_apply_fixed_penalty", lambda _penalty_type: calls.append(method_name))
+        monkeypatch.setattr(menu, "_apply_fixed_penalty", lambda _penalty_type: calls.append(f"{method_name}:{_penalty_type}"))
     else:
         monkeypatch.setattr(menu, method_name, lambda: calls.append(method_name))
 
     assert menu.run() is True
-    assert calls == [method_name]
+    if method_name == "_apply_fixed_penalty":
+        expected_type = {
+            "16": "late_checkout",
+            "17": "late_return",
+            "18": "late_cancel",
+        }[choice]
+        assert calls == [f"{method_name}:{expected_type}"]
+    else:
+        assert calls == [method_name]
 
 
 def test_admin_menu_opens_clock_with_admin_actor(
@@ -205,9 +215,10 @@ def test_admin_menu_opens_clock_with_admin_actor(
     inputs = iter(["19", "0"])
 
     class FakeClockMenu:
-        def __init__(self, policy_service, actor_id="system", allow_advance=True):
+        def __init__(self, policy_service, actor_id="system", actor_role="user", allow_advance=True):
             created["policy_service"] = policy_service
             created["actor_id"] = actor_id
+            created["actor_role"] = actor_role
             created["allow_advance"] = allow_advance
 
         def run(self):
@@ -225,6 +236,7 @@ def test_admin_menu_opens_clock_with_admin_actor(
     assert created == {
         "policy_service": policy_service,
         "actor_id": admin.id,
+        "actor_role": "admin",
         "allow_advance": True,
         "ran": True,
     }
