@@ -213,6 +213,11 @@ class PolicyService:
         events = []
         now = now_iso()
 
+        # 09:00 시점: 픽업/체크인 요청이 들어온 건만 자동 승인 처리
+        # RESERVED 상태(미요청 노쇼)는 이 시점에서 패널티를 부여하지 않음.
+        # 유저가 09:00~18:00 사이에 요청할 수 있으므로,
+        # 18:00 시점(_auto_handle_end_slot)에서 노쇼 여부를 최종 판단함.
+
         for booking in self.room_booking_repo.get_all():
             if datetime.fromisoformat(booking.start_time) != current_time:
                 continue
@@ -226,24 +231,7 @@ class PolicyService:
                     )
                 )
                 events.append(f"회의실 예약 {booking.id[:8]} 자동 체크인 승인")
-            elif booking.status == RoomBookingStatus.RESERVED:
-                self.room_booking_repo.update(
-                    replace(
-                        booking,
-                        status=RoomBookingStatus.ADMIN_CANCELLED,
-                        cancelled_at=now,
-                        updated_at=now,
-                    )
-                )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
-                if user:
-                    self.penalty_service.apply_late_cancel(
-                        user=user,
-                        booking_type="room_booking",
-                        booking_id=booking.id,
-                        actor_id=actor_id,
-                    )
-                events.append(f"회의실 예약 {booking.id[:8]} 시작 미처리 자동 취소")
+            # RESERVED 상태는 18:00에 처리 — 여기서는 아무것도 하지 않음
 
         for booking in self.equipment_booking_repo.get_all():
             if datetime.fromisoformat(booking.start_time) != current_time:
@@ -258,24 +246,47 @@ class PolicyService:
                     )
                 )
                 events.append(f"장비 예약 {booking.id[:8]} 자동 픽업 승인")
-            elif booking.status == EquipmentBookingStatus.RESERVED:
-                self.equipment_booking_repo.update(
+            # RESERVED 상태는 18:00에 처리 — 여기서는 아무것도 하지 않음
+
+        # 09:00 시점: 전날 18:00에 신청된 퇴실/반납 요청 자동 승인 처리
+        # (CHECKOUT_REQUESTED / RETURN_REQUESTED → 정상 완료 처리)
+        end_time_yesterday = current_time.replace(hour=18, minute=0, second=0, microsecond=0)
+        from datetime import timedelta
+        end_time_yesterday = end_time_yesterday - timedelta(days=1)
+
+        for booking in self.room_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != end_time_yesterday:
+                continue
+            if booking.status == RoomBookingStatus.CHECKOUT_REQUESTED:
+                self.room_booking_repo.update(
                     replace(
                         booking,
-                        status=EquipmentBookingStatus.ADMIN_CANCELLED,
-                        cancelled_at=now,
+                        status=RoomBookingStatus.COMPLETED,
+                        completed_at=now,
                         updated_at=now,
                     )
                 )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                user = self.user_repo.get_by_id(booking.user_id)
                 if user:
-                    self.penalty_service.apply_late_cancel(
-                        user=user,
-                        booking_type="equipment_booking",
-                        booking_id=booking.id,
-                        actor_id=actor_id,
+                    self.penalty_service.record_normal_use(user)
+                events.append(f"회의실 예약 {booking.id[:8]} 자동 퇴실 승인")
+
+        for booking in self.equipment_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != end_time_yesterday:
+                continue
+            if booking.status == EquipmentBookingStatus.RETURN_REQUESTED:
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.RETURNED,
+                        returned_at=now,
+                        updated_at=now,
                     )
-                events.append(f"장비 예약 {booking.id[:8]} 시작 미처리 자동 취소")
+                )
+                user = self.user_repo.get_by_id(booking.user_id)
+                if user:
+                    self.penalty_service.record_normal_use(user)
+                events.append(f"장비 예약 {booking.id[:8]} 자동 반납 승인")
 
         return events
 
@@ -370,23 +381,62 @@ class PolicyService:
         events = []
         now = now_iso()
 
+        # 18:00 시점: 당일(start_time == 오늘 09:00) 예약 중 RESERVED 상태 → 노쇼 패널티
+        # 기존 09:00 처리 로직과 동일, 시점만 18:00으로 이동
+        start_time_today = current_time.replace(hour=9, minute=0, second=0, microsecond=0)
+
         for booking in self.room_booking_repo.get_all():
-            if datetime.fromisoformat(booking.end_time) != current_time:
+            if datetime.fromisoformat(booking.start_time) != start_time_today:
                 continue
-            if booking.status == RoomBookingStatus.CHECKOUT_REQUESTED:
+            if booking.status == RoomBookingStatus.RESERVED:
                 self.room_booking_repo.update(
                     replace(
                         booking,
-                        status=RoomBookingStatus.COMPLETED,
-                        completed_at=now,
+                        status=RoomBookingStatus.ADMIN_CANCELLED,
+                        cancelled_at=now,
                         updated_at=now,
                     )
                 )
-                user = self.user_repo.get_by_id(booking.user_id)
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
-                    self.penalty_service.record_normal_use(user)
-                events.append(f"회의실 예약 {booking.id[:8]} 자동 퇴실 승인")
-            elif booking.status == RoomBookingStatus.CHECKED_IN:
+                    self.penalty_service.apply_late_cancel(
+                        user=user,
+                        booking_type="room_booking",
+                        booking_id=booking.id,
+                        actor_id=actor_id,
+                    )
+                events.append(f"회의실 예약 {booking.id[:8]} 시작 미처리 자동 취소")
+
+        for booking in self.equipment_booking_repo.get_all():
+            if datetime.fromisoformat(booking.start_time) != start_time_today:
+                continue
+            if booking.status == EquipmentBookingStatus.RESERVED:
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.ADMIN_CANCELLED,
+                        cancelled_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                if user:
+                    self.penalty_service.apply_late_cancel(
+                        user=user,
+                        booking_type="equipment_booking",
+                        booking_id=booking.id,
+                        actor_id=actor_id,
+                    )
+                events.append(f"장비 예약 {booking.id[:8]} 시작 미처리 자동 취소")
+
+        # 18:00 시점: 정상 퇴실/반납 처리 및 지연 패널티
+        # 18:00 시점: CHECKED_IN(지연 퇴실 패널티), CHECKED_OUT(지연 반납 패널티)만 처리
+        # CHECKOUT_REQUESTED / RETURN_REQUESTED는 다음날 09:00(_auto_handle_start_slot)에서 자동 승인 처리
+
+        for booking in self.room_booking_repo.get_all():
+            if datetime.fromisoformat(booking.end_time) != current_time:
+                continue
+            if booking.status == RoomBookingStatus.CHECKED_IN:
                 self.room_booking_repo.update(
                     replace(
                         booking,
@@ -409,20 +459,7 @@ class PolicyService:
         for booking in self.equipment_booking_repo.get_all():
             if datetime.fromisoformat(booking.end_time) != current_time:
                 continue
-            if booking.status == EquipmentBookingStatus.RETURN_REQUESTED:
-                self.equipment_booking_repo.update(
-                    replace(
-                        booking,
-                        status=EquipmentBookingStatus.RETURNED,
-                        returned_at=now,
-                        updated_at=now,
-                    )
-                )
-                user = self.user_repo.get_by_id(booking.user_id)
-                if user:
-                    self.penalty_service.record_normal_use(user)
-                events.append(f"장비 예약 {booking.id[:8]} 자동 반납 승인")
-            elif booking.status == EquipmentBookingStatus.CHECKED_OUT:
+            if booking.status == EquipmentBookingStatus.CHECKED_OUT:
                 self.equipment_booking_repo.update(
                     replace(
                         booking,
