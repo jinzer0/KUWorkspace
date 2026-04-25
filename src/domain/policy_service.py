@@ -138,10 +138,24 @@ class PolicyService:
 
             penalty_owner_id = self._resolve_forced_penalty_owner_id(actor_id, force)
             next_time = self.clock.advance()
-            auto_events = self._handle_boundary_automation(
-                next_time,
-                actor_id=actor_id,
-                penalty_owner_id=penalty_owner_id,
+
+            # force로 시점을 넘길 때, 현재 시점(18:00)의 자동 처리가 누락되지 않도록
+            # 현재 시점의 boundary automation도 먼저 실행한 후 다음 시점으로 이동
+            auto_events = []
+            if force and current_time.hour == 18:
+                auto_events.extend(
+                    self._auto_handle_end_slot(
+                        current_time,
+                        actor_id=actor_id,
+                        penalty_owner_id=penalty_owner_id,
+                    )
+                )
+            auto_events.extend(
+                self._handle_boundary_automation(
+                    next_time,
+                    actor_id=actor_id,
+                    penalty_owner_id=penalty_owner_id,
+                )
             )
             maintenance = self._run_checks_locked(next_time)
             events = list(cast(list[str], state["events"]))
