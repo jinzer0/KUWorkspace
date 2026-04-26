@@ -386,6 +386,7 @@ class AdminMenu:
     def _change_room_status(self):
         """회의실 상태 변경"""
         print_header("회의실 목록")
+
         rooms = self.room_service.get_all_rooms()
         if not rooms:
             print_info("등록된 회의실이 없습니다.")
@@ -428,6 +429,7 @@ class AdminMenu:
         print("  1. 사용가능 (available)")
         print("  2. 점검중 (maintenance)")
 
+        choice = input("\n선택: ").strip()
         status_map = {
             "1": ResourceStatus.AVAILABLE,
             "2": ResourceStatus.MAINTENANCE,
@@ -844,6 +846,7 @@ class AdminMenu:
         start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
         if start_date is None or end_date is None:
             return
+
         if not confirm("예약을 변경하시겠습니까?"):
             return
 
@@ -994,14 +997,22 @@ class AdminMenu:
                     new_status = status_map[raw2]
                     status_name = "사용가능" if raw2 == "1" else "점검중"
 
-                    current_time = self.policy_service.clock.now()
-                    if (
-                        new_status == ResourceStatus.MAINTENANCE
-                        and (current_time.hour, current_time.minute) != (18, 0)
-                    ):
-                        print_error("관리자가 장비를 [점검중] 으로 변경할 수 있는 시점은 18:00 입니다.")
-                        pause()
-                        return
+                    # 규칙 위배 여부는 서비스 레이어에서 판단
+                    # 점검중으로 변경하려는데 장비가 DISABLED(반납 완료) 상태가 아니면 재입력
+                    if new_status == ResourceStatus.MAINTENANCE and selected.status != ResourceStatus.DISABLED:
+                        print("  해당 장비는 변경할 수 없습니다.")
+                        continue
+
+                    # 사용가능으로 변경하려는데 점검중 변경 다음날 09:00 이전이면 재입력
+                    if new_status == ResourceStatus.AVAILABLE and selected.status == ResourceStatus.MAINTENANCE:
+                        from datetime import datetime, timedelta
+                        maintenance_set_at = datetime.fromisoformat(selected.updated_at)
+                        next_day_09 = (maintenance_set_at + timedelta(days=1)).replace(
+                            hour=9, minute=0, second=0, microsecond=0
+                        )
+                        if self.policy_service.clock.now() < next_day_09:
+                            print("  해당 장비는 변경할 수 없습니다.")
+                            continue
 
                     # 다. 확인
                     print(f"\n  선택: {raw2}")
@@ -1019,7 +1030,7 @@ class AdminMenu:
                             except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
                                 print_error(str(e))
                             pause()
-                            break
+                            return
                         elif yn in ("n", "no", "아니오", "ㄴ"):
                             return
                         else:
@@ -1268,139 +1279,6 @@ class AdminMenu:
 
         pause()
 
-    def _admin_modify_or_swap_equipment_booking(self):
-        """관리자 장비 예약 변경/교체 - 서브메뉴"""
-        print_header("장비 예약 변경/교체 (관리자)")
-        
-        print("\n선택 사항:")
-        print("  1. 예약 시간 변경")
-        print("  2. 진행중 예약 장비 교체")
-        print("  0. 취소")
-        print("-" * 50)
-        
-        choice = input("선택: ").strip()
-        
-        if choice == "1":
-            self._admin_modify_equipment_booking_time()
-        elif choice == "2":
-            self._admin_reassign_active_equipment_booking()
-        elif choice == "0":
-            return
-        else:
-            print_error("잘못된 선택입니다.")
-            pause()
-
-    def _admin_reassign_active_equipment_booking(self):
-        """관리자 진행중 장비 예약 교체"""
-        print_header("진행중 장비 예약 교체 (관리자)")
-
-        all_bookings = self._get_equipment_bookings_or_abort()
-        if all_bookings is None:
-            return
-        
-        checked_out_bookings = [
-            b for b in all_bookings if b.status == EquipmentBookingStatus.CHECKED_OUT
-        ]
-
-        if not checked_out_bookings:
-            print_info("진행중인 장비 예약이 없습니다.")
-            pause()
-            return
-
-        items = []
-        for booking in checked_out_bookings:
-            equip = self.equipment_service.get_equipment(booking.equipment_id)
-            user = self._get_booking_user_or_abort(booking.user_id)
-            if user is None:
-                return
-            items.append(
-                (
-                    booking.id,
-                    f"{equip.name if equip else '-'} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
-                )
-            )
-
-        booking_id = select_from_list(items, "교체할 예약 선택")
-        if not booking_id:
-            return
-
-        selected_booking = next(
-            (b for b in checked_out_bookings if b.id == booking_id), None
-        )
-        if selected_booking is None:
-            print_error("선택한 예약을 찾을 수 없습니다.")
-            pause()
-            return
-
-        current_equipment = self.equipment_service.get_equipment(selected_booking.equipment_id)
-        booking_user = self._get_booking_user_or_abort(selected_booking.user_id)
-        if booking_user is None:
-            return
-
-        print_subheader("예약 정보")
-        print(f"  현재 장비: {current_equipment.name if current_equipment else '-'}")
-        print(f"  사용자: {booking_user.username}")
-        print(
-            f"  기간: {format_booking_time_range(selected_booking.start_time, selected_booking.end_time)}"
-        )
-
-        all_equipment = self.equipment_service.get_all_equipment()
-        eligible_equipment = []
-        
-        for equip in all_equipment:
-            if equip.serial_number == selected_booking.equipment_id:
-                continue
-            
-            if equip.status != ResourceStatus.AVAILABLE:
-                continue
-            
-            conflicts = self.equipment_service.booking_repo.get_conflicting(
-                equip.serial_number,
-                selected_booking.start_time,
-                selected_booking.end_time,
-                exclude_id=booking_id,
-            )
-            if not conflicts:
-                eligible_equipment.append(equip)
-
-        if not eligible_equipment:
-            print_info("교체 가능한 장비가 없습니다.")
-            pause()
-            return
-
-        equipment_items = [
-            (
-                e.serial_number,
-                f"{e.name} (종류: {e.asset_type}, 시리얼: {e.serial_number})",
-            )
-            for e in eligible_equipment
-        ]
-        new_equipment_id = select_from_list(equipment_items, "새 장비 선택")
-        if not new_equipment_id:
-            return
-
-        reason = input("교체 사유: ").strip()
-        if not reason:
-            print_error("사유를 입력해야 합니다.")
-            pause()
-            return
-
-        new_equipment = next((e for e in eligible_equipment if e.serial_number == new_equipment_id), None)
-        if new_equipment is None:
-            print_error("선택한 장비를 찾을 수 없습니다.")
-            pause()
-            return
-
-        print_warning(
-            f"장비를 '{current_equipment.name if current_equipment else '-'}'에서 '{new_equipment.name}'으로 교체합니다."
-        )
-        if not confirm("교체하시겠습니까?"):
-            return
-
-        print_info("활성 장비 예약 교체는 현재 서비스 계층에서 지원되지 않습니다.")
-
-        pause()
-
     def _admin_modify_equipment_booking_time(self):
         """관리자 장비 예약 변경"""
         print_header("장비 예약 변경 (관리자용)")
@@ -1475,6 +1353,11 @@ class AdminMenu:
                 print(f"  ✗ {start_str} 예약 시작 날짜가 조건에 맞지 않습니다.")
                 continue
 
+            # 종료일이 시작일보다 빠른 경우 검증
+            if end_date < start_date:
+                print("  ✗ 종료 날짜는 시작 날짜보다 빠를 수 없습니다.")
+                continue
+
             # 기간 14일 초과 검증
             if (end_date - start_date).days >= 14:
                 print("  ✗ 예약 기간은 최대 14일까지 가능합니다.")
@@ -1532,20 +1415,9 @@ class AdminMenu:
             items.append(
                 (
                     booking.id,
-                    f"{equip.name if equip else '-'} / {user.username} / {format_status_badge(booking.status.value)}",
+                    f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
                 )
             )
-
-        booking_id = select_from_list(items, "취소할 예약 선택")
-        if not booking_id:
-            return
-
-        reason = input("취소 사유: ").strip()
-        valid, error = validate_reason(reason)
-        if not valid:
-            print_error(error)
-            pause()
-            return
 
         # 가. 취소할 예약 선택
         while True:
@@ -1561,11 +1433,11 @@ class AdminMenu:
                 break
             print("  목록에 존재하는 번호를 입력해주세요.")
 
-        # 나. 취소 사유 (최대 30자)
+        # 나. 취소 사유 (최대 20자)
         while True:
-            reason = input("\n취소 사유 (최대 30자): ").strip()
-            if len(reason) > 30:
-                print("  30자가 초과되었습니다. 30자 내로 입력해주세요.")
+            reason = input("\n취소 사유 (최대 20자): ").strip()
+            if len(reason) > 20:
+                print("  20자가 초과되었습니다. 20자 내로 입력해주세요.")
                 continue
             break
 
