@@ -1011,7 +1011,10 @@ class AdminMenu:
                         yn = input("정말로 수정하시겠습니까? [y/n]: ").strip().lower()
                         if yn in ("y", "yes", "예", "ㅇ"):
                             # 규칙 위배 여부 확인 (y 입력 후 체크)
-                            if new_status == ResourceStatus.MAINTENANCE and selected.status != ResourceStatus.DISABLED:
+                            # 동일 상태(점검중→점검중) 제외하고 DISABLED 체크
+                            if (new_status == ResourceStatus.MAINTENANCE
+                                    and selected.status != ResourceStatus.DISABLED
+                                    and selected.status != ResourceStatus.MAINTENANCE):
                                 print("  해당 장비는 변경할 수 없습니다.")
                                 return
                             try:
