@@ -8,7 +8,6 @@ from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
     ResourceStatus,
-    UserRole,
     now_iso,
 )
 from src.domain.restriction_rules import evaluate_user_restriction
@@ -24,9 +23,8 @@ from src.storage.repositories import (
 )
 from src.storage.file_lock import global_lock
 from src.storage.integrity import validate_all_data_files
-from src.domain.penalty_service import PenaltyService, PenaltyError
+from src.domain.penalty_service import PenaltyService
 from src.config import (
-    PENALTY_BAN_THRESHOLD,
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
 )
@@ -136,7 +134,6 @@ class PolicyService:
                 )
                 return state
 
-            penalty_owner_id = self._resolve_forced_penalty_owner_id(actor_id, force)
             auto_events = []
 
             # 18:00 슬롯 자동화는 18:00에 "도착"했을 때가 아니라
@@ -146,7 +143,6 @@ class PolicyService:
                     self._handle_boundary_automation(
                         current_time,
                         actor_id=actor_id,
-                        penalty_owner_id=penalty_owner_id,
                     )
                 )
 
@@ -158,7 +154,6 @@ class PolicyService:
                     self._handle_boundary_automation(
                         next_time,
                         actor_id=actor_id,
-                        penalty_owner_id=penalty_owner_id,
                     )
                 )
             maintenance = self._run_checks_locked(next_time)
@@ -200,34 +195,23 @@ class PolicyService:
             self.audit_repo,
         ]
 
-    def _resolve_forced_penalty_owner_id(self, actor_id, force):
-        if not force:
-            return None
-        actor = self.user_repo.get_by_id(actor_id)
-        if actor is None or actor.role == UserRole.ADMIN:
-            return None
-        return actor.id
+    def _get_penalty_user(self, booking_user_id):
+        return self.user_repo.get_by_id(booking_user_id)
 
-    def _get_penalty_user(self, booking_user_id, penalty_owner_id=None):
-        target_user_id = penalty_owner_id or booking_user_id
-        return self.user_repo.get_by_id(target_user_id)
-
-    def _handle_boundary_automation(self, current_time, actor_id="system", penalty_owner_id=None):
+    def _handle_boundary_automation(self, current_time, actor_id="system"):
         if current_time.hour == 9:
             return self._auto_handle_start_slot(
                 current_time,
                 actor_id=actor_id,
-                penalty_owner_id=penalty_owner_id,
             )
         if current_time.hour == 18:
             return self._auto_handle_end_slot(
                 current_time,
                 actor_id=actor_id,
-                penalty_owner_id=penalty_owner_id,
             )
         return []
 
-    def _auto_handle_start_slot(self, current_time, actor_id="system", penalty_owner_id=None):
+    def _auto_handle_start_slot(self, current_time, actor_id="system"):
         events = []
         now = now_iso()
 
@@ -316,7 +300,7 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                user = self._get_penalty_user(booking.user_id)
                 if user:
                     self.penalty_service.apply_late_return(
                         user=user,
@@ -455,7 +439,7 @@ class PolicyService:
                 return True
         return False
 
-    def _auto_handle_end_slot(self, current_time, actor_id="system", penalty_owner_id=None):
+    def _auto_handle_end_slot(self, current_time, actor_id="system"):
         events = []
         now = now_iso()
 
@@ -475,7 +459,7 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                user = self._get_penalty_user(booking.user_id)
                 if user:
                     self.penalty_service.apply_late_cancel(
                         user=user,
@@ -497,7 +481,7 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                user = self._get_penalty_user(booking.user_id)
                 if user:
                     self.penalty_service.apply_late_cancel(
                         user=user,
@@ -523,7 +507,7 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                user = self._get_penalty_user(booking.user_id)
                 if user:
                     self.penalty_service.apply_late_return(
                         user=user,
@@ -546,10 +530,7 @@ class PolicyService:
     def _build_force_notice(self, actor_id, blockers):
         if not blockers:
             return ""
-        actor = self.user_repo.get_by_id(actor_id)
-        if actor is None or actor.role == UserRole.ADMIN:
-            return "미해결 사건이 있어도 강행할 수 있습니다. 자동 패널티는 기존 책임 사용자 기준으로 처리됩니다."
-        return "강행하면 이 이동으로 발생하는 자동 패널티가 모두 현재 사용자에게 부과됩니다."
+        return "미해결 사건이 있어도 강행할 수 있습니다. 자동 패널티는 각 예약의 책임 사용자 기준으로 처리됩니다."
 
     def _build_advance_state(self, current_time, actor_id="system", actor_role="user"):
         next_time = self.clock.next_slot()
