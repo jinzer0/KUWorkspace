@@ -289,6 +289,7 @@ class PolicyService:
             if datetime.fromisoformat(booking.end_time) != end_time_yesterday:
                 continue
             if booking.status == EquipmentBookingStatus.RETURN_REQUESTED:
+                # 반납 신청 완료 → 정상 자동 승인
                 self.equipment_booking_repo.update(
                     replace(
                         booking,
@@ -301,6 +302,26 @@ class PolicyService:
                 if user:
                     self.penalty_service.record_normal_use(user)
                 events.append(f"장비 예약 {booking.id[:8]} 자동 반납 승인")
+            elif booking.status == EquipmentBookingStatus.CHECKED_OUT:
+                # 반납 신청 안 함 → 지연 반납 패널티 + 자동 반납 처리
+                self.equipment_booking_repo.update(
+                    replace(
+                        booking,
+                        status=EquipmentBookingStatus.RETURNED,
+                        returned_at=now,
+                        updated_at=now,
+                    )
+                )
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                if user:
+                    self.penalty_service.apply_late_return(
+                        user=user,
+                        booking_type="equipment_booking",
+                        booking_id=booking.id,
+                        delay_minutes=60,
+                        actor_id=actor_id,
+                    )
+                events.append(f"장비 예약 {booking.id[:8]} 지연 반납 자동 패널티")
 
         return events
 
@@ -341,6 +362,7 @@ class PolicyService:
                 continue
             if self._equipment_has_active_usage_at(equipment.id, current_time):
                 continue
+
             self.equipment_repo.update(
                 replace(
                     equipment,
@@ -473,25 +495,9 @@ class PolicyService:
         for booking in self.equipment_booking_repo.get_all():
             if datetime.fromisoformat(booking.end_time) != current_time:
                 continue
-            if booking.status == EquipmentBookingStatus.CHECKED_OUT:
-                self.equipment_booking_repo.update(
-                    replace(
-                        booking,
-                        status=EquipmentBookingStatus.RETURNED,
-                        returned_at=now,
-                        updated_at=now,
-                    )
-                )
-                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
-                if user:
-                    self.penalty_service.apply_late_return(
-                        user=user,
-                        booking_type="equipment_booking",
-                        booking_id=booking.id,
-                        delay_minutes=60,
-                        actor_id=actor_id,
-                    )
-                events.append(f"장비 예약 {booking.id[:8]} 지연 반납 자동 패널티")
+            # CHECKED_OUT 상태는 18:00에 blocker로만 처리
+            # 유저가 반납 신청을 안 한 경우 → 다음날 09:00에 지연 패널티 + 자동 반납 처리
+            # (아무것도 하지 않음)
 
         return events
 
