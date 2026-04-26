@@ -375,22 +375,54 @@ class AdminMenu:
         """회의실 목록 조회 및 상태 변경"""
         self._change_room_status()
 
+    def _format_room_status_text(self, status):
+        status_map = {
+            ResourceStatus.AVAILABLE: "사용가능",
+            ResourceStatus.MAINTENANCE: "점검중",
+            ResourceStatus.DISABLED: "사용불가",
+        }
+        return status_map.get(status, status.value)
+
     def _change_room_status(self):
         """회의실 상태 변경"""
-        print_header("회의실 목록 조회 및 상태 변경")
-
+        print_header("회의실 목록")
         rooms = self.room_service.get_all_rooms()
         if not rooms:
             print_info("등록된 회의실이 없습니다.")
             pause()
             return
 
-        items = [
-            (r.id, f"{r.name} {format_status_badge(r.status.value)}") for r in rooms
-        ]
-        room_id = select_from_list(items, "회의실 선택")
-        if not room_id:
+        rooms = sorted(rooms, key=lambda room: (room.capacity, room.name))
+        print(f"{'번호':<10}{'이름':<16}{'수용인원':<18}{'위치':<12}{'상태'}")
+        print("-" * 62)
+
+        for idx, room in enumerate(rooms, 1):
+            print(
+                f"{idx:<10}"
+                f"{room.name:<16}"
+                f"{f'{room.capacity}명':<18}"
+                f"{room.location:<12}"
+                f"{self._format_room_status_text(room.status)}"
+            )
+
+        print("\n0 : 취소")
+        choice = input("회의실 선택(번호): ").strip()
+
+        if choice == "0":
             return
+
+        if not choice.isdigit():
+            print_error("숫자를 입력해주세요.")
+            pause()
+            return
+
+        choice_int = int(choice)
+        if not (1 <= choice_int <= len(rooms)):
+            print_error("올바른 번호를 입력해주세요.")
+            pause()
+            return
+
+        room_id = rooms[choice_int - 1].id
 
         print("\n변경할 상태:")
         print("  1. 사용가능 (available)")
