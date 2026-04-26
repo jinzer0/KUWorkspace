@@ -918,12 +918,13 @@ class AdminMenu:
 
             break
 
-        reason = input("취소 사유: ").strip()
-        valid, error = validate_reason(reason)
-        if not valid:
-            print_error(error)
-            pause()
-            return
+        while True:
+            reason = input("취소 사유: ").strip()
+            valid, error = validate_reason(reason)
+            if not valid:
+                print_error(error)
+                continue
+            break
 
         if not confirm("정말 취소하시겠습니까?"):
             return
