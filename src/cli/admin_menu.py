@@ -918,13 +918,12 @@ class AdminMenu:
 
             break
 
-        while True:
-            reason = input("취소 사유: ").strip()
-            valid, error = validate_reason(reason)
-            if not valid:
-                print_error(error)
-                continue
-            break
+        reason = input("취소 사유: ").strip()
+        valid, error = validate_reason(reason)
+        if not valid:
+            print_error(error)
+            pause()
+            return
 
         if not confirm("정말 취소하시겠습니까?"):
             return
@@ -991,7 +990,6 @@ class AdminMenu:
             print("\n변경할 상태:")
             print("  1. 사용가능 (available)")
             print("  2. 점검중 (maintenance)")
-            print("  0. 취소")
 
             status_map = {
                 "1": ResourceStatus.AVAILABLE,
@@ -1003,34 +1001,22 @@ class AdminMenu:
                 if not raw2.lstrip("-").isdigit():
                     print("  숫자를 입력해주세요.")
                     continue
-                if raw2 == "0":
-                    break
                 if raw2 in status_map:
                     new_status = status_map[raw2]
                     status_name = "사용가능" if raw2 == "1" else "점검중"
-
-                    # 규칙 위배 여부는 서비스 레이어에서 판단
-                    # 점검중으로 변경하려는데 장비가 DISABLED(반납 완료) 상태가 아니면 재입력
-                    if new_status == ResourceStatus.MAINTENANCE and selected.status != ResourceStatus.DISABLED:
-                        print("  해당 장비는 변경할 수 없습니다.")
-                        continue
-
-                    # 사용가능으로 변경하려는데 점검중 변경 다음날 09:00 이전이면 재입력
-                    if new_status == ResourceStatus.AVAILABLE and selected.status == ResourceStatus.MAINTENANCE:
-                        from datetime import datetime, timedelta
-                        maintenance_set_at = datetime.fromisoformat(selected.updated_at)
-                        next_day_09 = (maintenance_set_at + timedelta(days=1)).replace(
-                            hour=9, minute=0, second=0, microsecond=0
-                        )
-                        if self.policy_service.clock.now() < next_day_09:
-                            print("  해당 장비는 변경할 수 없습니다.")
-                            continue
 
                     # 다. 확인
                     print(f"\n  선택: {raw2}")
                     while True:
                         yn = input("정말로 수정하시겠습니까? [y/n]: ").strip().lower()
                         if yn in ("y", "yes", "예", "ㅇ"):
+                            # 규칙 위배 여부 확인 (y 입력 후 체크)
+                            # 동일 상태(점검중→점검중) 제외하고 DISABLED 체크
+                            if (new_status == ResourceStatus.MAINTENANCE
+                                    and selected.status != ResourceStatus.DISABLED
+                                    and selected.status != ResourceStatus.MAINTENANCE):
+                                print("  해당 장비는 변경할 수 없습니다.")
+                                return
                             try:
                                 self.equipment_service.update_equipment_status(
                                     admin=self.user,
@@ -1039,8 +1025,8 @@ class AdminMenu:
                                 )
                                 # 라. 완료
                                 print(f"\n✓ 상태가 변경되었습니다: [{status_name}]")
-                            except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
-                                print_error(str(e))
+                            except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError):
+                                print("  해당 장비는 변경할 수 없습니다.")
                             pause()
                             return
                         elif yn in ("n", "no", "아니오", "ㄴ"):
@@ -1365,9 +1351,15 @@ class AdminMenu:
                 print(f"  ✗ {start_str} 예약 시작 날짜가 조건에 맞지 않습니다.")
                 continue
 
+            # 180일 초과 검증
+            from datetime import timedelta
+            if start_date > today + timedelta(days=180):
+                print("  ✗ 최대 180일 이후까지 예약 시작 날짜로 선택할 수 있습니다.")
+                continue
+
             # 종료일이 시작일보다 빠른 경우 검증
             if end_date < start_date:
-                print("  ✗ 종료 날짜는 시작 날짜보다 빠를 수 없습니다.")
+                print("  ✗종료 날짜는 시작 날짜보다 빠를 수 없습니다.")
                 continue
 
             # 기간 14일 초과 검증
@@ -1424,12 +1416,15 @@ class AdminMenu:
             user = self._get_booking_user_or_abort(booking.user_id)
             if user is None:
                 return
+            label = f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
+            print(f"  {i}. {label}")
             items.append(
                 (
                     booking.id,
-                    f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}",
+                    label,
                 )
             )
+        print("  0. 취소")
 
         # 가. 취소할 예약 선택
         while True:
