@@ -409,9 +409,7 @@ class AdminMenu:
 
         new_status = status_map[choice]
 
-        if new_status == ResourceStatus.MAINTENANCE:
-            print_warning("점검중으로 변경 시 미래 예약이 자동 취소됩니다.")
-        if not confirm("정말로 수정하시겠습니까?"):
+        if not confirm("계속하시겠습니까?"):
             return
 
         try:
