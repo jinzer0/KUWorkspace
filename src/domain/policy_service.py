@@ -375,9 +375,41 @@ class PolicyService:
         for equipment in self.equipment_repo.get_all():
             if equipment.status not in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
                 continue
-            if datetime.fromisoformat(equipment.updated_at) >= current_time:
-                continue
             if self._equipment_has_active_usage_at(equipment.id, current_time):
+                continue
+
+            # 대여 종료일 기준 체크:
+            # 가장 최근 예약의 종료일 다음날 09:00에만 자동 복원
+            # 단, 조기반납(RETURNED)으로 종료일이 지나지 않은 경우는 제외
+            latest_booking = None
+            for booking in self.equipment_booking_repo.get_by_equipment(equipment.id):
+                if booking.status in {
+                    EquipmentBookingStatus.RETURNED,
+                    EquipmentBookingStatus.ADMIN_CANCELLED,
+                    EquipmentBookingStatus.CANCELLED,
+                }:
+                    if latest_booking is None or booking.end_time > latest_booking.end_time:
+                        latest_booking = booking
+
+            if latest_booking is None:
+                continue
+
+            latest_end = datetime.fromisoformat(latest_booking.end_time)
+
+            # 조기반납 여부 확인: 반납 완료 시각이 종료일보다 이전이면 조기반납
+            if latest_booking.status == EquipmentBookingStatus.RETURNED:
+                returned_at = getattr(latest_booking, 'returned_at', None)
+                if returned_at and returned_at != r'\-':
+                    returned_time = datetime.fromisoformat(returned_at)
+                    if returned_time < latest_end:
+                        # 조기반납 → 자동 복원 대상 아님 (관리자가 직접 변경해야 함)
+                        continue
+
+            # 정시반납: 대여 종료일 다음날 09:00에만 복원
+            restore_at = (latest_end + timedelta(days=1)).replace(
+                hour=9, minute=0, second=0, microsecond=0
+            )
+            if restore_at != current_time:
                 continue
 
             self.equipment_repo.update(
