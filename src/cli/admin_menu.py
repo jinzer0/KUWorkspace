@@ -375,43 +375,73 @@ class AdminMenu:
         """회의실 목록 조회 및 상태 변경"""
         self._change_room_status()
 
+    def _format_room_status_text(self, status):
+        status_map = {
+            ResourceStatus.AVAILABLE: "사용가능",
+            ResourceStatus.MAINTENANCE: "점검중",
+            ResourceStatus.DISABLED: "사용불가",
+        }
+        return status_map.get(status, status.value)
+
     def _change_room_status(self):
         """회의실 상태 변경"""
-        print_header("회의실 목록 조회 및 상태 변경")
-
+        print_header("회의실 목록")
         rooms = self.room_service.get_all_rooms()
         if not rooms:
             print_info("등록된 회의실이 없습니다.")
             pause()
             return
 
-        items = [
-            (r.id, f"{r.name} {format_status_badge(r.status.value)}") for r in rooms
-        ]
-        room_id = select_from_list(items, "회의실 선택")
-        if not room_id:
-            return
+        rooms = sorted(rooms, key=lambda room: (room.capacity, room.name))
+        print(f"{'번호':<10}{'이름':<16}{'수용인원':<18}{'위치':<12}{'상태'}")
+        print("-" * 62)
+
+        for idx, room in enumerate(rooms, 1):
+            print(
+                f"{idx:<10}"
+                f"{room.name:<16}"
+                f"{f'{room.capacity}명':<18}"
+                f"{room.location:<12}"
+                f"{self._format_room_status_text(room.status)}"
+            )
+
+        while True:
+            print("\n0 : 취소")
+            choice = input("회의실 선택(번호): ").strip()
+
+            if choice == "0":
+                return
+
+            if not choice.isdigit():
+                print_error("숫자를 입력해주세요.")
+                continue
+
+            choice_int = int(choice)
+            if not (1 <= choice_int <= len(rooms)):
+                print_error(f"1 ~ {len(rooms)} 사이의 번호를 입력해주세요.")
+                continue
+
+            room_id = rooms[choice_int - 1].id
+            break
 
         print("\n변경할 상태:")
         print("  1. 사용가능 (available)")
         print("  2. 점검중 (maintenance)")
 
-        choice = input("\n선택: ").strip()
         status_map = {
             "1": ResourceStatus.AVAILABLE,
             "2": ResourceStatus.MAINTENANCE,
         }
 
-        if choice not in status_map:
-            print_error("잘못된 선택입니다.")
-            pause()
-            return
+        while True:
+            choice = input("\n선택: ").strip()
+            if choice not in status_map:
+                print_error("잘못된 선택입니다.")
+                continue
+            new_status = status_map[choice]
+            break
 
-        new_status = status_map[choice]
-
-        if new_status == ResourceStatus.MAINTENANCE:
-            print_warning("점검중으로 변경 시 미래 예약이 자동 취소됩니다.")
-        if not confirm("정말로 수정하시겠습니까?"):
+        if not confirm("계속하시겠습니까?"):
             return
 
         try:
@@ -813,6 +843,8 @@ class AdminMenu:
         self._print_daily_booking_guide()
         start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
         if start_date is None or end_date is None:
+            return
+        if not confirm("예약을 변경하시겠습니까?"):
             return
 
         try:
