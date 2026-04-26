@@ -892,9 +892,10 @@ class EquipmentService:
                     f"'{booking.status.value}' 상태의 예약은 반납 승인 처리할 수 없습니다."
                 )
 
+            now = self.clock.now()
             end_time = datetime.fromisoformat(booking.end_time)
-            self._require_current_boundary(end_time, "반납 승인")
             delay_minutes = 0
+            is_early_return = now < end_time
 
             updated = replace(
                 booking,
@@ -903,12 +904,13 @@ class EquipmentService:
                 updated_at=now_iso(),
             )
             self.booking_repo.update(updated)
+
             self.audit_repo.log_action(
                 actor_id=admin.id,
                 action="approve_equipment_return_request",
                 target_type="equipment_booking",
                 target_id=booking_id,
-                details=f"지연: {delay_minutes}분",
+                details=f"조기반납: {is_early_return}, 지연: {delay_minutes}분",
             )
 
             booking_user = self.user_repo.get_by_id(booking.user_id)
@@ -942,7 +944,8 @@ class EquipmentService:
         """
         장비 상태 변경
 
-        maintenance/disabled로 변경 시 미래 예약 자동 취소
+        - MAINTENANCE(점검중): 반납 완료된 당일 18:00 이후 시점 무관하게 변경 가능
+        - AVAILABLE(사용가능): 장비가 점검중으로 변경된 그 다음날 09:00 이후 변경 가능
 
         Returns:
             (변경된 장비, 취소된 예약 목록)
@@ -953,19 +956,42 @@ class EquipmentService:
             if equipment is None:
                 raise EquipmentBookingError("존재하지 않는 장비입니다.")
 
-            if (
-                new_status == ResourceStatus.MAINTENANCE
-                and (self.clock.now().hour, self.clock.now().minute) != (18, 0)
-            ):
-                raise EquipmentBookingError(
-                    "관리자가 장비를 [점검중] 으로 변경할 수 있는 시점은 18:00 입니다."
+            now = self.clock.now()
+
+            if new_status == ResourceStatus.MAINTENANCE:
+                # 점검중으로 변경 조건:
+                # 1. 장비가 현재 DISABLED(대여중 자동변경) 상태여야 함
+                # 2. 당일 18:00 이후 시점이어야 함 (반납 완료 당일)
+                if equipment.status != ResourceStatus.DISABLED:
+                    raise EquipmentBookingError(
+                        "[점검중] 으로 변경하려면 장비가 반납 완료된 상태([사용불가])여야 합니다."
+                    )
+                today_18 = now.replace(hour=18, minute=0, second=0, microsecond=0)
+                if now < today_18:
+                    raise EquipmentBookingError(
+                        "[점검중] 으로 변경할 수 있는 시점은 반납 완료 당일 18:00 이후입니다."
+                    )
+
+            if new_status == ResourceStatus.AVAILABLE:
+                # 사용가능으로 변경 조건:
+                # 장비가 점검중(MAINTENANCE) 상태이고, 점검중으로 변경된 다음날 09:00 이후여야 함
+                if equipment.status != ResourceStatus.MAINTENANCE:
+                    raise EquipmentBookingError(
+                        "[사용가능] 으로 변경하려면 장비가 [점검중] 상태여야 합니다."
+                    )
+                maintenance_set_at = datetime.fromisoformat(equipment.updated_at)
+                next_day_09 = (maintenance_set_at + timedelta(days=1)).replace(
+                    hour=9, minute=0, second=0, microsecond=0
                 )
+                if now < next_day_09:
+                    raise EquipmentBookingError(
+                        f"[사용가능] 으로 변경할 수 있는 시점은 점검중으로 변경한 다음날 09:00 이후입니다. "                        f"({next_day_09.strftime('%Y-%m-%d %H:%M')} 이후 가능)"
+                    )
 
             cancelled_bookings = []
 
             # maintenance 또는 disabled로 변경 시 미래 예약 취소
             if new_status in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
-                now = self.clock.now()
                 for booking in self.booking_repo.get_by_equipment(equipment_id):
                     if booking.status == EquipmentBookingStatus.RESERVED:
                         start = datetime.fromisoformat(booking.start_time)
