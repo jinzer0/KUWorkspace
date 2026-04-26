@@ -621,6 +621,7 @@ class TestCheckInOut:
 
             assert checked_in.status == RoomBookingStatus.CHECKED_IN
             assert checked_in.checked_in_at is not None
+            assert room_service.get_room(room.id).status == ResourceStatus.DISABLED
 
     def test_check_in_runs_policy_checks_before_action(
         self,

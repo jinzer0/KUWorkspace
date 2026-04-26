@@ -708,6 +708,10 @@ class RoomService:
                 booking_user = self.user_repo.get_by_id(booking.user_id)
                 if booking_user is None:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
+
+                room = self.room_repo.get_by_id(booking.room_id)
+                if room is None:
+                    raise RoomBookingError("존재하지 않는 회의실입니다.")
                 self._require_current_boundary(
                     datetime.fromisoformat(booking.start_time), "체크인"
                 )
@@ -720,6 +724,9 @@ class RoomService:
                 )
 
                 self.booking_repo.update(updated)
+                self.room_repo.update(
+                    replace(room, status=ResourceStatus.DISABLED)
+                )
 
                 self.audit_repo.log_action(
                     actor_id=admin.id,

@@ -186,7 +186,7 @@ class TestClockAdvance:
         logs = audit_repo.get_by_actor("admin-1")
         assert any(log.action == "clock_advance" for log in logs)
 
-    def test_advance_time_returns_user_facing_result_events_for_user(
+    def test_advance_time_does_not_complete_checkout_request_on_arrival_to_18_for_user(
         self,
         policy_service,
         create_test_user,
@@ -215,13 +215,11 @@ class TestClockAdvance:
 
         result = policy_service.advance_time(actor_id=user.id)
 
-        assert result["events"] == [
-            "본인의 회의실 예약이 종료되었습니다.",
-        ]
+        assert result["events"] == []
         updated = room_booking_repo.get_by_user(user.id)[0]
-        assert updated.status == RoomBookingStatus.COMPLETED
+        assert updated.status == RoomBookingStatus.CHECKOUT_REQUESTED
 
-    def test_advance_time_returns_system_result_events_for_admin(
+    def test_advance_time_does_not_complete_checkout_or_return_requests_on_arrival_to_18_for_admin(
         self,
         policy_service,
         create_test_user,
@@ -267,14 +265,11 @@ class TestClockAdvance:
 
         result = policy_service.advance_time(actor_id=admin.id, actor_role="admin")
 
-        assert result["events"] == [
-            "회의실 예약 종료 처리 1건",
-            "장비 반납 처리 1건",
-        ]
+        assert result["events"] == []
         room_updated = room_booking_repo.get_by_user(room_user.id)[0]
         equipment_updated = equipment_booking_repo.get_by_user(equip_user.id)[0]
-        assert room_updated.status == RoomBookingStatus.COMPLETED
-        assert equipment_updated.status == EquipmentBookingStatus.RETURNED
+        assert room_updated.status == RoomBookingStatus.CHECKOUT_REQUESTED
+        assert equipment_updated.status == EquipmentBookingStatus.RETURN_REQUESTED
 
     def test_advance_time_blocked_without_force_writes_audit_log(
         self,
@@ -410,7 +405,7 @@ class TestClockAdvance:
         penalties = penalty_repo.get_by_user(booking_user.id)
         assert penalties[0].reason == PenaltyReason.LATE_CANCEL
 
-    def test_forced_non_admin_advance_blames_advancing_user_for_end_side_penalty(
+    def test_advance_time_to_18_does_not_apply_end_side_penalty_on_arrival(
         self,
         policy_service,
         auth_service,
@@ -421,6 +416,39 @@ class TestClockAdvance:
     ):
         current_time = datetime(2024, 6, 16, 9, 0, 0)
         fake_clock(current_time)
+        user = auth_service.signup("arrival_checkout_owner", "pass")
+        room = create_test_room()
+
+        booking = RoomBooking(
+            id=str(uuid4()),
+            user_id=user.id,
+            room_id=room.id,
+            start_time=current_time.replace(hour=9).isoformat(),
+            end_time=current_time.replace(hour=18).isoformat(),
+            status=RoomBookingStatus.CHECKED_IN,
+            checked_in_at=current_time.replace(hour=9).isoformat(),
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
+
+        result = policy_service.advance_time(actor_id=user.id)
+
+        assert result["can_advance"] is True
+        updated = room_booking_repo.get_by_id(booking.id)
+        assert updated.status == RoomBookingStatus.CHECKED_IN
+        assert penalty_repo.get_by_user(user.id) == []
+
+    def test_forced_non_admin_advance_blames_advancing_user_for_end_side_penalty_when_leaving_18(
+        self,
+        policy_service,
+        auth_service,
+        create_test_room,
+        room_booking_repo,
+        penalty_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
         booking_user = auth_service.signup("late_checkout_owner", "pass")
         advancing_user = auth_service.signup("late_checkout_forcer", "pass")
         room = create_test_room()
@@ -430,7 +458,7 @@ class TestClockAdvance:
             user_id=booking_user.id,
             room_id=room.id,
             start_time=current_time.replace(hour=9).isoformat(),
-            end_time=current_time.replace(hour=18).isoformat(),
+            end_time=current_time.isoformat(),
             status=RoomBookingStatus.CHECKED_IN,
             checked_in_at=current_time.replace(hour=9).isoformat(),
         )
