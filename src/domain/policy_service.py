@@ -1,6 +1,6 @@
 """정책 서비스 - 가상 시점 전환과 상태 점검을 담당합니다."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import replace
 from typing import cast
 
@@ -339,10 +339,23 @@ class PolicyService:
         for room in self.room_repo.get_all():
             if room.status not in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
                 continue
-            if datetime.fromisoformat(room.updated_at) >= current_time:
-                continue
             if self._room_has_active_usage_at(room.id, current_time):
                 continue
+
+            latest_usage = self._get_latest_room_usage_booking(room.id)
+            if latest_usage is None:
+                continue
+
+            latest_end = datetime.fromisoformat(latest_usage.end_time)
+            restore_at = (latest_end + timedelta(days=1)).replace(
+                hour=9,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            if restore_at != current_time:
+                continue
+
             self.room_repo.update(
                 replace(
                     room,
@@ -384,6 +397,31 @@ class PolicyService:
             )
 
         return {"rooms": restored_rooms, "equipment": restored_equipment}
+
+    def _get_latest_room_usage_booking(self, room_id):
+        candidates = []
+
+        for booking in self.room_booking_repo.get_by_room(room_id):
+            if not booking.checked_in_at:
+                continue
+            if booking.status in {
+                RoomBookingStatus.CANCELLED,
+                RoomBookingStatus.ADMIN_CANCELLED,
+            }:
+                continue
+            candidates.append(booking)
+
+        if not candidates:
+            return None
+
+        return max(
+            candidates,
+            key=lambda booking: (
+                datetime.fromisoformat(booking.checked_in_at),
+                datetime.fromisoformat(booking.end_time),
+                booking.id,
+            ),
+        )
 
     def _room_has_active_usage_at(self, room_id, current_time):
         active_statuses = {

@@ -429,7 +429,6 @@ class AdminMenu:
         print("  1. 사용가능 (available)")
         print("  2. 점검중 (maintenance)")
 
-        choice = input("\n선택: ").strip()
         status_map = {
             "1": ResourceStatus.AVAILABLE,
             "2": ResourceStatus.MAINTENANCE,
@@ -443,22 +442,28 @@ class AdminMenu:
             new_status = status_map[choice]
             break
 
-        if not confirm("계속하시겠습니까?"):
-            return
+        while True:
+            if not confirm("계속하시겠습니까?"):
+                return
 
-        try:
-            room, cancelled = self.room_service.update_room_status(
-                admin=self.user, room_id=room_id, new_status=new_status
-            )
-            print_success(
-                f"상태가 변경되었습니다: {format_status_badge(new_status.value)}"
-            )
-            if cancelled:
-                print_info(f"자동 취소된 예약: {len(cancelled)}건")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
-
-        pause()
+            try:
+                room, cancelled = self.room_service.update_room_status(
+                    admin=self.user, room_id=room_id, new_status=new_status
+                )
+                print_success(
+                    f"상태가 변경되었습니다: {format_status_badge(new_status.value)}"
+                )
+                if cancelled:
+                    print_info(f"자동 취소된 예약: {len(cancelled)}건")
+                pause()
+                return
+            except RoomBookingError as e:
+                print_error(str(e))
+                continue
+            except (RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print_error(str(e))
+                pause()
+                return
 
     def _show_all_room_bookings(self):
         """전체 회의실 예약 조회"""
@@ -892,20 +897,26 @@ class AdminMenu:
                 )
             )
 
-        booking_id = select_from_list(items, "취소할 예약 선택")
-        if not booking_id:
-            return
+        while True:
+            booking_id = select_from_list(items, "취소할 예약 선택")
+            if not booking_id:
+                return
 
-        selected_booking = next((b for b in cancellable if b.id == booking_id), None)
-        if selected_booking is None:
-            print_error("선택한 예약을 찾을 수 없습니다.")
-            pause()
-            return
+            selected_booking = next(
+                (b for b in cancellable if b.id == booking_id), None
+            )
+            if selected_booking is None:
+                print_error("선택한 예약을 찾을 수 없습니다.")
+                continue
 
-        if datetime.fromisoformat(selected_booking.start_time).date() == self.policy_service.clock.now().date():
-            print_error("당일 예약은 취소할 수 없습니다.")
-            pause()
-            return
+            if (
+                datetime.fromisoformat(selected_booking.start_time).date()
+                == self.policy_service.clock.now().date()
+            ):
+                print_error("당일 예약은 취소할 수 없습니다.")
+                continue
+
+            break
 
         reason = input("취소 사유: ").strip()
         valid, error = validate_reason(reason)

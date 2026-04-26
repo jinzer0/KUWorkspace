@@ -522,16 +522,33 @@ class TestOvernightResourceRestore:
     def test_advance_time_restores_room_and_equipment_at_next_day_morning(
         self,
         policy_service,
+        create_test_user,
         create_test_room,
         create_test_equipment,
         room_repo,
+        room_booking_repo,
         equipment_repo,
         fake_clock,
     ):
         current_time = datetime(2024, 6, 16, 18, 0, 0)
         fake_clock(current_time)
+        user = create_test_user(username="restore_room_user")
         room = create_test_room(status=ResourceStatus.MAINTENANCE)
         equipment = create_test_equipment(status=ResourceStatus.DISABLED)
+
+        with global_lock():
+            room_booking_repo.add(
+                RoomBooking(
+                    id=str(uuid4()),
+                    user_id=user.id,
+                    room_id=room.id,
+                    start_time=current_time.replace(hour=9).isoformat(),
+                    end_time=current_time.isoformat(),
+                    status=RoomBookingStatus.COMPLETED,
+                    checked_in_at=current_time.replace(hour=9).isoformat(),
+                    completed_at=current_time.isoformat(),
+                )
+            )
 
         result = policy_service.advance_time(actor_id="admin-1")
 
