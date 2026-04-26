@@ -139,6 +139,17 @@ class PolicyService:
             penalty_owner_id = self._resolve_forced_penalty_owner_id(actor_id, force)
             auto_events = []
 
+            # 관리자 강행으로 09:00 -> 18:00 이동 시, 체크인 요청 대기건은
+            # 관리자 책임으로 간주하여 같은 날 내 자동 승인 처리한다.
+            if force and actor_role == "admin" and current_time.hour == 9:
+                auto_events.extend(
+                    self._auto_approve_forced_room_checkins(
+                        current_time,
+                        actor_id=actor_id,
+                        penalty_owner_id=penalty_owner_id,
+                    )
+                )
+
             # 18:00 슬롯 자동화는 18:00에 "도착"했을 때가 아니라
             # 18:00을 "떠날" 때 실행해야 사용자/관리자에게 퇴실 처리 기회를 줄 수 있다.
             if current_time.hour == 18:
@@ -226,6 +237,57 @@ class PolicyService:
                 penalty_owner_id=penalty_owner_id,
             )
         return []
+
+    def _auto_approve_forced_room_checkins(
+        self, current_time, actor_id="system", penalty_owner_id=None
+    ):
+        events = []
+        now = now_iso()
+
+        for booking in self.room_booking_repo.get_all():
+            if datetime.fromisoformat(booking.start_time) != current_time:
+                continue
+            if booking.status not in {
+                RoomBookingStatus.CHECKIN_REQUESTED,
+                RoomBookingStatus.RESERVED,
+            }:
+                continue
+
+            if booking.status == RoomBookingStatus.RESERVED:
+                user = self._get_penalty_user(booking.user_id, penalty_owner_id)
+                if user:
+                    self.penalty_service.apply_late_cancel(
+                        user=user,
+                        booking_type="room_booking",
+                        booking_id=booking.id,
+                        actor_id=actor_id,
+                    )
+
+            self.room_booking_repo.update(
+                replace(
+                    booking,
+                    status=RoomBookingStatus.CHECKED_IN,
+                    checked_in_at=now,
+                    updated_at=now,
+                )
+            )
+
+            room = self.room_repo.get_by_id(booking.room_id)
+            if room is not None:
+                self.room_repo.update(
+                    replace(
+                        room,
+                        status=ResourceStatus.DISABLED,
+                        updated_at=now,
+                    )
+                )
+
+            if booking.status == RoomBookingStatus.RESERVED:
+                events.append(f"회의실 예약 {booking.id[:8]} 패널티 후 강행 자동 체크인 승인")
+            else:
+                events.append(f"회의실 예약 {booking.id[:8]} 강행 자동 체크인 승인")
+
+        return events
 
     def _auto_handle_start_slot(self, current_time, actor_id="system", penalty_owner_id=None):
         events = []
