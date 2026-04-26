@@ -405,41 +405,41 @@ class AdminMenu:
                 f"{self._format_room_status_text(room.status)}"
             )
 
-        print("\n0 : 취소")
-        choice = input("회의실 선택(번호): ").strip()
+        while True:
+            print("\n0 : 취소")
+            choice = input("회의실 선택(번호): ").strip()
 
-        if choice == "0":
-            return
+            if choice == "0":
+                return
 
-        if not choice.isdigit():
-            print_error("숫자를 입력해주세요.")
-            pause()
-            return
+            if not choice.isdigit():
+                print_error("숫자를 입력해주세요.")
+                continue
 
-        choice_int = int(choice)
-        if not (1 <= choice_int <= len(rooms)):
-            print_error("올바른 번호를 입력해주세요.")
-            pause()
-            return
+            choice_int = int(choice)
+            if not (1 <= choice_int <= len(rooms)):
+                print_error(f"1 ~ {len(rooms)} 사이의 번호를 입력해주세요.")
+                continue
 
-        room_id = rooms[choice_int - 1].id
+            room_id = rooms[choice_int - 1].id
+            break
 
         print("\n변경할 상태:")
         print("  1. 사용가능 (available)")
         print("  2. 점검중 (maintenance)")
 
-        choice = input("\n선택: ").strip()
         status_map = {
             "1": ResourceStatus.AVAILABLE,
             "2": ResourceStatus.MAINTENANCE,
         }
 
-        if choice not in status_map:
-            print_error("잘못된 선택입니다.")
-            pause()
-            return
-
-        new_status = status_map[choice]
+        while True:
+            choice = input("\n선택: ").strip()
+            if choice not in status_map:
+                print_error("잘못된 선택입니다.")
+                continue
+            new_status = status_map[choice]
+            break
 
         if not confirm("계속하시겠습니까?"):
             return
@@ -843,6 +843,8 @@ class AdminMenu:
         self._print_daily_booking_guide()
         start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
         if start_date is None or end_date is None:
+            return
+        if not confirm("예약을 변경하시겠습니까?"):
             return
 
         try:
