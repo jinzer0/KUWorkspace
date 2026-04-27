@@ -317,9 +317,8 @@ def equipment_factory():
         **overrides,
     ):
         _counter[0] += 1
-        resolved_serial = serial_number or f"NB-{_counter[0]:03d}"
+        resolved_serial = serial_number or id or f"NB-{_counter[0]:03d}"
         return EquipmentAsset(
-            id=id or resolved_serial,
             name=name or f"장비{_counter[0]}",
             asset_type=asset_type,
             serial_number=resolved_serial,

@@ -708,6 +708,10 @@ class RoomService:
                 booking_user = self.user_repo.get_by_id(booking.user_id)
                 if booking_user is None:
                     raise RoomBookingError("존재하지 않는 사용자입니다.")
+
+                room = self.room_repo.get_by_id(booking.room_id)
+                if room is None:
+                    raise RoomBookingError("존재하지 않는 회의실입니다.")
                 self._require_current_boundary(
                     datetime.fromisoformat(booking.start_time), "체크인"
                 )
@@ -720,6 +724,9 @@ class RoomService:
                 )
 
                 self.booking_repo.update(updated)
+                self.room_repo.update(
+                    replace(room, status=ResourceStatus.DISABLED)
+                )
 
                 self.audit_repo.log_action(
                     actor_id=admin.id,
@@ -858,8 +865,6 @@ class RoomService:
                     f"'{booking.status.value}' 상태의 예약은 퇴실 승인 처리할 수 없습니다."
                 )
 
-            end_time = datetime.fromisoformat(booking.end_time)
-            self._require_current_boundary(end_time, "퇴실 승인")
             delay_minutes = 0
 
             updated = replace(
@@ -984,6 +989,63 @@ class RoomService:
         """회의실별 예약 조회"""
         return self.booking_repo.get_by_room(room_id)
 
+    def _get_latest_room_usage_booking(self, room_id):
+        candidates = []
+
+        for booking in self.booking_repo.get_by_room(room_id):
+            if not booking.checked_in_at:
+                continue
+            if booking.status in {
+                RoomBookingStatus.CANCELLED,
+                RoomBookingStatus.ADMIN_CANCELLED,
+            }:
+                continue
+            candidates.append(booking)
+
+        if not candidates:
+            return None
+
+        return max(
+            candidates,
+            key=lambda booking: (
+                datetime.fromisoformat(booking.checked_in_at),
+                datetime.fromisoformat(booking.end_time),
+                booking.id,
+            ),
+        )
+
+    def _validate_room_maintenance_transition(self, room, current_time):
+        if room.status != ResourceStatus.DISABLED:
+            raise RoomBookingError("변경할 수 없습니다.")
+
+        latest_usage = self._get_latest_room_usage_booking(room.id)
+        if (
+            latest_usage is None
+            or latest_usage.status != RoomBookingStatus.COMPLETED
+            or not latest_usage.completed_at
+        ):
+            raise RoomBookingError("변경할 수 없습니다.")
+
+        maintenance_open_at = datetime.fromisoformat(
+            latest_usage.completed_at
+        ).replace(hour=18, minute=0, second=0, microsecond=0)
+        booking_end = datetime.fromisoformat(latest_usage.end_time)
+
+        if not (maintenance_open_at <= current_time <= booking_end):
+            raise RoomBookingError("변경할 수 없습니다.")
+
+    def _validate_room_available_transition(self, room, current_time):
+        if room.status != ResourceStatus.MAINTENANCE:
+            raise RoomBookingError("변경할 수 없습니다.")
+
+        maintenance_set_at = datetime.fromisoformat(room.updated_at)
+        available_open_at = (maintenance_set_at + timedelta(days=1)).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        )
+
+        if current_time < available_open_at:
+            raise RoomBookingError("변경할 수 없습니다.")
+
     def update_room_status(self, admin, room_id, new_status):
         admin = self._get_existing_admin(admin)
         with global_lock(), UnitOfWork():
@@ -992,10 +1054,15 @@ class RoomService:
                 raise RoomBookingError("존재하지 않는 회의실입니다.")
 
             cancelled_bookings = []
+            now = self.clock.now()
+
+            if new_status == ResourceStatus.MAINTENANCE:
+                self._validate_room_maintenance_transition(room, now)
+            elif new_status == ResourceStatus.AVAILABLE:
+                self._validate_room_available_transition(room, now)
 
             # maintenance 또는 disabled로 변경 시 미래 예약 취소
             if new_status in {ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED}:
-                now = self.clock.now()
                 for booking in self.booking_repo.get_by_room(room_id):
                     if booking.status == RoomBookingStatus.RESERVED:
                         start = datetime.fromisoformat(booking.start_time)

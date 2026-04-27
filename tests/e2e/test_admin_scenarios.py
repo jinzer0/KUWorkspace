@@ -206,8 +206,8 @@ class TestAdminPolicyExecution:
             id=str(uuid4()),
             user_id=user.id,
             room_id=room.id,
-            start_time=(fixed_time + timedelta(days=1)).replace(hour=9).isoformat(),
-            end_time=(fixed_time + timedelta(days=1)).replace(hour=18).isoformat(),
+            start_time=fixed_time.replace(hour=9).isoformat(),
+            end_time=fixed_time.isoformat(),
             status=RoomBookingStatus.RESERVED,
         )
         with global_lock():

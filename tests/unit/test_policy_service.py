@@ -137,7 +137,7 @@ class TestClockAdvance:
 
         assert result["can_advance"] is False
         assert any("자동 취소" in blocker for blocker in result["blockers"])
-        assert "현재 사용자에게 부과" in result["force_notice"]
+        assert "각 예약의 책임 사용자" in result["force_notice"]
 
     def test_prepare_advance_blocks_equipment_end_without_user_request(
         self,
@@ -186,7 +186,7 @@ class TestClockAdvance:
         logs = audit_repo.get_by_actor("admin-1")
         assert any(log.action == "clock_advance" for log in logs)
 
-    def test_advance_time_returns_user_facing_result_events_for_user(
+    def test_advance_time_does_not_complete_checkout_request_on_arrival_to_18_for_user(
         self,
         policy_service,
         create_test_user,
@@ -215,13 +215,11 @@ class TestClockAdvance:
 
         result = policy_service.advance_time(actor_id=user.id)
 
-        assert result["events"] == [
-            "본인의 회의실 예약이 종료되었습니다.",
-        ]
+        assert result["events"] == []
         updated = room_booking_repo.get_by_user(user.id)[0]
-        assert updated.status == RoomBookingStatus.COMPLETED
+        assert updated.status == RoomBookingStatus.CHECKOUT_REQUESTED
 
-    def test_advance_time_returns_system_result_events_for_admin(
+    def test_advance_time_does_not_complete_checkout_or_return_requests_on_arrival_to_18_for_admin(
         self,
         policy_service,
         create_test_user,
@@ -267,14 +265,96 @@ class TestClockAdvance:
 
         result = policy_service.advance_time(actor_id=admin.id, actor_role="admin")
 
-        assert result["events"] == [
-            "회의실 예약 종료 처리 1건",
-            "장비 반납 처리 1건",
-        ]
+        assert result["events"] == []
         room_updated = room_booking_repo.get_by_user(room_user.id)[0]
         equipment_updated = equipment_booking_repo.get_by_user(equip_user.id)[0]
-        assert room_updated.status == RoomBookingStatus.COMPLETED
-        assert equipment_updated.status == EquipmentBookingStatus.RETURNED
+        assert room_updated.status == RoomBookingStatus.CHECKOUT_REQUESTED
+        assert equipment_updated.status == EquipmentBookingStatus.RETURN_REQUESTED
+
+    def test_advance_time_force_admin_auto_approves_room_checkin_requests_on_09_to_18(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        room_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+        admin = create_test_user(username="force_admin", role=UserRole.ADMIN)
+        user = create_test_user(username="force_checkin_user")
+        room = create_test_room(status=ResourceStatus.AVAILABLE)
+
+        with global_lock():
+            room_booking_repo.add(
+                RoomBooking(
+                    id=str(uuid4()),
+                    user_id=user.id,
+                    room_id=room.id,
+                    start_time=current_time.isoformat(),
+                    end_time=current_time.replace(hour=18).isoformat(),
+                    status=RoomBookingStatus.CHECKIN_REQUESTED,
+                    requested_checkin_at=current_time.isoformat(),
+                )
+            )
+
+        result = policy_service.advance_time(
+            actor_id=admin.id,
+            actor_role="admin",
+            force=True,
+        )
+
+        assert result["can_advance"] is True
+        assert result["next_time"] == current_time.replace(hour=18)
+        updated = room_booking_repo.get_by_user(user.id)[0]
+        assert updated.status == RoomBookingStatus.CHECKED_IN
+        assert updated.checked_in_at == current_time.isoformat()
+        assert room_repo.get_by_id(room.id).status == ResourceStatus.DISABLED
+
+    def test_advance_time_force_admin_applies_penalty_and_auto_starts_reserved_room_booking_on_09_to_18(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        room_repo,
+        penalty_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+        admin = create_test_user(username="force_reserved_admin", role=UserRole.ADMIN)
+        user = create_test_user(username="force_reserved_user")
+        room = create_test_room(status=ResourceStatus.AVAILABLE)
+
+        with global_lock():
+            room_booking_repo.add(
+                RoomBooking(
+                    id=str(uuid4()),
+                    user_id=user.id,
+                    room_id=room.id,
+                    start_time=current_time.isoformat(),
+                    end_time=current_time.replace(hour=18).isoformat(),
+                    status=RoomBookingStatus.RESERVED,
+                )
+            )
+
+        result = policy_service.advance_time(
+            actor_id=admin.id,
+            actor_role="admin",
+            force=True,
+        )
+
+        assert result["can_advance"] is True
+        assert result["next_time"] == current_time.replace(hour=18)
+        updated = room_booking_repo.get_by_user(user.id)[0]
+        assert updated.status == RoomBookingStatus.CHECKED_IN
+        assert updated.checked_in_at == current_time.isoformat()
+        assert room_repo.get_by_id(room.id).status == ResourceStatus.DISABLED
+        assert policy_service.user_repo.get_by_id(user.id).penalty_points == 2
+        penalties = penalty_repo.get_by_user(user.id)
+        assert penalties[0].reason == PenaltyReason.LATE_CANCEL
 
     def test_advance_time_blocked_without_force_writes_audit_log(
         self,
@@ -340,7 +420,7 @@ class TestClockAdvance:
         assert penalty_repo.get_by_user(user.id) == []
         assert clock.now() == current_time
 
-    def test_forced_non_admin_advance_blames_advancing_user_for_start_side_penalty(
+    def test_forced_non_admin_advance_assigns_start_side_penalty_to_booking_user(
         self,
         policy_service,
         auth_service,
@@ -359,8 +439,8 @@ class TestClockAdvance:
             id=str(uuid4()),
             user_id=booking_user.id,
             room_id=room.id,
-            start_time=(current_time + timedelta(days=1)).replace(hour=9).isoformat(),
-            end_time=(current_time + timedelta(days=1)).replace(hour=18).isoformat(),
+            start_time=current_time.replace(hour=9).isoformat(),
+            end_time=current_time.isoformat(),
             status=RoomBookingStatus.RESERVED,
         )
         with global_lock():
@@ -371,9 +451,9 @@ class TestClockAdvance:
         assert result["can_advance"] is True
         updated_booking = room_booking_repo.get_by_id(booking.id)
         assert updated_booking.status == RoomBookingStatus.ADMIN_CANCELLED
-        assert auth_service.get_user(advancing_user.id).penalty_points == 2
-        assert auth_service.get_user(booking_user.id).penalty_points == 0
-        penalties = penalty_repo.get_by_user(advancing_user.id)
+        assert auth_service.get_user(advancing_user.id).penalty_points == 0
+        assert auth_service.get_user(booking_user.id).penalty_points == 2
+        penalties = penalty_repo.get_by_user(booking_user.id)
         assert penalties[0].reason == PenaltyReason.LATE_CANCEL
 
     def test_forced_admin_advance_keeps_penalty_on_original_user(
@@ -395,8 +475,8 @@ class TestClockAdvance:
             id=str(uuid4()),
             user_id=booking_user.id,
             room_id=room.id,
-            start_time=(current_time + timedelta(days=1)).replace(hour=9).isoformat(),
-            end_time=(current_time + timedelta(days=1)).replace(hour=18).isoformat(),
+            start_time=current_time.replace(hour=9).isoformat(),
+            end_time=current_time.isoformat(),
             status=RoomBookingStatus.RESERVED,
         )
         with global_lock():
@@ -410,7 +490,7 @@ class TestClockAdvance:
         penalties = penalty_repo.get_by_user(booking_user.id)
         assert penalties[0].reason == PenaltyReason.LATE_CANCEL
 
-    def test_forced_non_admin_advance_blames_advancing_user_for_end_side_penalty(
+    def test_advance_time_to_18_does_not_apply_end_side_penalty_on_arrival(
         self,
         policy_service,
         auth_service,
@@ -421,13 +501,12 @@ class TestClockAdvance:
     ):
         current_time = datetime(2024, 6, 16, 9, 0, 0)
         fake_clock(current_time)
-        booking_user = auth_service.signup("late_checkout_owner", "pass")
-        advancing_user = auth_service.signup("late_checkout_forcer", "pass")
+        user = auth_service.signup("arrival_owner", "pass")
         room = create_test_room()
 
         booking = RoomBooking(
             id=str(uuid4()),
-            user_id=booking_user.id,
+            user_id=user.id,
             room_id=room.id,
             start_time=current_time.replace(hour=9).isoformat(),
             end_time=current_time.replace(hour=18).isoformat(),
@@ -437,12 +516,119 @@ class TestClockAdvance:
         with global_lock():
             room_booking_repo.add(booking)
 
+        result = policy_service.advance_time(actor_id=user.id)
+
+        assert result["can_advance"] is True
+        updated = room_booking_repo.get_by_id(booking.id)
+        assert updated.status == RoomBookingStatus.CHECKED_IN
+        assert penalty_repo.get_by_user(user.id) == []
+
+    def test_forced_non_admin_advance_assigns_end_side_penalty_to_booking_user_when_leaving_18(
+        self,
+        policy_service,
+        auth_service,
+        create_test_room,
+        room_booking_repo,
+        penalty_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
+        booking_user = auth_service.signup("late_checkout_owner", "pass")
+        advancing_user = auth_service.signup("late_checkout_forcer", "pass")
+        room = create_test_room()
+
+        booking = RoomBooking(
+            id=str(uuid4()),
+            user_id=booking_user.id,
+            room_id=room.id,
+            start_time=current_time.replace(hour=9).isoformat(),
+            end_time=current_time.isoformat(),
+            status=RoomBookingStatus.CHECKED_IN,
+            checked_in_at=current_time.replace(hour=9).isoformat(),
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
+
         result = policy_service.advance_time(actor_id=advancing_user.id, force=True)
 
         assert result["can_advance"] is True
-        assert auth_service.get_user(advancing_user.id).penalty_points == 2
-        assert auth_service.get_user(booking_user.id).penalty_points == 0
-        penalties = penalty_repo.get_by_user(advancing_user.id)
+        assert auth_service.get_user(advancing_user.id).penalty_points == 0
+        assert auth_service.get_user(booking_user.id).penalty_points == 2
+        penalties = penalty_repo.get_by_user(booking_user.id)
+        assert penalties[0].reason == PenaltyReason.LATE_RETURN
+
+    def test_forced_non_admin_advance_assigns_equipment_start_side_penalty_to_booking_user(
+        self,
+        policy_service,
+        auth_service,
+        create_test_equipment,
+        equipment_booking_repo,
+        penalty_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 15, 18, 0, 0)
+        fake_clock(current_time)
+        booking_user = auth_service.signup("equip_owner", "pass")
+        advancing_user = auth_service.signup("equip_forcer", "pass")
+        equipment = create_test_equipment()
+
+        booking = EquipmentBooking(
+            id=str(uuid4()),
+            user_id=booking_user.id,
+            equipment_id=equipment.id,
+            start_time=current_time.replace(hour=9).isoformat(),
+            end_time=current_time.isoformat(),
+            status=EquipmentBookingStatus.RESERVED,
+        )
+        with global_lock():
+            equipment_booking_repo.add(booking)
+
+        result = policy_service.advance_time(actor_id=advancing_user.id, force=True)
+
+        assert result["can_advance"] is True
+        updated_booking = equipment_booking_repo.get_by_id(booking.id)
+        assert updated_booking.status == EquipmentBookingStatus.ADMIN_CANCELLED
+        assert auth_service.get_user(advancing_user.id).penalty_points == 0
+        assert auth_service.get_user(booking_user.id).penalty_points == 2
+        penalties = penalty_repo.get_by_user(booking_user.id)
+        assert penalties[0].reason == PenaltyReason.LATE_CANCEL
+
+    def test_forced_non_admin_advance_assigns_equipment_end_side_penalty_to_booking_user(
+        self,
+        policy_service,
+        auth_service,
+        create_test_equipment,
+        equipment_booking_repo,
+        penalty_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
+        booking_user = auth_service.signup("return_owner", "pass")
+        advancing_user = auth_service.signup("return_forcer", "pass")
+        equipment = create_test_equipment()
+
+        booking = EquipmentBooking(
+            id=str(uuid4()),
+            user_id=booking_user.id,
+            equipment_id=equipment.id,
+            start_time=current_time.replace(hour=9).isoformat(),
+            end_time=current_time.isoformat(),
+            status=EquipmentBookingStatus.CHECKED_OUT,
+            checked_out_at=current_time.replace(hour=9).isoformat(),
+        )
+        with global_lock():
+            equipment_booking_repo.add(booking)
+
+        result = policy_service.advance_time(actor_id=advancing_user.id, force=True)
+
+        assert result["can_advance"] is True
+        updated_booking = equipment_booking_repo.get_by_id(booking.id)
+        assert updated_booking.status == EquipmentBookingStatus.RETURNED
+        assert auth_service.get_user(advancing_user.id).penalty_points == 0
+        assert auth_service.get_user(booking_user.id).penalty_points == 2
+        penalties = penalty_repo.get_by_user(booking_user.id)
         assert penalties[0].reason == PenaltyReason.LATE_RETURN
 
 
@@ -494,16 +680,33 @@ class TestOvernightResourceRestore:
     def test_advance_time_restores_room_and_equipment_at_next_day_morning(
         self,
         policy_service,
+        create_test_user,
         create_test_room,
         create_test_equipment,
         room_repo,
+        room_booking_repo,
         equipment_repo,
         fake_clock,
     ):
         current_time = datetime(2024, 6, 16, 18, 0, 0)
         fake_clock(current_time)
+        user = create_test_user(username="restore_room_user")
         room = create_test_room(status=ResourceStatus.MAINTENANCE)
         equipment = create_test_equipment(status=ResourceStatus.DISABLED)
+
+        with global_lock():
+            room_booking_repo.add(
+                RoomBooking(
+                    id=str(uuid4()),
+                    user_id=user.id,
+                    room_id=room.id,
+                    start_time=current_time.replace(hour=9).isoformat(),
+                    end_time=current_time.isoformat(),
+                    status=RoomBookingStatus.COMPLETED,
+                    checked_in_at=current_time.replace(hour=9).isoformat(),
+                    completed_at=current_time.isoformat(),
+                )
+            )
 
         result = policy_service.advance_time(actor_id="admin-1")
 

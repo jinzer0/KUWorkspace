@@ -10,18 +10,6 @@ import uuid
 import json
 
 from src.runtime_clock import get_current_time
-from src.domain.field_rules import (
-    validate_username_text,
-    validate_password_text,
-    validate_room_name,
-    validate_room_capacity,
-    validate_room_location,
-    validate_room_description,
-    validate_equipment_name,
-    validate_equipment_asset_type,
-    validate_equipment_serial,
-    validate_equipment_description,
-)
 
 # ===== Enums =====
 
@@ -95,24 +83,17 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(dt_str)
 
 
-def normalize_datetime_string(
-    value: Optional[str],
-    *,
-    strict: bool = False,
-    field_name: str = "datetime",
-) -> Optional[str]:
+def normalize_datetime_string(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     try:
         dt = datetime.fromisoformat(value)
         return dt.replace(second=0, microsecond=0).isoformat(timespec="minutes")
-    except ValueError as error:
-        if strict:
-            raise ValueError(f"{field_name} 형식이 올바르지 않습니다: {value}") from error
+    except ValueError:
         return value
 
 
-def normalize_persisted_text(value: Optional[str], max_length: int = 20) -> str:
+def normalize_persisted_text(value: Optional[str], max_length: int = 40) -> str:
     if value is None:
         return ""
     return value.replace("\r", " ").replace("\n", " ")[:max_length]
@@ -158,8 +139,6 @@ class User:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
-        validate_username_text(self.username)
-        validate_password_text(self.password)
         return [
             self.username,
             self.password,
@@ -181,8 +160,6 @@ class User:
         else:
             user_id, username, password, role, points, streak, restriction_until, created_at, updated_at = record
         user_key = username or user_id or ""
-        validate_username_text(user_key)
-        validate_password_text(password or "")
         return cls(
             id=user_id or user_key,
             username=user_key,
@@ -190,13 +167,9 @@ class User:
             role=UserRole(role),
             penalty_points=int(points or "0"),
             normal_use_streak=int(streak or "0"),
-            restriction_until=normalize_datetime_string(
-                restriction_until,
-                strict=True,
-                field_name="restriction_until",
-            ),
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
+            restriction_until=normalize_datetime_string(restriction_until),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
         )
 
 
@@ -232,10 +205,6 @@ class Room:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
-        validate_room_name(self.name)
-        validate_room_capacity(self.capacity)
-        validate_room_location(self.location)
-        validate_room_description(self.description)
         return [
             self.name,
             str(self.capacity),
@@ -256,10 +225,6 @@ class Room:
         else:
             room_id, name, capacity, location, status, description, created_at, updated_at = record
         room_key = name or room_id or ""
-        validate_room_name(room_key)
-        validate_room_capacity(int(capacity or "0"))
-        validate_room_location(location or "")
-        validate_room_description(description or "")
         return cls(
             id=room_id or room_key,
             name=room_key,
@@ -267,16 +232,17 @@ class Room:
             location=location or "",
             status=ResourceStatus(status),
             description=description or "",
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
         )
 
 
-@dataclass(init=False)
+@dataclass
 class EquipmentAsset:
     """장비 자산 (개별 자산 단위 관리)
     
-    id 기능 serial_number 와 통합
+    장비의 고유 식별자로 serial_number를 사용한다.
+    id 프로퍼티는 serial_number를 반환하며, 기존 코드와의 호환성을 유지한다.
     """
 
     name: str
@@ -286,37 +252,6 @@ class EquipmentAsset:
     description: str = ""
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
-
-    def __init__(
-        self,
-        name: str,
-        asset_type: str,
-        serial_number: Optional[str] = None,
-        status: ResourceStatus = ResourceStatus.AVAILABLE,
-        description: str = "",
-        created_at: Optional[str] = None,
-        updated_at: Optional[str] = None,
-        **legacy_kwargs,
-    ) -> None:
-        legacy_id = legacy_kwargs.pop("id", None)
-        if legacy_kwargs:
-            unexpected = ", ".join(sorted(legacy_kwargs.keys()))
-            raise TypeError(f"Unexpected EquipmentAsset fields: {unexpected}")
-
-        normalized_serial = serial_number or legacy_id
-        if serial_number and legacy_id and serial_number != legacy_id:
-            raise ValueError("EquipmentAsset id and serial_number must match when both are provided")
-
-        if normalized_serial is None:
-            raise TypeError("EquipmentAsset requires serial_number or legacy id")
-
-        self.name = name
-        self.asset_type = asset_type
-        self.serial_number = normalized_serial
-        self.status = status
-        self.description = description
-        self.created_at = created_at if created_at is not None else now_iso()
-        self.updated_at = updated_at if updated_at is not None else now_iso()
 
     @property
     def id(self) -> str:
@@ -331,11 +266,7 @@ class EquipmentAsset:
     @classmethod
     def from_dict(cls, data: dict) -> "EquipmentAsset":
         data = data.copy()
-        legacy_id = data.pop("id", None)
-        if "serial_number" not in data and legacy_id is not None:
-            data["serial_number"] = legacy_id
-        elif legacy_id is not None and data.get("serial_number") != legacy_id:
-            raise ValueError("EquipmentAsset id and serial_number must match when both are provided")
+        data.pop("id", None)  # id 필드가 있으면 제거 (serial_number로 대체)
         data["status"] = ResourceStatus(data["status"])
         return cls(**data)
 
@@ -347,10 +278,6 @@ class EquipmentAsset:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
-        validate_equipment_name(self.name)
-        validate_equipment_asset_type(self.asset_type)
-        validate_equipment_serial(self.serial_number)
-        validate_equipment_description(self.description)
         return [
             self.name,
             self.asset_type,
@@ -375,8 +302,8 @@ class EquipmentAsset:
             serial_number=serial_number or "",
             status=ResourceStatus(status),
             description=description or "",
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
         )
 
 
@@ -450,22 +377,20 @@ class RoomBooking:
             created_at,
             updated_at,
         ) = record
-        if not booking_id:
-            raise ValueError("room booking id는 비어 있을 수 없습니다.")
         return cls(
-            id=booking_id,
+            id=booking_id or generate_id(),
             user_id=user_id or "",
             room_id=room_id or "",
-            start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
-            end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
+            start_time=normalize_datetime_string(start_time) or now_iso(),
+            end_time=normalize_datetime_string(end_time) or now_iso(),
             status=RoomBookingStatus(status),
-            checked_in_at=normalize_datetime_string(checked_in_at, strict=True, field_name="checked_in_at"),
-            requested_checkin_at=normalize_datetime_string(requested_checkin_at, strict=True, field_name="requested_checkin_at"),
-            requested_checkout_at=normalize_datetime_string(requested_checkout_at, strict=True, field_name="requested_checkout_at"),
-            completed_at=normalize_datetime_string(completed_at, strict=True, field_name="completed_at"),
-            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
+            checked_in_at=normalize_datetime_string(checked_in_at),
+            requested_checkin_at=normalize_datetime_string(requested_checkin_at),
+            requested_checkout_at=normalize_datetime_string(requested_checkout_at),
+            completed_at=normalize_datetime_string(completed_at),
+            cancelled_at=normalize_datetime_string(cancelled_at),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
         )
 
 
@@ -539,22 +464,20 @@ class EquipmentBooking:
             created_at,
             updated_at,
         ) = record
-        if not booking_id:
-            raise ValueError("equipment booking id는 비어 있을 수 없습니다.")
         return cls(
-            id=booking_id,
+            id=booking_id or generate_id(),
             user_id=user_id or "",
             equipment_id=equipment_id or "",
-            start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
-            end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
+            start_time=normalize_datetime_string(start_time) or now_iso(),
+            end_time=normalize_datetime_string(end_time) or now_iso(),
             status=EquipmentBookingStatus(status),
-            checked_out_at=normalize_datetime_string(checked_out_at, strict=True, field_name="checked_out_at"),
-            requested_pickup_at=normalize_datetime_string(requested_pickup_at, strict=True, field_name="requested_pickup_at"),
-            requested_return_at=normalize_datetime_string(requested_return_at, strict=True, field_name="requested_return_at"),
-            returned_at=normalize_datetime_string(returned_at, strict=True, field_name="returned_at"),
-            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
+            checked_out_at=normalize_datetime_string(checked_out_at),
+            requested_pickup_at=normalize_datetime_string(requested_pickup_at),
+            requested_return_at=normalize_datetime_string(requested_return_at),
+            returned_at=normalize_datetime_string(returned_at),
+            cancelled_at=normalize_datetime_string(cancelled_at),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at) or now_iso(),
         )
 
 
@@ -606,18 +529,16 @@ class Penalty:
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "Penalty":
         penalty_id, user_id, reason, points, related_type, related_id, memo, created_at, updated_at = record
-        if not penalty_id:
-            raise ValueError("penalty id는 비어 있을 수 없습니다.")
         return cls(
-            id=penalty_id,
+            id=penalty_id or generate_id(),
             user_id=user_id or "",
             reason=PenaltyReason(reason),
             points=int(points or "0"),
             related_type=related_type or "",
             related_id=related_id or "",
             memo=normalize_persisted_text(memo),
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at"),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at),
         )
 
 
@@ -663,15 +584,13 @@ class AuditLog:
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "AuditLog":
         log_id, actor_id, action, target_type, target_id, details, created_at, updated_at = record
-        if not log_id:
-            raise ValueError("audit log id는 비어 있을 수 없습니다.")
         return cls(
-            id=log_id,
+            id=log_id or generate_id(),
             actor_id=actor_id or "",
             action=action or "",
             target_type=target_type or "",
             target_id=target_id or "",
             details=normalize_persisted_text(details),
-            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
-            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at"),
+            created_at=normalize_datetime_string(created_at) or now_iso(),
+            updated_at=normalize_datetime_string(updated_at),
         )
