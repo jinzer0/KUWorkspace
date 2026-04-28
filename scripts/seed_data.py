@@ -7,6 +7,7 @@
 
 import sys
 from pathlib import Path
+from datetime import datetime
 
 # 프로젝트 루트를 Python 경로에 추가
 project_root = Path(__file__).parent.parent
@@ -22,7 +23,10 @@ from src.config import (
     EQUIPMENT_BOOKING_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
+    CLOCK_FILE,
+    CLOCK_SENTINEL,
 )
+from src.clock_bootstrap import read_clock_marker
 from src.domain.models import (
     User,
     Room,
@@ -37,6 +41,7 @@ from src.storage.repositories import (
     UnitOfWork,
 )
 from src.storage.file_lock import global_lock
+from src.storage.integrity import DataIntegrityError
 
 
 LEGACY_DATA_FILES = [
@@ -53,12 +58,41 @@ CURRENT_DATA_FILES = [
     EQUIPMENT_BOOKING_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
+    CLOCK_FILE,
 ]
+
+
+def reset_clock_file():
+    ensure_data_dir()
+    CLOCK_FILE.write_text(CLOCK_SENTINEL, encoding="utf-8")
+
+
+def get_seed_timestamp():
+    marker = read_clock_marker()
+    if marker == CLOCK_SENTINEL:
+        return marker
+
+    try:
+        return datetime.fromisoformat(marker).replace(second=0, microsecond=0).isoformat(
+            timespec="minutes"
+        )
+    except ValueError as error:
+        raise DataIntegrityError(
+            f"시드 타임스탬프 형식이 올바르지 않습니다: {CLOCK_FILE} ({marker})"
+        ) from error
 
 
 def create_admin():
     """관리자 계정 생성"""
-    return User(id="admin", username="admin", password="admin123", role=UserRole.ADMIN)
+    seed_timestamp = get_seed_timestamp()
+    return User(
+        id="admin",
+        username="admin",
+        password="admin123",
+        role=UserRole.ADMIN,
+        created_at=seed_timestamp,
+        updated_at=seed_timestamp,
+    )
 
 
 def reset_data_files():
@@ -70,6 +104,7 @@ def reset_data_files():
 
 def create_rooms():
     """회의실 9개 생성"""
+    seed_timestamp = get_seed_timestamp()
     rooms_data = [
         ("회의실 4A", 4, "1층", "4인 회의실"),
         ("회의실 4B", 4, "1층", "4인 회의실"),
@@ -90,6 +125,8 @@ def create_rooms():
             location=location,
             description=description,
             status=ResourceStatus.AVAILABLE,
+            created_at=seed_timestamp,
+            updated_at=seed_timestamp,
         )
         for name, capacity, location, description in rooms_data
     ]
@@ -97,6 +134,7 @@ def create_rooms():
 
 def create_equipment():
     """장비 12개 생성"""
+    seed_timestamp = get_seed_timestamp()
     equipment_data = [
         ("프로젝터", "projector", "PJ-001"),
         ("프로젝터", "projector", "PJ-002"),
@@ -114,12 +152,13 @@ def create_equipment():
 
     return [
         EquipmentAsset(
-            id=serial,
             name=name,
             asset_type=asset_type,
             serial_number=serial,
             status=ResourceStatus.AVAILABLE,
             description=name,
+            created_at=seed_timestamp,
+            updated_at=seed_timestamp,
         )
         for name, asset_type, serial in equipment_data
     ]
@@ -134,6 +173,8 @@ def seed(reset=False):
         print("  기존 데이터 파일을 현재 포맷으로 초기화했습니다.")
     else:
         ensure_data_dir()
+
+    reset_clock_file()
 
     # 기존 데이터 확인
     user_repo = UserRepository()
