@@ -1,0 +1,1 @@
+f3b2767f-5155-492d-a946-66336f9f4eaf|aaaa|create_room_booking_daily|room_booking|7fb150d7-72a6-4264-9f90-311e5858e835|회의실: 회의실 8A, 인원: 8명, 기간: 2026-04-11 09:0|2026-04-01T09:00|\-
