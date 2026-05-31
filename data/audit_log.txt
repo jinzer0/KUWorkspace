@@ -1,0 +1,3 @@
+f3b2767f-5155-492d-a946-66336f9f4eaf|aaaa|create_room_booking_daily|room_booking|7fb150d7-72a6-4264-9f90-311e5858e835|회의실: 회의실 8A, 인원: 8명, 기간: 2026-04-11 09:0|2026-04-01T09:00|\-
+72a15b69-c6cb-40c2-9a34-0e8c6d105080|aaaa|cancel_room_booking|room_booking|7fb150d7-72a6-4264-9f90-311e5858e835|사용자 취소|2026-04-01T09:00|\-
+87c7834f-f7e1-443a-9946-00ad89f1fb02|aaaa|create_room_booking_daily|room_booking|ba5c5a68-88ff-4dec-8175-b82b0906a898|회의실: 회의실 4A, 인원: 4명, 기간: 2026-06-10 09:0|2026-04-01T09:00|\-

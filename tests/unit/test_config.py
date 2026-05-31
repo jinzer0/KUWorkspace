@@ -36,7 +36,7 @@ def test_ensure_data_dir_creates_all_data_files(tmp_path, monkeypatch):
         assert file_path.exists()
         assert file_path.is_file()
 
-    assert (tmp_path / "clock.txt").read_text(encoding="utf-8").strip() == "0000-00-00T00:00"
+    assert (tmp_path / "clock.txt").read_text(encoding="utf-8").strip() == "0000-00T00:00"
 
 
 def test_ensure_data_dir_fails_fast_on_permission_error(monkeypatch, tmp_path):

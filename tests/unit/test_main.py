@@ -201,7 +201,7 @@ def test_main_prompts_when_clock_file_is_sentinel(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     sentinel_file = data_dir / "clock.txt"
-    sentinel_file.write_text("0000-00-00T00:00", encoding="utf-8")
+    sentinel_file.write_text("0000-00T00:00", encoding="utf-8")
 
     monkeypatch.setattr("src.config.DATA_DIR", data_dir)
     monkeypatch.setattr("src.config.CLOCK_FILE", sentinel_file)
@@ -293,7 +293,7 @@ def test_main_exits_on_corrupted_data_file(tmp_path, monkeypatch, capsys):
     equipment_booking.touch()
     penalties.touch()
     audit.touch()
-    clock.write_text("0000-00-00T00:00", encoding="utf-8")
+    clock.write_text("0000-00T00:00", encoding="utf-8")
 
     monkeypatch.setattr("src.config.DATA_DIR", data_dir)
     monkeypatch.setattr("src.config.USERS_FILE", users)
@@ -346,7 +346,7 @@ def test_main_exits_on_malformed_persisted_datetime(tmp_path, monkeypatch, capsy
     equipment_booking.touch()
     penalties.touch()
     audit.touch()
-    clock.write_text("0000-00-00T00:00", encoding="utf-8")
+    clock.write_text("0000-00T00:00", encoding="utf-8")
 
     monkeypatch.setattr("src.config.DATA_DIR", data_dir)
     monkeypatch.setattr("src.config.USERS_FILE", users)
