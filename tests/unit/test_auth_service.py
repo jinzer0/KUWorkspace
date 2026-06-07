@@ -10,8 +10,10 @@
 
 import pytest
 
+from scripts.seed_data import create_admin
 from src.domain.auth_service import AuthError
 from src.domain.models import UserRole
+from src.storage.file_lock import global_lock
 
 
 class TestSignup:
@@ -94,6 +96,15 @@ class TestLogin:
         user = auth_service.login(username="loginuser", password="correctpass")
 
         assert user.username == "loginuser"
+
+    def test_seed_admin_login_remains_valid(self, auth_service, user_repo):
+        with global_lock():
+            user_repo.add(create_admin())
+
+        user = auth_service.login(username="admin", password="admin123")
+
+        assert user.username == "admin"
+        assert user.role == UserRole.ADMIN
 
     def test_login_wrong_username(self, auth_service):
         """존재하지 않는 username으로 로그인 시 실패"""

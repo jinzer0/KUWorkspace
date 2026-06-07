@@ -11,7 +11,7 @@
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from dataclasses import replace
 
 from src.domain.room_service import AdminRequiredError, RoomBookingError
@@ -23,6 +23,7 @@ from src.domain.models import (
     UserRole,
 )
 from src.storage.file_lock import global_lock
+from src.storage.repositories import RoomBookingRepository
 
 
 class TestCreateBooking:
@@ -126,11 +127,10 @@ class TestCreateBooking:
             # 첫 번째 예약 성공
             room_service.create_booking(user1, room.id, start, end)
 
-            # 같은 시간대 두 번째 예약 실패
-            with pytest.raises(RoomBookingError) as exc_info:
-                room_service.create_booking(user2, room.id, start, end)
+            # 같은 시간대 두 번째 예약은 우선권 대기 상태로 생성
+            pending = room_service.create_booking(user2, room.id, start, end)
 
-            assert "이미 예약이 있습니다" in str(exc_info.value)
+            assert pending.status == RoomBookingStatus.PENDING
 
     def test_create_booking_overlapping_conflict(
         self, room_service, create_test_user, create_test_room, mock_now
@@ -152,13 +152,14 @@ class TestCreateBooking:
             )
 
             # 겹치는 예약 시도: 12:00 ~ 14:00
-            with pytest.raises(RoomBookingError):
-                room_service.create_booking(
-                    user2,
-                    room.id,
-                    fixed_time + timedelta(hours=2),
-                    fixed_time + timedelta(hours=4),
-                )
+            pending = room_service.create_booking(
+                user2,
+                room.id,
+                fixed_time + timedelta(hours=2),
+                fixed_time + timedelta(hours=4),
+            )
+
+            assert pending.status == RoomBookingStatus.PENDING
 
     def test_create_booking_exceeds_max_active(
         self,
@@ -1365,3 +1366,153 @@ class TestAdminOnlyRoomAccess:
             room_service.get_all_bookings(fake_admin)
 
         assert "관리자" in str(exc_info.value)
+
+
+class TestRoomBookingMemo:
+    def test_create_booking_persists_pipe_backslash_memo_after_reload(
+        self,
+        room_service,
+        temp_data_dir,
+        create_test_user,
+        create_test_room,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+        memo = r"회의|준비\자료"
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            room = create_test_room(status=ResourceStatus.AVAILABLE)
+            booking = room_service.create_booking(
+                user=user,
+                room_id=room.id,
+                start_time=fixed_time + timedelta(hours=1),
+                end_time=fixed_time + timedelta(hours=2),
+                memo=memo,
+            )
+
+        reloaded_repo = RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt")
+        reloaded = reloaded_repo.get_by_id(booking.id)
+
+        assert booking.memo == memo
+        assert reloaded is not None
+        assert reloaded.memo == memo
+
+    def test_create_daily_booking_persists_empty_and_sentinel_memo_after_reload(
+        self,
+        room_service,
+        temp_data_dir,
+        create_test_user,
+        create_test_room,
+        mock_now,
+    ):
+        with mock_now(datetime(2024, 6, 15, 8, 0, 0)):
+            user = create_test_user()
+            empty_room = create_test_room(name="회의실2A", capacity=4)
+            sentinel_room = create_test_room(name="회의실2B", capacity=4)
+            empty_booking = room_service.create_daily_booking(
+                user=user,
+                room_id=empty_room.id,
+                start_date=date(2024, 6, 16),
+                end_date=date(2024, 6, 16),
+                attendee_count=2,
+                max_active=2,
+                memo="",
+            )
+            sentinel_booking = room_service.create_daily_booking(
+                user=user,
+                room_id=sentinel_room.id,
+                start_date=date(2024, 6, 17),
+                end_date=date(2024, 6, 17),
+                attendee_count=2,
+                max_active=2,
+                memo=r"\-",
+            )
+
+        reloaded_repo = RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt")
+        reloaded_empty = reloaded_repo.get_by_id(empty_booking.id)
+        reloaded_sentinel = reloaded_repo.get_by_id(sentinel_booking.id)
+
+        assert reloaded_empty is not None
+        assert reloaded_sentinel is not None
+        assert reloaded_empty.memo == ""
+        assert reloaded_sentinel.memo == r"\-"
+
+    def test_modify_booking_updates_memo_after_reload(
+        self,
+        room_service,
+        temp_data_dir,
+        create_test_user,
+        create_test_room,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+        memo = r"회의|준비\자료"
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            room = create_test_room()
+            booking = room_service.create_booking(
+                user,
+                room.id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(hours=2),
+            )
+            modified = room_service.modify_booking(
+                user,
+                booking.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=1, hours=2),
+                memo=memo,
+            )
+
+        reloaded_repo = RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt")
+        reloaded = reloaded_repo.get_by_id(booking.id)
+
+        assert modified.memo == memo
+        assert reloaded is not None
+        assert reloaded.memo == memo
+
+    def test_invalid_memo_leaves_room_repositories_unchanged(
+        self,
+        room_service,
+        room_booking_repo,
+        create_test_user,
+        create_test_room,
+        mock_now,
+    ):
+        with mock_now(datetime(2024, 6, 15, 8, 0, 0)):
+            user = create_test_user()
+            room = create_test_room(name="회의실3A", capacity=4)
+            with pytest.raises(ValueError, match="줄바꿈"):
+                room_service.create_booking(
+                    user=user,
+                    room_id=room.id,
+                    start_time=datetime(2024, 6, 15, 9, 0, 0),
+                    end_time=datetime(2024, 6, 15, 10, 0, 0),
+                    memo="회의\n준비",
+                )
+
+            booking = room_service.create_daily_booking(
+                user=user,
+                room_id=room.id,
+                start_date=date(2024, 6, 16),
+                end_date=date(2024, 6, 16),
+                attendee_count=2,
+                memo="기존메모",
+            )
+            with pytest.raises(ValueError, match="줄바꿈"):
+                room_service.modify_daily_booking(
+                    user=user,
+                    booking_id=booking.id,
+                    start_date=date(2024, 6, 17),
+                    end_date=date(2024, 6, 17),
+                    memo="변경\n메모",
+                )
+
+        unchanged = room_booking_repo.get_by_id(booking.id)
+        assert len(room_booking_repo.get_all()) == 1
+        assert unchanged.memo == "기존메모"
+        assert datetime.fromisoformat(unchanged.start_time) == datetime.fromisoformat(
+            booking.start_time
+        )

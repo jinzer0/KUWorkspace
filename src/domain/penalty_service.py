@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime, timedelta
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from src.domain.models import (
     Penalty,
@@ -23,6 +23,7 @@ from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
     LATE_CANCEL_PENALTY,
+    LATE_CANCEL_THRESHOLD_MINUTES,
     LATE_RETURN_PENALTY,
     MAX_DAMAGE_PENALTY,
     PENALTY_WARNING_THRESHOLD,
@@ -34,6 +35,45 @@ from src.config import (
     STREAK_BONUS_COUNT,
 )
 from src.domain.field_rules import validate_reason_text
+
+
+FREQUENT_CANCEL_PENALTY = 2
+FREQUENT_CANCEL_LOOKBACK_DAYS = 30
+FREQUENT_CANCEL_EXCLUDE_BEFORE_DAYS = 14
+FREQUENT_CANCEL_RESTRICTION_COUNT = 3
+FREQUENT_CANCEL_PENALTY_COUNT = 4
+
+
+@dataclass(frozen=True)
+class CancelImpact:
+    booking_type: str
+    booking_id: str
+    user_id: str
+    is_late_cancel: bool
+    qualifies_frequent_cancel: bool
+    frequent_cancel_count: int
+    applies_cancel_restriction: bool
+    cancel_restriction_field: str | None
+    cancel_restriction_until: str | None
+    applies_frequent_cancel_penalty: bool
+    penalty_reasons: tuple[PenaltyReason, ...]
+    total_penalty_points: int
+
+    def to_dict(self):
+        return {
+            "booking_type": self.booking_type,
+            "booking_id": self.booking_id,
+            "user_id": self.user_id,
+            "is_late_cancel": self.is_late_cancel,
+            "qualifies_frequent_cancel": self.qualifies_frequent_cancel,
+            "frequent_cancel_count": self.frequent_cancel_count,
+            "applies_cancel_restriction": self.applies_cancel_restriction,
+            "cancel_restriction_field": self.cancel_restriction_field,
+            "cancel_restriction_until": self.cancel_restriction_until,
+            "applies_frequent_cancel_penalty": self.applies_frequent_cancel_penalty,
+            "penalty_reasons": [reason.value for reason in self.penalty_reasons],
+            "total_penalty_points": self.total_penalty_points,
+        }
 
 
 class PenaltyError(Exception):
@@ -83,6 +123,217 @@ class PenaltyService:
     ):
         if self.penalty_repo.exists(user_id, reason, related_type, related_id, memo=memo):
             raise PenaltyError("동일한 패널티는 중복 부과할 수 없습니다.")
+
+
+    def _is_late_cancel_time(self, booking_start_time, current_time):
+        if current_time >= booking_start_time:
+            return True
+        minutes_until_start = (booking_start_time - current_time).total_seconds() / 60
+        return minutes_until_start <= LATE_CANCEL_THRESHOLD_MINUTES
+
+    def _is_qualifying_frequent_cancel(self, booking_start_time, cancelled_at):
+        return booking_start_time - cancelled_at < timedelta(
+            days=FREQUENT_CANCEL_EXCLUDE_BEFORE_DAYS
+        )
+
+    def _restriction_field_for_booking_type(self, booking_type):
+        if booking_type == "room_booking":
+            return "room_cancel_restricted_until"
+        if booking_type == "equipment_booking":
+            return "equipment_cancel_restricted_until"
+        raise PenaltyError("지원하지 않는 예약 유형입니다.")
+
+    def _count_recent_frequent_cancels(
+        self, bookings, booking_type, user_id, current_time
+    ):
+        lookback_start = current_time - timedelta(days=FREQUENT_CANCEL_LOOKBACK_DAYS)
+        if booking_type == "room_booking":
+            from src.domain.models import RoomBookingStatus
+
+            cancelled_status = RoomBookingStatus.CANCELLED
+        elif booking_type == "equipment_booking":
+            from src.domain.models import EquipmentBookingStatus
+
+            cancelled_status = EquipmentBookingStatus.CANCELLED
+        else:
+            raise PenaltyError("지원하지 않는 예약 유형입니다.")
+
+        count = 0
+        for booking in bookings:
+            if booking.user_id != user_id or booking.status != cancelled_status:
+                continue
+            if not booking.cancelled_at:
+                continue
+            cancelled_at = datetime.fromisoformat(booking.cancelled_at)
+            if cancelled_at < lookback_start or cancelled_at > current_time:
+                continue
+            start_time = datetime.fromisoformat(booking.start_time)
+            if self._is_qualifying_frequent_cancel(start_time, cancelled_at):
+                count += 1
+        return count
+
+    def decide_cancel_impact(
+        self, user, booking_type, booking_id, booking_start_time, domain_bookings
+    ):
+        user = self._get_existing_user(user)
+        current_time = self.clock.now()
+        if isinstance(booking_start_time, str):
+            booking_start_time = datetime.fromisoformat(booking_start_time)
+
+        is_late_cancel = self._is_late_cancel_time(booking_start_time, current_time)
+        qualifies_frequent_cancel = self._is_qualifying_frequent_cancel(
+            booking_start_time, current_time
+        )
+        prior_count = self._count_recent_frequent_cancels(
+            domain_bookings, booking_type, user.id, current_time
+        )
+        frequent_count = prior_count + (1 if qualifies_frequent_cancel else 0)
+        restriction_field = self._restriction_field_for_booking_type(booking_type)
+        applies_restriction = (
+            qualifies_frequent_cancel
+            and frequent_count >= FREQUENT_CANCEL_RESTRICTION_COUNT
+        )
+        restriction_until = None
+        if applies_restriction:
+            restriction_until = (
+                current_time + timedelta(days=RESTRICTION_DURATION_DAYS)
+            ).isoformat()
+
+        applies_frequent_penalty = (
+            qualifies_frequent_cancel and frequent_count >= FREQUENT_CANCEL_PENALTY_COUNT
+        )
+        penalty_reasons = []
+        total_points = 0
+        if is_late_cancel:
+            penalty_reasons.append(PenaltyReason.LATE_CANCEL)
+            total_points += LATE_CANCEL_PENALTY
+        if applies_frequent_penalty:
+            penalty_reasons.append(PenaltyReason.FREQUENT_CANCEL)
+            total_points += FREQUENT_CANCEL_PENALTY
+
+        return CancelImpact(
+            booking_type=booking_type,
+            booking_id=booking_id,
+            user_id=user.id,
+            is_late_cancel=is_late_cancel,
+            qualifies_frequent_cancel=qualifies_frequent_cancel,
+            frequent_cancel_count=frequent_count,
+            applies_cancel_restriction=applies_restriction,
+            cancel_restriction_field=restriction_field if applies_restriction else None,
+            cancel_restriction_until=restriction_until,
+            applies_frequent_cancel_penalty=applies_frequent_penalty,
+            penalty_reasons=tuple(penalty_reasons),
+            total_penalty_points=total_points,
+        )
+
+    def preview_cancel_impact(
+        self, user, booking_type, booking_id, booking_start_time, domain_bookings
+    ):
+        return self.decide_cancel_impact(
+            user, booking_type, booking_id, booking_start_time, domain_bookings
+        )
+
+    def apply_cancel_impact(
+        self,
+        user,
+        booking_type,
+        booking_id,
+        booking_start_time,
+        domain_bookings,
+        actor_id="system",
+        confirm=True,
+    ):
+        user = self._get_existing_user(user)
+        if not confirm:
+            impact = self.decide_cancel_impact(
+                user, booking_type, booking_id, booking_start_time, domain_bookings
+            )
+            return impact, []
+
+        with global_lock(), UnitOfWork():
+            impact = self.decide_cancel_impact(
+                user, booking_type, booking_id, booking_start_time, domain_bookings
+            )
+            created_penalties = []
+            for reason in impact.penalty_reasons:
+                if self.penalty_repo.exists(user.id, reason, booking_type, booking_id):
+                    continue
+                if reason == PenaltyReason.LATE_CANCEL:
+                    points = LATE_CANCEL_PENALTY
+                    memo = "예약시작1시간이내취소"
+                else:
+                    points = FREQUENT_CANCEL_PENALTY
+                    memo = "최근30일빈번취소"
+                penalty = Penalty(
+                    id=generate_id(),
+                    user_id=user.id,
+                    reason=reason,
+                    points=points,
+                    related_type=booking_type,
+                    related_id=booking_id,
+                    memo=memo,
+                    updated_at=now_iso(),
+                )
+                self.penalty_repo.add(penalty)
+                created_penalties.append(penalty)
+
+            total_points = sum(penalty.points for penalty in created_penalties)
+            current_user = self.user_repo.get_by_id(user.id)
+            if current_user is None:
+                raise PenaltyError("존재하지 않는 사용자입니다.")
+
+            updated_user = current_user
+            if total_points:
+                new_points = current_user.penalty_points + total_points
+                restriction_until = current_user.restriction_until
+                now = self.clock.now()
+                if new_points >= PENALTY_BAN_THRESHOLD:
+                    restriction_until = (now + timedelta(days=BAN_DURATION_DAYS)).isoformat()
+                elif new_points >= PENALTY_RESTRICTION_THRESHOLD:
+                    if (
+                        restriction_until is None
+                        or datetime.fromisoformat(restriction_until) < now
+                    ):
+                        restriction_until = (
+                            now + timedelta(days=RESTRICTION_DURATION_DAYS)
+                        ).isoformat()
+                updated_user = replace(
+                    updated_user,
+                    penalty_points=new_points,
+                    restriction_until=restriction_until,
+                    normal_use_streak=0,
+                    updated_at=now_iso(),
+                )
+
+            if impact.applies_cancel_restriction:
+                if impact.cancel_restriction_field == "room_cancel_restricted_until":
+                    updated_user = replace(
+                        updated_user,
+                        room_cancel_restricted_until=impact.cancel_restriction_until,
+                        updated_at=now_iso(),
+                    )
+                elif impact.cancel_restriction_field == "equipment_cancel_restricted_until":
+                    updated_user = replace(
+                        updated_user,
+                        equipment_cancel_restricted_until=impact.cancel_restriction_until,
+                        updated_at=now_iso(),
+                    )
+
+            if updated_user != current_user:
+                self.user_repo.update(updated_user)
+
+            self.audit_repo.log_action(
+                actor_id=actor_id,
+                action="apply_cancel_impact",
+                target_type="user",
+                target_id=user.id,
+                details=(
+                    f"예약 취소 영향 적용: {booking_type}/{booking_id}, "
+                    f"late={impact.is_late_cancel}, frequent_count={impact.frequent_cancel_count}, "
+                    f"penalties={len(created_penalties)}"
+                ),
+            )
+            return impact, created_penalties
 
     def apply_late_cancel(self, user, booking_type, booking_id, actor_id="system"):
         """
@@ -393,7 +644,7 @@ class PenaltyService:
         current_user = self._get_existing_user(user)
 
         status = evaluate_user_restriction(current_user, self.clock.now())
-        points = status["points"]
+        points = int(status["points"] or 0)
         is_banned = status["is_banned"]
         is_restricted = status["is_restricted"]
         restriction_until = status["restriction_until"]
