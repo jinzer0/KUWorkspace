@@ -16,6 +16,10 @@ def _persist_runtime_clock(current_time):
     persist_clock(current_time)
 
 
+def format_clock_marker(current_time):
+    return current_time.replace(second=0, microsecond=0).isoformat(timespec="minutes")
+
+
 def normalize_slot(dt):
     if (dt.hour, dt.minute) not in ALLOWED_CLOCK_SLOTS:
         raise ClockError("운영 시점은 09:00 또는 18:00만 사용할 수 있습니다.")
@@ -54,9 +58,10 @@ class SystemClock:
         _persist_runtime_clock(self._current_time)
         return self._current_time
 
-    def set_time(self, new_time):
+    def set_time(self, new_time, persist=True):
         self._current_time = normalize_slot(new_time)
-        _persist_runtime_clock(self._current_time)
+        if persist:
+            _persist_runtime_clock(self._current_time)
         return self._current_time
 
 
@@ -83,6 +88,11 @@ class RuntimeClock:
         if _active_clock is None:
             raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
         return _active_clock.advance()
+
+    def set_time(self, new_time, persist=True):
+        if _active_clock is None:
+            raise ClockError("활성 가상 시계가 설정되지 않았습니다.")
+        return _active_clock.set_time(new_time, persist=persist)
 
 
 def set_active_clock(clock):

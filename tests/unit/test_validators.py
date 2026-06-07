@@ -6,6 +6,13 @@ Tests cover all validators from final_plan.md sections 4.1-4.4
 import pytest
 from datetime import datetime, date
 
+from src.domain.field_rules import (
+    RESERVATION_MEMO_MAX_LENGTH,
+    validate_password_text,
+    validate_reservation_memo_text,
+    validate_username_text,
+)
+
 from src.cli.validators import (
     validate_password,
     validate_date_plan,
@@ -14,6 +21,45 @@ from src.cli.validators import (
     validate_reason,
     get_daily_date_range_input,
 )
+
+
+class TestReservationMemoRules:
+    def test_memo_allows_empty_pipe_backslash_and_sentinel_text(self):
+        validate_reservation_memo_text("")
+        validate_reservation_memo_text(r"회의|준비\자료")
+        validate_reservation_memo_text(r"\-")
+
+    def test_memo_rejects_newline_and_carriage_return(self):
+        with pytest.raises(ValueError, match="줄바꿈"):
+            validate_reservation_memo_text("회의\n준비")
+
+        with pytest.raises(ValueError, match="줄바꿈"):
+            validate_reservation_memo_text("회의\r준비")
+
+    def test_memo_rejects_more_than_documented_max_length(self):
+        validate_reservation_memo_text("a" * RESERVATION_MEMO_MAX_LENGTH)
+
+        with pytest.raises(ValueError, match=f"{RESERVATION_MEMO_MAX_LENGTH}자 이하"):
+            validate_reservation_memo_text("a" * (RESERVATION_MEMO_MAX_LENGTH + 1))
+
+
+class TestAuthFieldRules:
+    def test_seed_admin_credentials_remain_valid(self):
+        validate_username_text("admin")
+        validate_password_text("admin123")
+
+    def test_username_and_password_reject_invalid_values(self):
+        with pytest.raises(ValueError, match="3자 이상"):
+            validate_username_text("ab")
+
+        with pytest.raises(ValueError, match="공백"):
+            validate_username_text("bad user")
+
+        with pytest.raises(ValueError, match="4자 이상"):
+            validate_password_text("123")
+
+        with pytest.raises(ValueError, match="공백"):
+            validate_password_text("admin 123")
 
 
 class TestValidatePassword:

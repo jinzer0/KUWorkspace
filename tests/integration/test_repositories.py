@@ -12,8 +12,14 @@ import pytest
 
 from src.storage.integrity import DataIntegrityError
 from src.storage.file_lock import global_lock
-from src.storage.repositories import UserRepository, RoomRepository, RoomBookingRepository
+from src.storage.repositories import (
+    UserRepository,
+    RoomRepository,
+    RoomBookingRepository,
+    EquipmentBookingRepository,
+)
 from src.domain.models import (
+    EquipmentBookingStatus,
     ResourceStatus,
     RoomBookingStatus,
     generate_id,
@@ -176,6 +182,234 @@ class TestRoomBookingRepository:
         )
 
         assert len(conflicts) == 0
+
+
+class TestBookingQuerySemantics:
+    """예약 quota/conflict/pending competition 조회 의미 테스트"""
+
+    def test_room_pending_counts_for_quota_but_not_confirmed_conflict(
+        self, room_booking_repo, room_booking_factory
+    ):
+        user_id = "room-quota-user"
+        room_id = "room-quota-room"
+        room_booking_repo.add(
+            room_booking_factory(
+                id="room-pending",
+                user_id=user_id,
+                room_id=room_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=RoomBookingStatus.PENDING,
+            )
+        )
+        room_booking_repo.add(
+            room_booking_factory(
+                id="room-reserved",
+                user_id=user_id,
+                room_id=room_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=RoomBookingStatus.RESERVED,
+            )
+        )
+
+        quota = room_booking_repo.get_quota_active_by_user(user_id)
+        conflicts = room_booking_repo.get_confirmed_conflicting(
+            room_id, "2024-06-15T10:30:00", "2024-06-15T10:45:00"
+        )
+
+        assert [booking.id for booking in quota] == ["room-pending", "room-reserved"]
+        assert conflicts == []
+
+    def test_equipment_pending_counts_for_quota_but_not_confirmed_conflict(
+        self, equipment_booking_repo, equipment_booking_factory
+    ):
+        user_id = "equipment-quota-user"
+        equipment_id = "equipment-quota-asset"
+        equipment_booking_repo.add(
+            equipment_booking_factory(
+                id="equipment-pending",
+                user_id=user_id,
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=EquipmentBookingStatus.PENDING,
+            )
+        )
+        equipment_booking_repo.add(
+            equipment_booking_factory(
+                id="equipment-reserved",
+                user_id=user_id,
+                equipment_id=equipment_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=EquipmentBookingStatus.RESERVED,
+            )
+        )
+
+        quota = equipment_booking_repo.get_quota_active_by_user(user_id)
+        conflicts = equipment_booking_repo.get_confirmed_conflicting(
+            equipment_id, "2024-06-15T10:30:00", "2024-06-15T10:45:00"
+        )
+
+        assert [booking.id for booking in quota] == [
+            "equipment-pending",
+            "equipment-reserved",
+        ]
+        assert conflicts == []
+
+    def test_room_pending_competition_sorts_by_penalty_created_at_booking_id(
+        self, user_repo, room_booking_repo, user_factory, room_booking_factory
+    ):
+        room_id = "room-competition"
+        user_repo.add(user_factory(username="room_low_old", penalty_points=1))
+        user_repo.add(user_factory(username="room_low_new", penalty_points=1))
+        user_repo.add(user_factory(username="room_high", penalty_points=3))
+        user_repo.add(user_factory(username="room_tie", penalty_points=1))
+        for booking in [
+            room_booking_factory(
+                id="room-c",
+                user_id="room_high",
+                room_id=room_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T08:00:00",
+            ),
+            room_booking_factory(
+                id="room-b",
+                user_id="room_low_new",
+                room_id=room_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            room_booking_factory(
+                id="room-a",
+                user_id="room_tie",
+                room_id=room_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            room_booking_factory(
+                id="room-d",
+                user_id="room_low_old",
+                room_id=room_id,
+                start_time="2024-06-15T09:45:00",
+                end_time="2024-06-15T10:15:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T07:00:00",
+            ),
+            room_booking_factory(
+                id="room-reserved-excluded",
+                user_id="room_low_old",
+                room_id=room_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=RoomBookingStatus.RESERVED,
+            ),
+            room_booking_factory(
+                id="room-pending-nonoverlap",
+                user_id="room_low_old",
+                room_id=room_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=RoomBookingStatus.PENDING,
+            ),
+        ]:
+            room_booking_repo.add(booking)
+
+        competition = room_booking_repo.get_pending_competition(
+            room_id, "2024-06-15T10:00:00", "2024-06-15T11:00:00", user_repo=user_repo
+        )
+
+        assert [booking.id for booking in competition] == [
+            "room-d",
+            "room-a",
+            "room-b",
+            "room-c",
+        ]
+
+    def test_equipment_pending_competition_sorts_by_penalty_created_at_booking_id(
+        self, user_repo, equipment_booking_repo, user_factory, equipment_booking_factory
+    ):
+        equipment_id = "equipment-competition"
+        user_repo.add(user_factory(username="equipment_low_old", penalty_points=1))
+        user_repo.add(user_factory(username="equipment_low_new", penalty_points=1))
+        user_repo.add(user_factory(username="equipment_high", penalty_points=3))
+        user_repo.add(user_factory(username="equipment_tie", penalty_points=1))
+        for booking in [
+            equipment_booking_factory(
+                id="equipment-c",
+                user_id="equipment_high",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T08:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-b",
+                user_id="equipment_low_new",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-a",
+                user_id="equipment_tie",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-d",
+                user_id="equipment_low_old",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T09:45:00",
+                end_time="2024-06-15T10:15:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T07:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-reserved-excluded",
+                user_id="equipment_low_old",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=EquipmentBookingStatus.RESERVED,
+            ),
+            equipment_booking_factory(
+                id="equipment-pending-nonoverlap",
+                user_id="equipment_low_old",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=EquipmentBookingStatus.PENDING,
+            ),
+        ]:
+            equipment_booking_repo.add(booking)
+
+        competition = equipment_booking_repo.get_pending_competition(
+            equipment_id,
+            "2024-06-15T10:00:00",
+            "2024-06-15T11:00:00",
+            user_repo=user_repo,
+        )
+
+        assert [booking.id for booking in competition] == [
+            "equipment-d",
+            "equipment-a",
+            "equipment-b",
+            "equipment-c",
+        ]
 
 
 class TestPenaltyRepository:

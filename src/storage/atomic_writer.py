@@ -246,3 +246,21 @@ def staged_atomic_write_jsonl_multi(file_records):
         file_contents[file_path] = content
 
     staged_atomic_write_multi(file_contents)
+
+
+def staged_atomic_write_jsonl_and_text_multi(file_records, text_contents):
+    """
+    파이프 구분 데이터 파일과 일반 텍스트 파일을 하나의 성공 단위로 저장합니다.
+
+    Args:
+        file_records: {파일경로: (레코드리스트, to_json함수)} 딕셔너리
+        text_contents: {파일경로: 문자열} 딕셔너리
+    """
+    file_contents = {}
+    file_contents.update(text_contents)
+    for file_path, (records, to_json) in file_records.items():
+        lines = [encode_record(to_json(record)) for record in records]
+        content = "\n".join(lines) + "\n" if lines else ""
+        file_contents[file_path] = content
+
+    staged_atomic_write_multi(file_contents)

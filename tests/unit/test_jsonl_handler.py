@@ -1,7 +1,7 @@
 import pytest
 
 from src.storage.integrity import DataIntegrityError
-from src.storage.jsonl_handler import decode_record, read_jsonl
+from src.storage.jsonl_handler import decode_record, encode_record, read_jsonl
 
 
 def test_read_jsonl_creates_missing_file(tmp_path):
@@ -37,3 +37,13 @@ def test_read_jsonl_wraps_record_parse_error_with_line_number(tmp_path):
 
     with pytest.raises(DataIntegrityError, match=r"2번째 줄 .*boom"):
         read_jsonl(file_path, parser)
+
+
+def test_encode_decode_roundtrips_pipe_backslash_empty_and_none_sentinel():
+    record = ["memo|with\\escape", "", None, "literal\\-"]
+
+    encoded = encode_record(record)
+    decoded = decode_record(encoded)
+
+    assert encoded == "memo\\|with\\\\escape||\\-|literal\\\\-"
+    assert decoded == record

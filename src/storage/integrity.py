@@ -1,3 +1,5 @@
+from typing import cast
+
 class DataIntegrityError(RuntimeError):
     """데이터 파일 무결성 위반 또는 파일 접근 실패."""
 
@@ -15,11 +17,12 @@ def validate_all_data_files():
         EquipmentAssetRepository,
         RoomBookingRepository,
         EquipmentBookingRepository,
+        RoomMaintenanceRepository,
         PenaltyRepository,
         AuditLogRepository,
     )
 
-    load_persisted_clock()
+    _ = load_persisted_clock()
 
     repositories = [
         UserRepository(file_path=config.USERS_FILE),
@@ -27,8 +30,10 @@ def validate_all_data_files():
         EquipmentAssetRepository(file_path=config.EQUIPMENTS_FILE),
         RoomBookingRepository(file_path=config.ROOM_BOOKINGS_FILE),
         EquipmentBookingRepository(file_path=config.EQUIPMENT_BOOKING_FILE),
+        RoomMaintenanceRepository(file_path=config.ROOM_MAINTENANCE_FILE),
         PenaltyRepository(file_path=config.PENALTIES_FILE),
         AuditLogRepository(file_path=config.AUDIT_LOG_FILE),
     ]
     for repository in repositories:
-        repository.get_all()
+        for _record in cast(list[object], repository.get_all()):
+            pass

@@ -4,8 +4,6 @@
 
 from pathlib import Path
 
-from src.storage.integrity import DataIntegrityError
-
 # 경로 설정
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -17,6 +15,8 @@ ROOMS_FILE = DATA_DIR / "rooms.txt"
 EQUIPMENTS_FILE = DATA_DIR / "equipments.txt"
 ROOM_BOOKINGS_FILE = DATA_DIR / "room_bookings.txt"
 EQUIPMENT_BOOKING_FILE = DATA_DIR / "equipment_booking.txt"
+ROOM_MAINTENANCE_FILE = DATA_DIR / "room_maintenance.txt"
+WAITLIST_FILE = DATA_DIR / "waitlist.txt"
 PENALTIES_FILE = DATA_DIR / "penalties.txt"
 AUDIT_LOG_FILE = DATA_DIR / "audit_log.txt"
 CLOCK_FILE = DATA_DIR / "clock.txt"
@@ -28,6 +28,8 @@ DATA_FILES = [
     EQUIPMENTS_FILE,
     ROOM_BOOKINGS_FILE,
     EQUIPMENT_BOOKING_FILE,
+    ROOM_MAINTENANCE_FILE,
+    WAITLIST_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
     CLOCK_FILE,
@@ -71,6 +73,9 @@ def ensure_data_dir():
         if not CLOCK_FILE.read_text(encoding="utf-8").strip():
             CLOCK_FILE.write_text(CLOCK_SENTINEL, encoding="utf-8")
     except OSError as error:
+        integrity_module = __import__("src.storage.integrity", fromlist=["DataIntegrityError"])
+        DataIntegrityError = integrity_module.DataIntegrityError
+
         raise DataIntegrityError(
             f"필수 데이터 파일을 생성할 수 없습니다: {error}"
         ) from error

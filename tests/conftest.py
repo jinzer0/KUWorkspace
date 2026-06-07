@@ -10,6 +10,7 @@ Provides:
 
 import pytest
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -178,6 +179,8 @@ def temp_data_dir(tmp_path):
     equipment_file = data_dir / "equipments.txt"
     room_bookings_file = data_dir / "room_bookings.txt"
     equipment_bookings_file = data_dir / "equipment_booking.txt"
+    room_maintenance_file = data_dir / "room_maintenance.txt"
+    waitlist_file = data_dir / "waitlist.txt"
     penalties_file = data_dir / "penalties.txt"
     audit_log_file = data_dir / "audit_log.txt"
     clock_file = data_dir / "clock.txt"
@@ -189,48 +192,42 @@ def temp_data_dir(tmp_path):
         equipment_file,
         room_bookings_file,
         equipment_bookings_file,
+        room_maintenance_file,
+        waitlist_file,
         penalties_file,
         audit_log_file,
         clock_file,
     ]
 
-    with patch("src.config.DATA_DIR", data_dir), patch(
-        "src.config.DATA_FILES", isolated_data_files
-    ), patch(
-        "src.config.LOCK_FILE", lock_file
-    ), patch("src.config.USERS_FILE", users_file), patch(
-        "src.config.ROOMS_FILE", rooms_file
-    ), patch(
-        "src.config.EQUIPMENTS_FILE", equipment_file
-    ), patch(
-        "src.config.ROOM_BOOKINGS_FILE", room_bookings_file
-    ), patch(
-        "src.config.EQUIPMENT_BOOKING_FILE", equipment_bookings_file
-    ), patch(
-        "src.config.PENALTIES_FILE", penalties_file
-    ), patch(
-        "src.config.AUDIT_LOG_FILE", audit_log_file
-    ), patch(
-        "src.config.CLOCK_FILE", clock_file
-    ), patch(
-        "src.storage.file_lock.DATA_DIR", data_dir
-    ), patch(
-        "src.storage.file_lock.LOCK_FILE", lock_file
-    ), patch(
-        "src.storage.repositories.USERS_FILE", users_file
-    ), patch(
-        "src.storage.repositories.ROOMS_FILE", rooms_file
-    ), patch(
-        "src.storage.repositories.EQUIPMENTS_FILE", equipment_file
-    ), patch(
-        "src.storage.repositories.ROOM_BOOKINGS_FILE", room_bookings_file
-    ), patch(
-        "src.storage.repositories.EQUIPMENT_BOOKING_FILE", equipment_bookings_file
-    ), patch(
-        "src.storage.repositories.PENALTIES_FILE", penalties_file
-    ), patch(
-        "src.storage.repositories.AUDIT_LOG_FILE", audit_log_file
-    ):
+    patches = [
+        patch("src.config.DATA_DIR", data_dir),
+        patch("src.config.DATA_FILES", isolated_data_files),
+        patch("src.config.LOCK_FILE", lock_file),
+        patch("src.config.USERS_FILE", users_file),
+        patch("src.config.ROOMS_FILE", rooms_file),
+        patch("src.config.EQUIPMENTS_FILE", equipment_file),
+        patch("src.config.ROOM_BOOKINGS_FILE", room_bookings_file),
+        patch("src.config.EQUIPMENT_BOOKING_FILE", equipment_bookings_file),
+        patch("src.config.ROOM_MAINTENANCE_FILE", room_maintenance_file),
+        patch("src.config.WAITLIST_FILE", waitlist_file),
+        patch("src.config.PENALTIES_FILE", penalties_file),
+        patch("src.config.AUDIT_LOG_FILE", audit_log_file),
+        patch("src.config.CLOCK_FILE", clock_file),
+        patch("src.storage.file_lock.DATA_DIR", data_dir),
+        patch("src.storage.file_lock.LOCK_FILE", lock_file),
+        patch("src.storage.repositories.USERS_FILE", users_file),
+        patch("src.storage.repositories.ROOMS_FILE", rooms_file),
+        patch("src.storage.repositories.EQUIPMENTS_FILE", equipment_file),
+        patch("src.storage.repositories.ROOM_BOOKINGS_FILE", room_bookings_file),
+        patch("src.storage.repositories.EQUIPMENT_BOOKING_FILE", equipment_bookings_file),
+        patch("src.storage.repositories.ROOM_MAINTENANCE_FILE", room_maintenance_file),
+        patch("src.storage.repositories.WAITLIST_FILE", waitlist_file),
+        patch("src.storage.repositories.PENALTIES_FILE", penalties_file),
+        patch("src.storage.repositories.AUDIT_LOG_FILE", audit_log_file),
+    ]
+    with ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
         yield data_dir
 
 
@@ -480,6 +477,14 @@ def equipment_booking_repo(temp_data_dir):
 
 
 @pytest.fixture
+def room_maintenance_repo(temp_data_dir):
+    """RoomMaintenanceRepository with isolated temp directory."""
+    from src.storage.repositories import RoomMaintenanceRepository
+
+    return RoomMaintenanceRepository(file_path=temp_data_dir / "room_maintenance.txt")
+
+
+@pytest.fixture
 def penalty_repo(temp_data_dir):
     """PenaltyRepository with isolated temp directory."""
     from src.storage.repositories import PenaltyRepository
@@ -523,6 +528,7 @@ def room_service(
     room_repo,
     room_booking_repo,
     equipment_booking_repo,
+    room_maintenance_repo,
     user_repo,
     audit_repo,
     penalty_service,
@@ -534,6 +540,7 @@ def room_service(
         room_repo=room_repo,
         booking_repo=room_booking_repo,
         equipment_booking_repo=equipment_booking_repo,
+        maintenance_repo=room_maintenance_repo,
         user_repo=user_repo,
         audit_repo=audit_repo,
         penalty_service=penalty_service,
@@ -564,7 +571,13 @@ def equipment_service(
 
 @pytest.fixture
 def policy_service(
-    user_repo, room_booking_repo, equipment_booking_repo, penalty_repo, audit_repo
+    user_repo,
+    room_booking_repo,
+    equipment_booking_repo,
+    equipment_repo,
+    room_maintenance_repo,
+    penalty_repo,
+    audit_repo,
 ):
     """PolicyService with isolated repositories."""
     from src.domain.policy_service import PolicyService
@@ -578,6 +591,8 @@ def policy_service(
         user_repo=user_repo,
         room_booking_repo=room_booking_repo,
         equipment_booking_repo=equipment_booking_repo,
+        equipment_repo=equipment_repo,
+        room_maintenance_repo=room_maintenance_repo,
         penalty_repo=penalty_repo,
         audit_repo=audit_repo,
         penalty_service=penalty_service,

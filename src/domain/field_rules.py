@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 
 
+RESERVATION_MEMO_MAX_LENGTH = 100
+
+
 def has_whitespace(value: str) -> bool:
     return any(char.isspace() for char in value)
 
@@ -40,6 +43,15 @@ def validate_reason_text(reason: str, field_name: str = "사유") -> None:
         raise ValueError(f"{field_name}에 줄바꿈을 포함할 수 없습니다.")
     if len(reason) > 20:
         raise ValueError(f"{field_name}는 20자 이하여야 합니다.")
+
+
+def validate_reservation_memo_text(memo: str, field_name: str = "예약 메모") -> None:
+    if not isinstance(memo, str):
+        raise ValueError(f"{field_name}는 텍스트여야 합니다.")
+    if "\n" in memo or "\r" in memo:
+        raise ValueError(f"{field_name}에 줄바꿈을 포함할 수 없습니다.")
+    if len(memo) > RESERVATION_MEMO_MAX_LENGTH:
+        raise ValueError(f"{field_name}는 {RESERVATION_MEMO_MAX_LENGTH}자 이하여야 합니다.")
 
 
 def validate_room_name(name: str) -> None:
