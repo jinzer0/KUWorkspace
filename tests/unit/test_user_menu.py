@@ -646,7 +646,15 @@ class TestCancellationWarnings:
         monkeypatch.setattr(menu, "_refresh_user", lambda: True)
         monkeypatch.setattr(menu.room_service, "get_user_bookings", lambda _user_id: [booking])
         monkeypatch.setattr(menu.room_service, "get_room", lambda _room_id: type("Room", (), {"name": "회의실 A"})())
-        monkeypatch.setattr(menu.room_service, "will_apply_late_cancel_penalty", lambda _user, _booking_id: True)
+        impact = SimpleNamespace(
+            is_late_cancel=True,
+            applies_cancel_restriction=False,
+            cancel_restriction_until=None,
+            applies_frequent_cancel_penalty=False,
+            total_penalty_points=2,
+            penalty_reasons=("late_cancel",),
+        )
+        monkeypatch.setattr(menu.room_service, "preview_cancel_booking_impact", lambda _user, _booking_id: impact)
         monkeypatch.setattr(menu.room_service, "cancel_booking", lambda _user, _booking_id: (booking, True))
         monkeypatch.setattr("src.cli.user_menu.select_from_list", lambda items, prompt: booking.id)
         monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
@@ -701,7 +709,15 @@ class TestCancellationWarnings:
         monkeypatch.setattr(menu, "_refresh_user", lambda: True)
         monkeypatch.setattr(menu.equipment_service, "get_user_bookings", lambda _user_id: [booking])
         monkeypatch.setattr(menu.equipment_service, "get_equipment", lambda _equipment_id: type("Equipment", (), {"name": "노트북 A"})())
-        monkeypatch.setattr(menu.equipment_service, "will_apply_late_cancel_penalty", lambda _user, _booking_id: True)
+        impact = SimpleNamespace(
+            is_late_cancel=True,
+            applies_cancel_restriction=False,
+            cancel_restriction_until=None,
+            applies_frequent_cancel_penalty=False,
+            total_penalty_points=2,
+            penalty_reasons=("late_cancel",),
+        )
+        monkeypatch.setattr(menu.equipment_service, "preview_cancel_booking_impact", lambda _user, _booking_id: impact)
         monkeypatch.setattr(menu.equipment_service, "cancel_booking", lambda _user, _booking_id: (booking, True))
         monkeypatch.setattr("src.cli.user_menu.select_from_list", lambda items, prompt: booking.id)
         monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
@@ -724,3 +740,155 @@ class TestCancellationWarnings:
 
         assert call_order[0][0] == "warning"
         assert call_order[1][0] == "confirm"
+
+
+class TestUserMenuCancelPreview:
+    def test_room_cancel_preview_confirm_no_leaves_booking_and_penalties_unchanged(
+        self,
+        monkeypatch,
+        capsys,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        room_booking_factory,
+        penalty_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 30, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            room = create_test_room()
+            booking = room_booking_factory(
+                user_id=user.id,
+                room_id=room.id,
+                start_time=datetime(2024, 6, 15, 9, 0, 0).isoformat(),
+                end_time=datetime(2024, 6, 15, 18, 0, 0).isoformat(),
+                status=RoomBookingStatus.RESERVED,
+            )
+            with global_lock():
+                room_booking_repo.add(booking)
+
+            menu = UserMenu(
+                user=user,
+                auth_service=auth_service,
+                room_service=room_service,
+                equipment_service=equipment_service,
+                penalty_service=penalty_service,
+                policy_service=policy_service,
+            )
+
+            monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
+            monkeypatch.setattr(menu, "_refresh_user", lambda: True)
+            monkeypatch.setattr("src.cli.user_menu.select_from_list", lambda _items, _prompt: booking.id)
+            monkeypatch.setattr("src.cli.user_menu.confirm", lambda _message: False)
+            monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+
+            menu._cancel_room_booking()
+
+        output = capsys.readouterr().out
+        assert "취소 영향 미리보기" in output
+        assert "직전 취소 패널티 2점" in output
+        assert "예약 취소를 취소했습니다." in output
+        assert room_booking_repo.get_by_id(booking.id).status == RoomBookingStatus.RESERVED
+        assert penalty_repo.get_all() == []
+
+    def test_user_menu_invalid_inputs_loop_until_zero_without_mutation(
+        self,
+        monkeypatch,
+        capsys,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+    ):
+        user = create_test_user()
+        menu = UserMenu(
+            user=user,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+        )
+        inputs = iter(["", "abc", "99", "0"])
+
+        monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
+        monkeypatch.setattr(menu, "_refresh_user", lambda: True)
+        monkeypatch.setattr(menu.penalty_service, "get_user_status", lambda _user: {})
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        monkeypatch.setattr("src.cli.user_menu.confirm", lambda _message: True)
+        monkeypatch.setattr("src.cli.user_menu.print_success", lambda message: print(message))
+
+        result = menu.run()
+
+        output = capsys.readouterr().out
+        assert result is True
+        assert output.count("잘못된 선택입니다.") == 3
+        assert "로그아웃 되었습니다." in output
+
+
+class TestUserMenuGroupBookingTask12:
+    def test_equipment_group_booking_uses_service_and_persists_memo(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        mock_now,
+    ):
+        from datetime import date
+
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            first = create_test_equipment(name="노트북A", asset_type="노트북", serial_number="NB-001")
+            second = create_test_equipment(name="노트북B", asset_type="노트북", serial_number="NB-002")
+            menu = UserMenu(
+                user=user,
+                auth_service=auth_service,
+                room_service=room_service,
+                equipment_service=equipment_service,
+                penalty_service=penalty_service,
+                policy_service=policy_service,
+            )
+            selected_equipment = iter([first.id, second.id])
+            add_more = iter([True])
+
+            monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
+            monkeypatch.setattr(menu, "_refresh_user", lambda: True)
+            monkeypatch.setattr(menu.policy_service, "check_user_can_book", lambda _user: (True, 2, ""))
+            monkeypatch.setattr(menu.policy_service, "get_user_flow_limits", lambda _user: {"equipment_limit": 2})
+            monkeypatch.setattr("src.cli.user_menu.get_daily_date_range_input", lambda *_args: (date(2024, 6, 16), date(2024, 6, 16)))
+            monkeypatch.setattr("builtins.input", lambda _prompt="": "수업 촬영")
+            monkeypatch.setattr("src.cli.user_menu.confirm", lambda _message: next(add_more, False))
+            monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
+            monkeypatch.setattr("src.cli.user_menu.print_header", lambda *_: None)
+            monkeypatch.setattr("src.cli.user_menu.print_success", lambda *_: None)
+            monkeypatch.setattr("src.cli.user_menu.print_warning", lambda *_: None)
+            monkeypatch.setattr("src.cli.user_menu.print_info", lambda *_: None)
+
+            def select(items, prompt, allow_cancel=True):
+                if "종류" in prompt:
+                    return "노트북"
+                return next(selected_equipment)
+
+            monkeypatch.setattr("src.cli.user_menu.select_from_list", select)
+            menu._create_equipment_booking()
+
+        bookings = equipment_booking_repo.get_by_user(user.id)
+        assert len(bookings) == 2
+        assert {booking.equipment_id for booking in bookings} == {first.id, second.id}
+        assert {booking.memo for booking in bookings} == {"수업 촬영"}
+        assert bookings[0].group_id == bookings[1].group_id

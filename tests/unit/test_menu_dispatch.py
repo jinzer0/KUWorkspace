@@ -138,6 +138,10 @@ def test_user_menu_opens_clock_with_user_actor(
         ("17", "_force_room_late_checkout"),
         ("18", "_force_equipment_late_return"),
         ("19", "_open_clock"),
+        ("20", "_create_room_maintenance"),
+        ("21", "_cancel_room_maintenance"),
+        ("22", "_schedule_equipment_future_status"),
+        ("23", "_cancel_equipment_future_status"),
     ],
 )
 def test_admin_menu_dispatches_actions(

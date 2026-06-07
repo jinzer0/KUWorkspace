@@ -2,11 +2,14 @@
 관리자 메뉴 - 회의실/장비 관리, 예약 관리, 사용자 관리
 """
 
+from typing import Any, cast
+
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
     ResourceStatus,
     UserRole,
+    decode_future_status_changes,
 )
 from src.domain.auth_service import AuthService, AuthError
 from src.domain.room_service import (
@@ -169,6 +172,8 @@ class AdminMenu:
             print("  4. 회의실 퇴실 승인 처리")
             print("  5. 회의실 예약 변경 (관리자)")
             print("  6. 회의실 예약 취소 (관리자)")
+            print("  20. 회의실 점검 일정 생성")
+            print("  21. 회의실 점검 일정 취소")
 
             print("\n[장비 관리]")
             print("  7. 전체 장비 예약 조회")
@@ -177,6 +182,8 @@ class AdminMenu:
             print("  10. 장비 반납 승인 처리")
             print("  11. 장비 예약 변경 (관리자)")
             print("  12. 장비 예약 취소 (관리자)")
+            print("  22. 장비 미래 상태 예약")
+            print("  23. 장비 미래 상태 예약 취소")
 
             print("\n[사용자 관리]")
             print("  13. 사용자 목록")
@@ -230,6 +237,14 @@ class AdminMenu:
                 self._force_equipment_late_return()
             elif choice == "19":
                 ClockMenu(self.policy_service, actor_id=self.user.id).run()
+            elif choice == "20":
+                self._create_room_maintenance()
+            elif choice == "21":
+                self._cancel_room_maintenance()
+            elif choice == "22":
+                self._schedule_equipment_future_status()
+            elif choice == "23":
+                self._cancel_equipment_future_status()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
                     print_success("로그아웃 되었습니다.")
@@ -1030,6 +1045,147 @@ class AdminMenu:
 
         pause()
 
+    def _create_room_maintenance(self):
+        print_header("회의실 점검 일정 생성")
+        rooms = self.room_service.get_all_rooms()
+        if not rooms:
+            print_info("등록된 회의실이 없습니다.")
+            pause()
+            return
+        room_id = select_from_list(
+            [(room.id, f"{room.name} ({room.location})") for room in rooms],
+            "점검 회의실 선택",
+        )
+        if not room_id:
+            return
+        self._print_daily_booking_guide()
+        start_date, end_date = get_daily_date_range_input("점검 시작 날짜", "점검 종료 날짜")
+        if start_date is None or end_date is None:
+            return
+        reason = input("점검 사유 (선택, 20자 이하): ").strip()
+        valid, error = validate_reason(reason)
+        if not valid:
+            print_error(error)
+            pause()
+            return
+        try:
+            from src.domain.daily_booking_rules import build_daily_booking_period
+
+            start_time, end_time = build_daily_booking_period(start_date, end_date)
+            schedule = self.room_service.create_maintenance_schedule(
+                self.user, room_id, start_time, end_time, reason
+            )
+            print_success("회의실 점검 일정이 생성되었습니다.")
+            print(f"  일정 ID: {schedule.id[:8]}...")
+            print(f"  기간: {format_booking_time_range(schedule.start_time, schedule.end_time)}")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _cancel_room_maintenance(self):
+        print_header("회의실 점검 일정 취소")
+        schedules = self.room_service.maintenance_repo.get_all()
+        if not schedules:
+            print_info("취소 가능한 점검 일정이 없습니다.")
+            pause()
+            return
+        items = []
+        for schedule in schedules:
+            room = self.room_service.get_room(schedule.room_id)
+            room_name = room.name if room else "알 수 없음"
+            items.append((schedule.id, f"{room_name} - {format_booking_time_range(schedule.start_time, schedule.end_time)}"))
+        schedule_id = select_from_list(items, "취소할 점검 일정 선택")
+        if not schedule_id:
+            return
+        reason = input("취소 사유 (선택, 20자 이하): ").strip()
+        valid, error = validate_reason(reason)
+        if not valid:
+            print_error(error)
+            pause()
+            return
+        if not confirm("점검 일정을 취소하시겠습니까?"):
+            print_info("점검 일정 취소를 중단했습니다.")
+            pause()
+            return
+        try:
+            cancelled = self.room_service.cancel_maintenance_schedule(self.user, schedule_id, reason)
+            print_success("회의실 점검 일정이 취소되었습니다.")
+            print(f"  일정 ID: {cancelled.id[:8]}...")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _schedule_equipment_future_status(self):
+        print_header("장비 미래 상태 예약")
+        equipment_list = self.equipment_service.get_all_equipment()
+        if not equipment_list:
+            print_info("등록된 장비가 없습니다.")
+            pause()
+            return
+        equipment_id = select_from_list(
+            [(item.id, f"{item.name} ({item.asset_type}, S/N: {item.serial_number})") for item in equipment_list],
+            "상태 예약 장비 선택",
+        )
+        if not equipment_id:
+            return
+        print("\n예약할 상태:")
+        print("  1. 점검중 (maintenance)")
+        print("  2. 사용불가 (disabled)")
+        choice = input("\n선택: ").strip()
+        status_map = {"1": ResourceStatus.MAINTENANCE, "2": ResourceStatus.DISABLED}
+        if choice not in status_map:
+            print_error("잘못된 선택입니다.")
+            pause()
+            return
+        self._print_daily_booking_guide()
+        start_date, end_date = get_daily_date_range_input("상태 시작 날짜", "상태 종료 날짜")
+        if start_date is None or end_date is None:
+            return
+        try:
+            from src.domain.daily_booking_rules import build_daily_booking_period
+
+            start_time, end_time = build_daily_booking_period(start_date, end_date)
+            item = self.equipment_service.schedule_future_status_change(
+                self.user, equipment_id, start_time, end_time, status_map[choice]
+            )
+            print_success("장비 미래 상태 예약이 생성되었습니다.")
+            print(f"  예약 ID: {item['id'][:8]}...")
+            print(f"  상태: {item['status']}")
+            print(f"  기간: {format_booking_time_range(item['start_time'], item['end_time'])}")
+        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _cancel_equipment_future_status(self):
+        print_header("장비 미래 상태 예약 취소")
+        equipment_list = self.equipment_service.get_all_equipment()
+        items = []
+        for equipment in equipment_list:
+            for item in decode_future_status_changes(equipment.future_status_changes):
+                if item["state"] in {"pending", "started"}:
+                    items.append((f"{equipment.id}|{item['id']}", f"{equipment.name} - {item['status']} {format_booking_time_range(item['start_time'], item['end_time'])}"))
+        if not items:
+            print_info("취소 가능한 장비 미래 상태 예약이 없습니다.")
+            pause()
+            return
+        selected = select_from_list(items, "취소할 장비 미래 상태 예약 선택")
+        if not selected:
+            return
+        equipment_id, schedule_id = selected.split("|", 1)
+        if not confirm("장비 미래 상태 예약을 취소하시겠습니까?"):
+            print_info("장비 미래 상태 예약 취소를 중단했습니다.")
+            pause()
+            return
+        try:
+            cancelled = self.equipment_service.cancel_future_status_change(
+                self.user, equipment_id, schedule_id
+            )
+            print_success("장비 미래 상태 예약이 취소되었습니다.")
+            print(f"  예약 ID: {cancelled['id'][:8]}...")
+        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
     def _show_users(self):
         """사용자 목록"""
         print_header("사용자 목록")
@@ -1095,21 +1251,26 @@ class AdminMenu:
             return
 
         try:
-            status = self.penalty_service.get_user_status(user)
+            status = cast(dict[str, Any], self.penalty_service.get_user_status(user))
 
             print(f"\n사용자명: {user.username}")
             print(f"역할: {format_status_badge(user.role.value)}")
             print(f"가입일: {format_datetime(user.created_at)}")
 
+            points = int(status["points"])
+            is_banned = bool(status["is_banned"])
+            is_restricted = bool(status["is_restricted"])
+
             print_subheader("패널티 상태")
             print(
-                f"  상태: {format_penalty_status(status['points'], status['is_banned'], status['is_restricted'])}"
+                f"  상태: {format_penalty_status(points, is_banned, is_restricted)}"
             )
-            print(f"  누적 점수: {status['points']}점")
+            print(f"  누적 점수: {points}점")
             print(f"  정상 이용 연속: {status.get('normal_use_streak', 0)}회")
 
-            if status.get("restriction_until"):
-                print(f"  제한 해제일: {status['restriction_until'][:10]}")
+            restriction_until = status.get("restriction_until")
+            if restriction_until:
+                print(f"  제한 해제일: {str(restriction_until)[:10]}")
 
             print_subheader("활성 예약")
             room_active = self.room_service.get_user_active_bookings(user.id)

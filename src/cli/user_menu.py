@@ -3,6 +3,7 @@
 """
 
 from datetime import datetime
+from typing import Any, cast
 
 from src.domain.models import (
     RoomBookingStatus,
@@ -117,6 +118,31 @@ class UserMenu:
             current_time=self.equipment_service.clock.now(),
         )
 
+    def _print_cancel_impact_preview(self, impact):
+        print_subheader("취소 영향 미리보기")
+        if impact.is_late_cancel:
+            print_warning("직전 취소 패널티 2점이 부과됩니다.")
+        if impact.applies_cancel_restriction:
+            until = impact.cancel_restriction_until or "-"
+            print_warning(f"빈번 취소로 예약 제한이 적용됩니다. (해제일: {until[:10]})")
+        if impact.applies_frequent_cancel_penalty:
+            print_warning("빈번 취소 패널티 2점이 부과됩니다.")
+        if impact.total_penalty_points:
+            print_info(f"예상 패널티 점수: {impact.total_penalty_points}점")
+        if not impact.penalty_reasons and not impact.applies_cancel_restriction:
+            print_info("추가 패널티나 예약 제한 없이 취소됩니다.")
+
+    def _get_memo_input(self):
+        return input("예약 메모 (선택, 100자 이하): ").strip()
+
+    def _print_booking_result(self, booking, time_label="시간"):
+        status = getattr(booking, "status", None)
+        print_success("예약 요청이 접수되었습니다." if status and status.value == "pending" else "예약이 완료되었습니다.")
+        print(f"  예약 ID: {booking.id[:8]}...")
+        print(f"  {time_label}: {format_booking_time_range(booking.start_time, booking.end_time)}")
+        if status and status.value == "pending":
+            print_warning("동일 시간대 경쟁 예약이 있어 대기 상태로 접수되었습니다. 운영 시계 이동 시 정책에 따라 확정 여부가 결정됩니다.")
+
     def run(self):
         """
         사용자 메뉴 실행
@@ -133,13 +159,14 @@ class UserMenu:
             print_header(f"사용자 메뉴 ({self.user.username})")
 
             try:
-                status = self.penalty_service.get_user_status(self.user)
+                status = cast(dict[str, Any], self.penalty_service.get_user_status(self.user))
             except PenaltyError as e:
                 self._handle_user_query_error(e)
                 return True
             if status.get("is_banned"):
+                restriction_until = str(status.get("restriction_until") or "-")
                 print_warning(
-                    f"이용이 금지된 상태입니다. (해제일: {status.get('restriction_until', '-')[:10]})"
+                    f"이용이 금지된 상태입니다. (해제일: {restriction_until[:10]})"
                 )
             elif status.get("is_restricted"):
                 print_warning(f"패널티로 인해 활성 예약 1건만 허용됩니다.")
@@ -295,9 +322,12 @@ class UserMenu:
         if not room_id:
             return
 
+        memo = self._get_memo_input()
+
         try:
-            limits = self.policy_service.get_user_flow_limits(self.user)
-            if limits["room_limit"] <= 0:
+            limits = cast(dict[str, Any], self.policy_service.get_user_flow_limits(self.user))
+            room_limit = int(limits["room_limit"])
+            if room_limit <= 0:
                 raise RoomBookingError("이미 활성 회의실 예약이 있습니다.")
             booking = self.room_service.create_daily_booking(
                 user=self.user,
@@ -305,13 +335,10 @@ class UserMenu:
                 start_date=start_date,
                 end_date=end_date,
                 attendee_count=attendee_count,
-                max_active=limits["room_limit"],
+                max_active=room_limit,
+                memo=memo,
             )
-            print_success("예약이 완료되었습니다.")
-            print(f"  예약 ID: {booking.id[:8]}...")
-            print(
-                f"  시간: {format_booking_time_range(booking.start_time, booking.end_time)}"
-            )
+            self._print_booking_result(booking)
         except (RoomBookingError, PenaltyError) as e:
             print_error(str(e))
 
@@ -545,14 +572,16 @@ class UserMenu:
             return
 
         try:
-            if self.room_service.will_apply_late_cancel_penalty(self.user, booking_id):
-                print_warning("이 예약을 지금 취소하면 직전 취소 패널티 2점이 부과됩니다.")
+            impact = self.room_service.preview_cancel_booking_impact(self.user, booking_id)
+            self._print_cancel_impact_preview(impact)
         except (RoomBookingError, PenaltyError) as e:
             print_error(str(e))
             pause()
             return
 
         if not confirm("정말 취소하시겠습니까?"):
+            print_info("예약 취소를 취소했습니다.")
+            pause()
             return
 
         try:
@@ -644,30 +673,56 @@ class UserMenu:
             pause()
             return
 
-        items = [
+        selected_ids = []
+        remaining_items = [
             (e.id, f"{e.name} ({e.asset_type}, S/N: {e.serial_number})")
             for e in filtered_equipment
         ]
-        equipment_id = select_from_list(items, "장비 선택")
-        if not equipment_id:
-            return
+        while remaining_items:
+            equipment_id = select_from_list(
+                remaining_items,
+                "장비 선택 (첫 선택 후 0 입력 시 선택 완료)",
+            )
+            if not equipment_id:
+                if selected_ids:
+                    break
+                return
+            selected_ids.append(equipment_id)
+            remaining_items = [item for item in remaining_items if item[0] != equipment_id]
+            if not remaining_items or not confirm("같은 기간에 장비를 추가로 예약하시겠습니까?"):
+                break
+
+        memo = self._get_memo_input()
 
         try:
-            limits = self.policy_service.get_user_flow_limits(self.user)
-            if limits["equipment_limit"] <= 0:
+            limits = cast(dict[str, Any], self.policy_service.get_user_flow_limits(self.user))
+            equipment_limit = int(limits["equipment_limit"])
+            if equipment_limit <= 0:
                 raise EquipmentBookingError("이미 활성 장비 예약이 있습니다.")
-            booking = self.equipment_service.create_daily_booking(
-                user=self.user,
-                equipment_id=equipment_id,
-                start_date=start_date,
-                end_date=end_date,
-                max_active=limits["equipment_limit"],
-            )
-            print_success("예약이 완료되었습니다.")
-            print(f"  예약 ID: {booking.id[:8]}...")
-            print(
-                f"  대여 기간: {format_booking_time_range(booking.start_time, booking.end_time)}"
-            )
+            if len(selected_ids) == 1:
+                booking = self.equipment_service.create_daily_booking(
+                    user=self.user,
+                    equipment_id=selected_ids[0],
+                    start_date=start_date,
+                    end_date=end_date,
+                    max_active=equipment_limit,
+                    memo=memo,
+                )
+                self._print_booking_result(booking, "대여 기간")
+            else:
+                bookings = self.equipment_service.create_group_booking(
+                    user=self.user,
+                    equipment_ids=selected_ids,
+                    start_time=start_time,
+                    end_time=end_time,
+                    max_active=equipment_limit,
+                    memo=memo,
+                )
+                print_success("장비 그룹 예약 요청이 접수되었습니다.")
+                print(f"  그룹 예약 수: {len(bookings)}건")
+                print(f"  대여 기간: {format_booking_time_range(bookings[0].start_time, bookings[0].end_time)}")
+                if any(b.status == EquipmentBookingStatus.PENDING for b in bookings):
+                    print_warning("그룹 예약 중 경쟁 예약이 있어 전체 그룹이 대기 상태로 접수되었습니다.")
         except (EquipmentBookingError, PenaltyError) as e:
             print_error(str(e))
 
@@ -901,16 +956,18 @@ class UserMenu:
             return
 
         try:
-            if self.equipment_service.will_apply_late_cancel_penalty(
+            impact = self.equipment_service.preview_cancel_booking_impact(
                 self.user, booking_id
-            ):
-                print_warning("이 예약을 지금 취소하면 직전 취소 패널티 2점이 부과됩니다.")
+            )
+            self._print_cancel_impact_preview(impact)
         except (EquipmentBookingError, PenaltyError) as e:
             print_error(str(e))
             pause()
             return
 
         if not confirm("정말 취소하시겠습니까?"):
+            print_info("예약 취소를 취소했습니다.")
+            pause()
             return
 
         try:
@@ -933,7 +990,7 @@ class UserMenu:
         if not self._refresh_user():
             return
         try:
-            status = self.penalty_service.get_user_status(self.user)
+            status = cast(dict[str, Any], self.penalty_service.get_user_status(self.user))
             room_active = self.room_service.get_user_active_bookings(self.user.id)
             equip_active = self.equipment_service.get_user_active_bookings(self.user.id)
             all_room_bookings = self.room_service.get_user_bookings(self.user.id)
@@ -946,15 +1003,20 @@ class UserMenu:
         print(f"\n사용자명: {self.user.username}")
         print(f"역할: {format_status_badge(self.user.role.value)}")
 
+        points = int(status["points"])
+        is_banned = bool(status["is_banned"])
+        is_restricted = bool(status["is_restricted"])
+
         print_subheader("패널티 상태")
         print(
-            f"  상태: {format_penalty_status(status['points'], status['is_banned'], status['is_restricted'])}"
+            f"  상태: {format_penalty_status(points, is_banned, is_restricted)}"
         )
-        print(f"  누적 점수: {status['points']}점")
+        print(f"  누적 점수: {points}점")
         print(f"  정상 이용 연속: {status.get('normal_use_streak', 0)}회")
 
-        if status.get("restriction_until"):
-            print(f"  제한 해제일: {status['restriction_until'][:10]}")
+        restriction_until = status.get("restriction_until")
+        if restriction_until:
+            print(f"  제한 해제일: {str(restriction_until)[:10]}")
 
         print_subheader("활성 예약")
         print(f"  회의실: {len(room_active)}건")
