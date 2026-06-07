@@ -10,7 +10,8 @@
 """
 
 import pytest
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 
 from src.domain.equipment_service import EquipmentBookingError
 from src.domain.models import (
@@ -19,8 +20,10 @@ from src.domain.models import (
     RoomBookingStatus,
     ResourceStatus,
     UserRole,
+    decode_future_status_changes,
 )
 from src.storage.file_lock import global_lock
+from src.storage.repositories import EquipmentBookingRepository
 
 
 class TestCreateEquipmentBooking:
@@ -48,6 +51,33 @@ class TestCreateEquipmentBooking:
             assert booking.equipment_id == equipment.id
             assert booking.status == EquipmentBookingStatus.RESERVED
 
+    def test_create_booking_blocks_future_unavailable_interval(
+        self, equipment_service, create_test_user, create_test_equipment, fake_clock
+    ):
+        current_time = datetime(2024, 6, 15, 9, 0, 0)
+        fake_clock(current_time)
+        admin = create_test_user(role=UserRole.ADMIN)
+        user = create_test_user()
+        equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
+
+        equipment_service.schedule_future_status_change(
+            admin=admin,
+            equipment_id=equipment.id,
+            start_time=datetime(2024, 6, 17, 9, 0, 0),
+            end_time=datetime(2024, 6, 17, 18, 0, 0),
+            status=ResourceStatus.MAINTENANCE,
+        )
+
+        with pytest.raises(EquipmentBookingError) as exc_info:
+            equipment_service.create_booking(
+                user=user,
+                equipment_id=equipment.id,
+                start_time=datetime(2024, 6, 17, 9, 0, 0),
+                end_time=datetime(2024, 6, 17, 18, 0, 0),
+            )
+
+        assert "예정된 maintenance" in str(exc_info.value)
+
     def test_create_booking_equipment_not_found(
         self, equipment_service, create_test_user, mock_now
     ):
@@ -66,6 +96,75 @@ class TestCreateEquipmentBooking:
                 )
 
             assert "존재하지 않는 장비" in str(exc_info.value)
+
+
+class TestEquipmentFutureStatusScheduling:
+    def test_schedule_and_cancel_future_status_change(
+        self, equipment_service, equipment_repo, create_test_user, create_test_equipment, fake_clock
+    ):
+        fake_clock(datetime(2024, 6, 15, 9, 0, 0))
+        admin = create_test_user(role=UserRole.ADMIN)
+        equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
+
+        item = equipment_service.schedule_future_status_change(
+            admin=admin,
+            equipment_id=equipment.id,
+            start_time=datetime(2024, 6, 16, 9, 0, 0),
+            end_time=datetime(2024, 6, 16, 18, 0, 0),
+            status=ResourceStatus.DISABLED,
+        )
+        stored = equipment_repo.get_by_id(equipment.id)
+
+        decoded = decode_future_status_changes(stored.future_status_changes)
+        assert decoded[0]["id"] == item["id"]
+        assert decoded[0]["status"] == ResourceStatus.DISABLED.value
+
+        cancelled = equipment_service.cancel_future_status_change(
+            admin=admin,
+            equipment_id=equipment.id,
+            schedule_id=item["id"],
+        )
+
+        assert cancelled["state"] == "cancelled"
+        stored = equipment_repo.get_by_id(equipment.id)
+        assert decode_future_status_changes(stored.future_status_changes)[0]["state"] == "cancelled"
+
+    def test_policy_applies_start_end_and_removes_completed_schedule(
+        self,
+        equipment_service,
+        policy_service,
+        equipment_repo,
+        create_test_user,
+        create_test_equipment,
+        fake_clock,
+    ):
+        fake_clock(datetime(2024, 6, 15, 9, 0, 0))
+        admin = create_test_user(role=UserRole.ADMIN)
+        equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
+
+        equipment_service.schedule_future_status_change(
+            admin=admin,
+            equipment_id=equipment.id,
+            start_time=datetime(2024, 6, 16, 9, 0, 0),
+            end_time=datetime(2024, 6, 16, 18, 0, 0),
+            status=ResourceStatus.MAINTENANCE,
+        )
+
+        fake_clock(datetime(2024, 6, 16, 9, 0, 0))
+        start_result = policy_service.run_all_checks()
+        started = equipment_repo.get_by_id(equipment.id)
+
+        assert started.status == ResourceStatus.MAINTENANCE
+        assert decode_future_status_changes(started.future_status_changes)[0]["state"] == "started"
+        assert start_result["equipment_future_status_changes"]
+
+        fake_clock(datetime(2024, 6, 16, 18, 0, 0))
+        end_result = policy_service.run_all_checks()
+        completed = equipment_repo.get_by_id(equipment.id)
+
+        assert completed.status == ResourceStatus.AVAILABLE
+        assert decode_future_status_changes(completed.future_status_changes) == []
+        assert end_result["equipment_future_status_changes"]
 
     def test_create_booking_nonexistent_user_rejected(
         self, equipment_service, user_factory, create_test_equipment, mock_now
@@ -121,16 +220,15 @@ class TestCreateEquipmentBooking:
             # 첫 번째 예약 성공
             equipment_service.create_booking(user1, equipment.id, start, end)
 
-            # 겹치는 시간대 예약 실패
-            with pytest.raises(EquipmentBookingError) as exc_info:
-                equipment_service.create_booking(
-                    user2,
-                    equipment.id,
-                    fixed_time + timedelta(days=1),
-                    fixed_time + timedelta(days=4),
-                )
+            # 겹치는 시간대 예약은 우선권 대기 상태로 생성
+            pending = equipment_service.create_booking(
+                user2,
+                equipment.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=4),
+            )
 
-            assert "이미 예약이 있습니다" in str(exc_info.value)
+            assert pending.status == EquipmentBookingStatus.PENDING
 
     def test_create_booking_cannot_bypass_limit_with_large_max_active(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
@@ -861,3 +959,301 @@ def test_admin_modify_booking_still_rejects_started_bookings(
             )
 
         assert "'checked_out' 상태의 예약은 변경할 수 없습니다" in str(exc_info.value)
+
+
+class TestEquipmentBookingMemo:
+    def test_create_booking_persists_pipe_backslash_memo_after_reload(
+        self,
+        equipment_service,
+        temp_data_dir,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+        memo = r"회의|준비\자료"
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
+            booking = equipment_service.create_booking(
+                user=user,
+                equipment_id=equipment.id,
+                start_time=fixed_time + timedelta(hours=1),
+                end_time=fixed_time + timedelta(days=1),
+                memo=memo,
+            )
+
+        reloaded_repo = EquipmentBookingRepository(
+            file_path=temp_data_dir / "equipment_booking.txt"
+        )
+        reloaded = reloaded_repo.get_by_id(booking.id)
+
+        assert booking.memo == memo
+        assert reloaded is not None
+        assert reloaded.memo == memo
+
+    def test_create_daily_booking_persists_empty_and_sentinel_memo_after_reload(
+        self,
+        equipment_service,
+        temp_data_dir,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        with mock_now(datetime(2024, 6, 15, 8, 0, 0)):
+            user = create_test_user()
+            empty_equipment = create_test_equipment(serial_number="NB-101")
+            sentinel_equipment = create_test_equipment(serial_number="NB-102")
+            empty_booking = equipment_service.create_daily_booking(
+                user=user,
+                equipment_id=empty_equipment.id,
+                start_date=date(2024, 6, 16),
+                end_date=date(2024, 6, 16),
+                max_active=2,
+                memo="",
+            )
+            sentinel_booking = equipment_service.create_daily_booking(
+                user=user,
+                equipment_id=sentinel_equipment.id,
+                start_date=date(2024, 6, 17),
+                end_date=date(2024, 6, 17),
+                max_active=2,
+                memo=r"\-",
+            )
+
+        reloaded_repo = EquipmentBookingRepository(
+            file_path=temp_data_dir / "equipment_booking.txt"
+        )
+        reloaded_empty = reloaded_repo.get_by_id(empty_booking.id)
+        reloaded_sentinel = reloaded_repo.get_by_id(sentinel_booking.id)
+
+        assert reloaded_empty is not None
+        assert reloaded_sentinel is not None
+        assert reloaded_empty.memo == ""
+        assert reloaded_sentinel.memo == r"\-"
+
+    def test_modify_booking_updates_memo_after_reload(
+        self,
+        equipment_service,
+        temp_data_dir,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+        memo = r"회의|준비\자료"
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            equipment = create_test_equipment()
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time + timedelta(hours=1),
+                fixed_time + timedelta(days=1),
+            )
+            modified = equipment_service.modify_booking(
+                user,
+                booking.id,
+                fixed_time + timedelta(days=2),
+                fixed_time + timedelta(days=3),
+                memo=memo,
+            )
+
+        reloaded_repo = EquipmentBookingRepository(
+            file_path=temp_data_dir / "equipment_booking.txt"
+        )
+        reloaded = reloaded_repo.get_by_id(booking.id)
+
+        assert modified.memo == memo
+        assert reloaded is not None
+        assert reloaded.memo == memo
+
+    def test_invalid_memo_leaves_equipment_repositories_unchanged(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        with mock_now(datetime(2024, 6, 15, 8, 0, 0)):
+            user = create_test_user()
+            equipment = create_test_equipment(serial_number="NB-103")
+            with pytest.raises(ValueError, match="줄바꿈"):
+                equipment_service.create_booking(
+                    user=user,
+                    equipment_id=equipment.id,
+                    start_time=datetime(2024, 6, 15, 9, 0, 0),
+                    end_time=datetime(2024, 6, 16, 9, 0, 0),
+                    memo="회의\n준비",
+                )
+
+            booking = equipment_service.create_daily_booking(
+                user=user,
+                equipment_id=equipment.id,
+                start_date=date(2024, 6, 16),
+                end_date=date(2024, 6, 16),
+                memo="기존메모",
+            )
+            with pytest.raises(ValueError, match="줄바꿈"):
+                equipment_service.modify_daily_booking(
+                    user=user,
+                    booking_id=booking.id,
+                    start_date=date(2024, 6, 17),
+                    end_date=date(2024, 6, 17),
+                    memo="변경\n메모",
+                )
+
+        unchanged = equipment_booking_repo.get_by_id(booking.id)
+        assert len(equipment_booking_repo.get_all()) == 1
+        assert unchanged.memo == "기존메모"
+        assert datetime.fromisoformat(unchanged.start_time) == datetime.fromisoformat(
+            booking.start_time
+        )
+
+
+class TestEquipmentGroupBooking:
+    def test_create_and_cancel_group_booking_is_one_atomic_operation(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        audit_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            first = create_test_equipment(serial_number="GP-001")
+            second = create_test_equipment(serial_number="GP-002")
+
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time + timedelta(days=1),
+                end_time=fixed_time + timedelta(days=2),
+                memo="그룹예약",
+            )
+
+            group_id = bookings[0].group_id
+            assert group_id
+            assert len(bookings) == 2
+            assert {booking.group_id for booking in bookings} == {group_id}
+            assert len(equipment_booking_repo.get_by_group_id(group_id)) == 2
+            assert len(equipment_service.get_user_bookings(user.id)) == 1
+
+            cancelled, is_late = equipment_service.cancel_booking(user, bookings[1].id)
+
+        reloaded_repo = EquipmentBookingRepository(
+            file_path=equipment_booking_repo.file_path
+        )
+        reloaded_group = reloaded_repo.get_by_group_id(group_id)
+        audit_actions = [entry.action for entry in audit_repo.get_all()]
+
+        assert is_late is False
+        assert len(cancelled) == 2
+        assert {booking.status for booking in cancelled} == {
+            EquipmentBookingStatus.CANCELLED
+        }
+        assert {booking.status for booking in reloaded_group} == {
+            EquipmentBookingStatus.CANCELLED
+        }
+        assert audit_actions.count("create_equipment_group_booking") == 1
+        assert audit_actions.count("cancel_equipment_booking") == 1
+
+    def test_group_cancel_rejects_mixed_status_group_without_mutation(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        audit_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            first = create_test_equipment(serial_number="MS-001")
+            second = create_test_equipment(serial_number="MS-002")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time + timedelta(days=1),
+                end_time=fixed_time + timedelta(days=2),
+            )
+            group_id = bookings[0].group_id
+            corrupted_member = replace(
+                bookings[1], status=EquipmentBookingStatus.CHECKED_OUT
+            )
+            with global_lock():
+                equipment_booking_repo.update(corrupted_member)
+
+            with pytest.raises(EquipmentBookingError) as exc_info:
+                equipment_service.cancel_booking(user, bookings[0].id)
+
+        reloaded_repo = EquipmentBookingRepository(
+            file_path=equipment_booking_repo.file_path
+        )
+        reloaded_by_id = {
+            booking.id: booking for booking in reloaded_repo.get_by_group_id(group_id)
+        }
+        audit_actions = [entry.action for entry in audit_repo.get_all()]
+
+        assert "checked_out" in str(exc_info.value)
+        assert reloaded_by_id[bookings[0].id].status == EquipmentBookingStatus.RESERVED
+        assert reloaded_by_id[bookings[1].id].status == EquipmentBookingStatus.CHECKED_OUT
+        assert audit_actions.count("cancel_equipment_booking") == 0
+
+    def test_group_cancel_rolls_back_if_second_row_update_fails_after_reload(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+        monkeypatch,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            first = create_test_equipment(serial_number="RB-001")
+            second = create_test_equipment(serial_number="RB-002")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time + timedelta(days=3),
+                end_time=fixed_time + timedelta(days=4),
+            )
+            group_id = bookings[0].group_id
+
+            original_update = equipment_booking_repo.update
+            update_count = {"value": 0}
+
+            def fail_after_first_update(record):
+                update_count["value"] += 1
+                result = original_update(record)
+                if update_count["value"] == 2:
+                    raise RuntimeError("injected group rollback failure")
+                return result
+
+            monkeypatch.setattr(equipment_booking_repo, "update", fail_after_first_update)
+
+            with pytest.raises(RuntimeError, match="injected group rollback failure"):
+                equipment_service.cancel_booking(user, bookings[0].id)
+
+        reloaded_repo = EquipmentBookingRepository(
+            file_path=equipment_booking_repo.file_path
+        )
+        reloaded_group = reloaded_repo.get_by_group_id(group_id)
+
+        assert update_count["value"] == 2
+        assert len(reloaded_group) == 2
+        assert {booking.status for booking in reloaded_group} == {
+            EquipmentBookingStatus.RESERVED
+        }
