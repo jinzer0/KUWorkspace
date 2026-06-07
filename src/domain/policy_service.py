@@ -2,30 +2,38 @@
 
 from datetime import datetime
 from dataclasses import replace
+from typing import Any, cast
 
 from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
+    ResourceStatus,
     UserRole,
+    decode_future_status_changes,
+    encode_future_status_changes,
     now_iso,
 )
 from src.storage.repositories import (
     UserRepository,
     RoomBookingRepository,
     EquipmentBookingRepository,
+    EquipmentAssetRepository,
+    RoomMaintenanceRepository,
     PenaltyRepository,
     AuditLogRepository,
     UnitOfWork,
+    stage_waitlist_projection,
 )
 from src.storage.file_lock import global_lock
 from src.storage.integrity import validate_all_data_files
 from src.domain.penalty_service import PenaltyService, PenaltyError
+from src import config
 from src.config import (
     PENALTY_BAN_THRESHOLD,
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
 )
-from src.runtime_clock import get_runtime_clock
+from src.runtime_clock import format_clock_marker, get_runtime_clock
 
 
 class PolicyService:
@@ -36,8 +44,10 @@ class PolicyService:
         user_repo=None,
         room_booking_repo=None,
         equipment_booking_repo=None,
+        equipment_repo=None,
         penalty_repo=None,
         audit_repo=None,
+        room_maintenance_repo=None,
         penalty_service=None,
         clock=None,
     ):
@@ -47,8 +57,10 @@ class PolicyService:
         self.equipment_booking_repo = (
             equipment_booking_repo or EquipmentBookingRepository()
         )
+        self.equipment_repo = equipment_repo or EquipmentAssetRepository()
         self.penalty_repo = penalty_repo or PenaltyRepository()
         self.audit_repo = audit_repo or AuditLogRepository()
+        self.room_maintenance_repo = room_maintenance_repo or RoomMaintenanceRepository()
         self.penalty_service = penalty_service or PenaltyService(
             user_repo=self.user_repo,
             penalty_repo=self.penalty_repo,
@@ -70,7 +82,24 @@ class PolicyService:
             "penalty_reset_users": [],
             "restriction_expired_users": [],
             "banned_user_cancelled_bookings": [],
+            "equipment_future_status_changes": [],
+            "room_pending_promoted": [],
+            "room_pending_cancelled": [],
+            "equipment_pending_promoted": [],
+            "equipment_pending_cancelled": [],
+            "waitlist_projection": "",
         }
+
+        results["room_maintenance_expired"] = self._cleanup_expired_room_maintenance(current_time)
+        results["equipment_future_status_changes"] = self._apply_equipment_future_status_changes(current_time)
+
+        room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
+        results["room_pending_promoted"] = room_promoted
+        results["room_pending_cancelled"] = room_cancelled
+
+        equipment_promoted, equipment_cancelled = self._resolve_equipment_pending_bookings(current_time)
+        results["equipment_pending_promoted"] = equipment_promoted
+        results["equipment_pending_cancelled"] = equipment_cancelled
 
         reset_users = self._check_penalty_resets(current_time)
         results["penalty_reset_users"] = [u.id for u in reset_users]
@@ -80,7 +109,223 @@ class PolicyService:
 
         cancelled = self._cancel_banned_user_bookings(current_time)
         results["banned_user_cancelled_bookings"] = cancelled
+        results["waitlist_projection"] = stage_waitlist_projection(
+            self.room_booking_repo, self.equipment_booking_repo
+        )
         return results
+
+    def _cleanup_expired_room_maintenance(self, current_time):
+        return self.room_maintenance_repo.delete_expired(current_time)
+
+    def _room_maintenance_conflicts(self, booking):
+        return bool(
+            self.room_maintenance_repo.get_conflicting(
+                booking.room_id, booking.start_time, booking.end_time
+            )
+        )
+
+    def _equipment_available_for_pending(self, booking):
+        equipment = self.equipment_repo.get_by_id(booking.equipment_id)
+        return equipment is not None and equipment.status == ResourceStatus.AVAILABLE
+
+    def _pending_sort_key(self, booking):
+        user = self.user_repo.get_by_id(booking.user_id)
+        penalty_points = user.penalty_points if user else 0
+        return (penalty_points, booking.created_at, booking.id)
+
+    def _resolve_room_pending_bookings(self, current_time):
+        promoted = []
+        cancelled = []
+        processed = set()
+        pending = sorted(
+            [
+                booking
+                for booking in self.room_booking_repo.get_all()
+                if booking.status == RoomBookingStatus.PENDING
+            ],
+            key=lambda booking: (
+                booking.room_id,
+                booking.start_time,
+                booking.end_time,
+                self._pending_sort_key(booking),
+            ),
+        )
+
+        for booking in pending:
+            if booking.id in processed:
+                continue
+            if self._room_maintenance_conflicts(booking):
+                continue
+            conflicts = self.room_booking_repo.get_confirmed_conflicting(
+                booking.room_id, booking.start_time, booking.end_time
+            )
+            if conflicts:
+                continue
+            competition = self.room_booking_repo.get_pending_competition(
+                booking.room_id, booking.start_time, booking.end_time, self.user_repo
+            )
+            competition = [item for item in competition if item.id not in processed]
+            if not competition:
+                continue
+            winner = competition[0]
+            timestamp = current_time.isoformat()
+            self.room_booking_repo.update(
+                replace(winner, status=RoomBookingStatus.RESERVED, updated_at=timestamp)
+            )
+            self.audit_repo.log_action(
+                actor_id="system",
+                action="resolve_room_pending_booking_promote",
+                target_type="room_booking",
+                target_id=winner.id,
+                details=f"pending resolver promoted booking for {winner.room_id}",
+            )
+            promoted.append(winner.id)
+            processed.add(winner.id)
+            for loser in competition[1:]:
+                self.room_booking_repo.update(
+                    replace(
+                        loser,
+                        status=RoomBookingStatus.CANCELLED,
+                        cancelled_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                )
+                self.audit_repo.log_action(
+                    actor_id="system",
+                    action="resolve_room_pending_booking_cancel",
+                    target_type="room_booking",
+                    target_id=loser.id,
+                    details=f"pending resolver cancelled booking for {loser.room_id}",
+                )
+                cancelled.append(loser.id)
+                processed.add(loser.id)
+        return promoted, cancelled
+
+    def _resolve_equipment_pending_bookings(self, current_time):
+        promoted = []
+        cancelled = []
+        processed = set()
+        pending = sorted(
+            [
+                booking
+                for booking in self.equipment_booking_repo.get_all()
+                if booking.status == EquipmentBookingStatus.PENDING
+            ],
+            key=lambda booking: (
+                booking.equipment_id,
+                booking.start_time,
+                booking.end_time,
+                self._pending_sort_key(booking),
+            ),
+        )
+
+        for booking in pending:
+            if booking.id in processed:
+                continue
+            if not self._equipment_available_for_pending(booking):
+                continue
+            conflicts = self.equipment_booking_repo.get_confirmed_conflicting(
+                booking.equipment_id, booking.start_time, booking.end_time
+            )
+            if conflicts:
+                continue
+            competition = self.equipment_booking_repo.get_pending_competition(
+                booking.equipment_id, booking.start_time, booking.end_time, self.user_repo
+            )
+            competition = [item for item in competition if item.id not in processed]
+            if not competition:
+                continue
+            winner = competition[0]
+            timestamp = current_time.isoformat()
+            self.equipment_booking_repo.update(
+                replace(winner, status=EquipmentBookingStatus.RESERVED, updated_at=timestamp)
+            )
+            self.audit_repo.log_action(
+                actor_id="system",
+                action="resolve_equipment_pending_booking_promote",
+                target_type="equipment_booking",
+                target_id=winner.id,
+                details=f"pending resolver promoted booking for {winner.equipment_id}",
+            )
+            promoted.append(winner.id)
+            processed.add(winner.id)
+            for loser in competition[1:]:
+                self.equipment_booking_repo.update(
+                    replace(
+                        loser,
+                        status=EquipmentBookingStatus.CANCELLED,
+                        cancelled_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                )
+                self.audit_repo.log_action(
+                    actor_id="system",
+                    action="resolve_equipment_pending_booking_cancel",
+                    target_type="equipment_booking",
+                    target_id=loser.id,
+                    details=f"pending resolver cancelled booking for {loser.equipment_id}",
+                )
+                cancelled.append(loser.id)
+                processed.add(loser.id)
+        return promoted, cancelled
+
+    def _apply_equipment_future_status_changes(self, current_time):
+        events = []
+        timestamp = now_iso()
+        for equipment in self.equipment_repo.get_all():
+            items = decode_future_status_changes(equipment.future_status_changes)
+            if not items:
+                continue
+            changed = False
+            retained_items = []
+            current_status = equipment.status
+            for item in items:
+                state = item["state"]
+                start_time = datetime.fromisoformat(item["start_time"])
+                end_time = datetime.fromisoformat(item["end_time"])
+
+                if state == "pending" and current_time >= end_time:
+                    state = "completed"
+                    item = {**item, "state": state, "applied_end_at": timestamp}
+                    current_status = ResourceStatus(item["restore_status"])
+                    events.append(f"장비 {equipment.id} 예정 상태 종료 정리")
+                    changed = True
+                elif state == "pending" and current_time >= start_time:
+                    state = "started"
+                    item = {**item, "state": state, "applied_start_at": timestamp}
+                    current_status = ResourceStatus(item["status"])
+                    events.append(f"장비 {equipment.id} 예정 상태 시작: {item['status']}")
+                    changed = True
+
+                if state == "started" and current_time >= end_time:
+                    state = "completed"
+                    item = {**item, "state": state, "applied_end_at": timestamp}
+                    current_status = ResourceStatus(item["restore_status"])
+                    events.append(f"장비 {equipment.id} 예정 상태 종료: {item['restore_status']}")
+                    changed = True
+
+                if state in {"completed", "cancelled"} and current_time >= end_time:
+                    changed = True
+                    continue
+                retained_items.append(item)
+
+            if changed:
+                self.equipment_repo.update(
+                    replace(
+                        equipment,
+                        status=current_status,
+                        future_status_changes=encode_future_status_changes(retained_items),
+                        updated_at=timestamp,
+                    )
+                )
+                self.audit_repo.log_action(
+                    actor_id="system",
+                    action="apply_equipment_future_status_change",
+                    target_type="equipment",
+                    target_id=equipment.id,
+                    details=f"future status applied; current_status={current_status.value}",
+                )
+        return events
 
     def prepare_advance(self, current_time=None, actor_id="system"):
         validate_all_data_files()
@@ -89,17 +334,18 @@ class PolicyService:
         return self._build_advance_state(current_time, actor_id=actor_id)
 
     def advance_time(self, actor_id="system", force=False):
-        with global_lock(), UnitOfWork():
+        with global_lock(), UnitOfWork() as uow:
             validate_all_data_files()
             current_time = self.clock.now()
-            state = self._build_advance_state(current_time, actor_id=actor_id)
-            if state["blockers"] and not force:
+            state: dict[str, Any] = self._build_advance_state(current_time, actor_id=actor_id)
+            blockers = cast(list[str], state["blockers"])
+            if blockers and not force:
                 self.audit_repo.log_action(
                     actor_id=actor_id,
                     action="clock_advance_blocked",
                     target_type="system_clock",
                     target_id=current_time.isoformat(),
-                    details=" | ".join(state["blockers"]),
+                    details=" | ".join(blockers),
                 )
                 return state
 
@@ -110,11 +356,12 @@ class PolicyService:
                 penalty_owner_id=penalty_owner_id,
             )
 
-            next_time = self.clock.advance()
+            next_time = self.clock.next_slot()
             maintenance = self._run_checks_locked(next_time)
-            events = list(state["events"])
+            events = list(cast(list[str], state["events"]))
             events.extend(auto_events)
             events.extend(self._build_post_advance_events(next_time, maintenance))
+            uow.stage_text(config.CLOCK_FILE, format_clock_marker(next_time))
 
             self.audit_repo.log_action(
                 actor_id=actor_id,
@@ -129,7 +376,8 @@ class PolicyService:
             state["maintenance"] = maintenance
             state["forced"] = force
             state["can_advance"] = True
-            return state
+        self.clock.set_time(next_time, persist=False)
+        return state
 
     def _resolve_forced_penalty_owner_id(self, actor_id, force):
         if not force:

@@ -3,6 +3,7 @@
 import pytest
 from datetime import datetime, timedelta
 
+from src.storage.integrity import DataIntegrityError
 from src.domain.penalty_service import PenaltyError
 from src.domain.models import (
     RoomBooking,
@@ -10,7 +11,10 @@ from src.domain.models import (
     RoomBookingStatus,
     EquipmentBookingStatus,
     PenaltyReason,
+    ResourceStatus,
+    RoomMaintenanceSchedule,
     UserRole,
+    encode_future_status_changes,
 )
 from src.storage.file_lock import global_lock
 
@@ -93,6 +97,347 @@ class TestClockAdvance:
         logs = audit_repo.get_by_actor("admin-1")
         assert any(log.action == "clock_advance" for log in logs)
 
+    def test_advance_time_persists_09_to_18_clock_and_audit_together(
+        self,
+        policy_service,
+        auth_service,
+        create_test_room,
+        room_booking_repo,
+        audit_repo,
+        fake_clock,
+        temp_data_dir,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        clock = fake_clock(current_time)
+        clock_file = temp_data_dir / "clock.txt"
+        booking_user = auth_service.signup("atomic_success_user", "pass")
+        admin = auth_service.signup("atomic_success_admin", "pass", role=UserRole.ADMIN)
+        room = create_test_room()
+
+        booking = RoomBooking(
+            id="atomic-success-booking",
+            user_id=booking_user.id,
+            room_id=room.id,
+            start_time=current_time.isoformat(),
+            end_time=current_time.replace(hour=18).isoformat(),
+            status=RoomBookingStatus.RESERVED,
+        )
+        with global_lock():
+            room_booking_repo.add(booking)
+
+        result = policy_service.advance_time(actor_id=admin.id, force=True)
+
+        assert result["can_advance"] is True
+        assert result["next_time"] == datetime(2024, 6, 16, 18, 0, 0)
+        assert clock.now() == datetime(2024, 6, 16, 18, 0, 0)
+        assert clock_file.read_text(encoding="utf-8") == "2024-06-16T18:00"
+        assert room_booking_repo.get_by_id(booking.id).status == RoomBookingStatus.ADMIN_CANCELLED
+        logs = audit_repo.get_by_actor(admin.id)
+        assert any(log.action == "clock_advance" for log in logs)
+        assert any(log.action == "apply_late_cancel_penalty" for log in audit_repo.get_all())
+
+    def test_clock_reads_do_not_trigger_policy_automation(
+        self,
+        policy_service,
+        audit_repo,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        fake_clock(current_time)
+
+        assert policy_service.clock.now() == current_time
+        assert policy_service.clock.current_slot() == "09:00"
+        assert policy_service.clock.next_slot() == datetime(2024, 6, 16, 18, 0, 0)
+        assert audit_repo.get_all() == []
+
+    def test_advance_time_rolls_back_clock_when_audit_replace_fails(
+        self,
+        policy_service,
+        audit_repo,
+        fake_clock,
+        temp_data_dir,
+        monkeypatch,
+    ):
+        current_time = datetime(2024, 6, 16, 9, 0, 0)
+        clock = fake_clock(current_time)
+        clock_file = temp_data_dir / "clock.txt"
+        original_replace = __import__("os").replace
+        clock_was_replaced = {"value": False}
+
+        def fail_after_clock_replace(tmp_path, target_path):
+            if str(target_path).endswith("audit_log.txt"):
+                assert clock_was_replaced["value"] is True
+                raise OSError("audit replace failed")
+            original_replace(tmp_path, target_path)
+            if str(target_path).endswith("audit_log.txt"):
+                return
+            if str(target_path).endswith("clock.txt"):
+                clock_was_replaced["value"] = True
+
+        monkeypatch.setattr("src.storage.atomic_writer.os.replace", fail_after_clock_replace)
+
+        with pytest.raises(DataIntegrityError, match="audit replace failed"):
+            policy_service.advance_time(actor_id="admin-1")
+
+        assert clock.now() == current_time
+        assert clock_file.read_text(encoding="utf-8") == "2024-06-16T09:00"
+        assert audit_repo.get_by_actor("admin-1") == []
+
+    def test_advance_time_applies_future_status_before_pending_promotion(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_repo,
+        equipment_booking_repo,
+        equipment_booking_factory,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
+        user = create_test_user(username="future_user")
+        next_time = datetime(2024, 6, 17, 9, 0, 0)
+        end_time = datetime(2024, 6, 17, 18, 0, 0)
+        equipment = create_test_equipment(
+            serial_number="FP-001",
+            future_status_changes=encode_future_status_changes(
+                [
+                    {
+                        "id": "future-maintenance",
+                        "start_time": next_time.isoformat(),
+                        "end_time": end_time.isoformat(),
+                        "status": ResourceStatus.MAINTENANCE.value,
+                        "restore_status": ResourceStatus.AVAILABLE.value,
+                        "state": "pending",
+                    }
+                ]
+            ),
+        )
+
+        with global_lock():
+            equipment_booking_repo.add(
+                equipment_booking_factory(
+                    id="future-status-pending",
+                    user_id=user.id,
+                    equipment_id=equipment.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=EquipmentBookingStatus.PENDING,
+                    created_at="2024-06-16T10:00",
+                )
+            )
+
+        result = policy_service.advance_time(actor_id="system")
+
+        assert result["can_advance"] is True
+        assert result["maintenance"]["equipment_future_status_changes"] == [
+            f"장비 {equipment.id} 예정 상태 시작: maintenance"
+        ]
+        assert result["maintenance"]["equipment_pending_promoted"] == []
+        assert equipment_repo.get_by_id(equipment.id).status == ResourceStatus.MAINTENANCE
+        assert (
+            equipment_booking_repo.get_by_id("future-status-pending").status
+            == EquipmentBookingStatus.PENDING
+        )
+        assert any(
+            log.action == "apply_equipment_future_status_change"
+            and log.target_id == equipment.id
+            for log in policy_service.audit_repo.get_all()
+        )
+
+
+    def test_pending_resolver_writes_audit_actions(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        create_test_equipment,
+        room_booking_repo,
+        equipment_booking_repo,
+        room_booking_factory,
+        equipment_booking_factory,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
+        first_user = create_test_user(username="resolver_first")
+        second_user = create_test_user(username="resolver_second")
+        room = create_test_room()
+        equipment = create_test_equipment(serial_number="RS-001")
+        next_time = datetime(2024, 6, 17, 9, 0, 0)
+        end_time = datetime(2024, 6, 17, 18, 0, 0)
+
+        with global_lock():
+            room_booking_repo.add(
+                room_booking_factory(
+                    id="room-pending-winner",
+                    user_id=first_user.id,
+                    room_id=room.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=RoomBookingStatus.PENDING,
+                    created_at="2024-06-16T10:00",
+                )
+            )
+            room_booking_repo.add(
+                room_booking_factory(
+                    id="room-pending-loser",
+                    user_id=second_user.id,
+                    room_id=room.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=RoomBookingStatus.PENDING,
+                    created_at="2024-06-16T10:01",
+                )
+            )
+            equipment_booking_repo.add(
+                equipment_booking_factory(
+                    id="equipment-pending-winner",
+                    user_id=first_user.id,
+                    equipment_id=equipment.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=EquipmentBookingStatus.PENDING,
+                    created_at="2024-06-16T10:00",
+                )
+            )
+            equipment_booking_repo.add(
+                equipment_booking_factory(
+                    id="equipment-pending-loser",
+                    user_id=second_user.id,
+                    equipment_id=equipment.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=EquipmentBookingStatus.PENDING,
+                    created_at="2024-06-16T10:01",
+                )
+            )
+
+        result = policy_service.advance_time(actor_id="system")
+
+        assert result["can_advance"] is True
+        actions_by_target = {
+            log.target_id: log.action for log in policy_service.audit_repo.get_all()
+        }
+        assert actions_by_target["room-pending-winner"] == "resolve_room_pending_booking_promote"
+        assert actions_by_target["room-pending-loser"] == "resolve_room_pending_booking_cancel"
+        assert actions_by_target["equipment-pending-winner"] == "resolve_equipment_pending_booking_promote"
+        assert actions_by_target["equipment-pending-loser"] == "resolve_equipment_pending_booking_cancel"
+
+    def test_advance_time_keeps_room_pending_when_maintenance_exists(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        room_booking_repo,
+        room_maintenance_repo,
+        room_booking_factory,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        fake_clock(current_time)
+        user = create_test_user(username="maint_user")
+        room = create_test_room()
+        next_time = datetime(2024, 6, 17, 9, 0, 0)
+        end_time = datetime(2024, 6, 17, 18, 0, 0)
+
+        with global_lock():
+            room_maintenance_repo.add(
+                RoomMaintenanceSchedule(
+                    id="maintenance-blocks-pending",
+                    room_id=room.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    reason="정기점검",
+                )
+            )
+            room_booking_repo.add(
+                room_booking_factory(
+                    id="maintenance-room-pending",
+                    user_id=user.id,
+                    room_id=room.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=RoomBookingStatus.PENDING,
+                    created_at="2024-06-16T10:00",
+                )
+            )
+
+        result = policy_service.advance_time(actor_id="system")
+
+        assert result["can_advance"] is True
+        assert result["maintenance"]["room_pending_promoted"] == []
+        assert (
+            room_booking_repo.get_by_id("maintenance-room-pending").status
+            == RoomBookingStatus.PENDING
+        )
+
+    def test_advance_time_rolls_back_automation_when_later_policy_fails(
+        self,
+        policy_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_repo,
+        equipment_booking_repo,
+        equipment_booking_factory,
+        fake_clock,
+        temp_data_dir,
+        monkeypatch,
+    ):
+        current_time = datetime(2024, 6, 16, 18, 0, 0)
+        clock = fake_clock(current_time)
+        user = create_test_user(username="rollback_user")
+        next_time = datetime(2024, 6, 17, 9, 0, 0)
+        end_time = datetime(2024, 6, 17, 18, 0, 0)
+        equipment = create_test_equipment(
+            serial_number="RB-001",
+            future_status_changes=encode_future_status_changes(
+                [
+                    {
+                        "id": "rollback-maintenance",
+                        "start_time": next_time.isoformat(),
+                        "end_time": end_time.isoformat(),
+                        "status": ResourceStatus.MAINTENANCE.value,
+                        "restore_status": ResourceStatus.AVAILABLE.value,
+                        "state": "pending",
+                    }
+                ]
+            ),
+        )
+
+        with global_lock():
+            equipment_booking_repo.add(
+                equipment_booking_factory(
+                    id="rollback-future-pending",
+                    user_id=user.id,
+                    equipment_id=equipment.id,
+                    start_time=next_time.isoformat(),
+                    end_time=end_time.isoformat(),
+                    status=EquipmentBookingStatus.PENDING,
+                    created_at="2024-06-16T10:00",
+                )
+            )
+
+        def fail_after_pending_step(current_time):
+            raise RuntimeError("injected later automation failure")
+
+        monkeypatch.setattr(policy_service, "_check_penalty_resets", fail_after_pending_step)
+
+        with pytest.raises(RuntimeError, match="injected later automation failure"):
+            policy_service.advance_time(actor_id="system")
+
+        assert clock.now() == current_time
+        assert temp_data_dir.joinpath("clock.txt").read_text(encoding="utf-8") == "2024-06-16T18:00"
+        assert equipment_repo.get_by_id(equipment.id).status == ResourceStatus.AVAILABLE
+        assert (
+            equipment_repo.get_by_id(equipment.id).future_status_changes
+            == equipment.future_status_changes
+        )
+        assert (
+            equipment_booking_repo.get_by_id("rollback-future-pending").status
+            == EquipmentBookingStatus.PENDING
+        )
+
     def test_advance_time_blocked_without_force_writes_audit_log(
         self,
         policy_service,
@@ -159,6 +504,13 @@ class TestClockAdvance:
         assert auth_service.get_user(booking_user.id).penalty_points == 0
         penalties = penalty_repo.get_by_user(advancing_user.id)
         assert penalties[0].reason == PenaltyReason.LATE_CANCEL
+        penalty_logs = [
+            log
+            for log in policy_service.audit_repo.get_all()
+            if log.action == "apply_late_cancel_penalty"
+        ]
+        assert penalty_logs[0].actor_id == advancing_user.id
+        assert penalty_logs[0].target_id == advancing_user.id
 
     def test_forced_admin_advance_keeps_penalty_on_original_user(
         self,
