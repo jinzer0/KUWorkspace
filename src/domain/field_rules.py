@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 
-RESERVATION_MEMO_MAX_LENGTH = 100
+RESERVATION_MEMO_MAX_LENGTH = 50
 
 
 def has_whitespace(value: str) -> bool:
@@ -21,8 +21,8 @@ def validate_username_text(username: str) -> None:
         raise ValueError("사용자명은 3자 이상이어야 합니다.")
     if len(username) > 20:
         raise ValueError("사용자명은 20자 이하여야 합니다.")
-    if not re.fullmatch(r"[A-Za-z0-9_]+", username):
-        raise ValueError("사용자명은 영문, 숫자, 밑줄(_)만 사용 가능합니다.")
+    if not re.fullmatch(r"[A-Z][A-Za-z0-9_]{2,19}", username):
+        raise ValueError("사용자명은 대문자로 시작하는 영문, 숫자, 밑줄(_)만 사용 가능합니다.")
 
 
 def validate_password_text(password: str) -> None:
@@ -34,6 +34,10 @@ def validate_password_text(password: str) -> None:
         raise ValueError("비밀번호는 4자 이상이어야 합니다.")
     if len(password) > 50:
         raise ValueError("비밀번호는 50자 이하여야 합니다.")
+    if not any(char.isalpha() for char in password):
+        raise ValueError("비밀번호에는 영문자를 1개 이상 포함해야 합니다.")
+    if not re.search(r"\d", password):
+        raise ValueError("비밀번호에는 숫자를 1개 이상 포함해야 합니다.")
 
 
 def validate_reason_text(reason: str, field_name: str = "사유") -> None:
@@ -50,6 +54,8 @@ def validate_reservation_memo_text(memo: str, field_name: str = "예약 메모")
         raise ValueError(f"{field_name}는 텍스트여야 합니다.")
     if "\n" in memo or "\r" in memo:
         raise ValueError(f"{field_name}에 줄바꿈을 포함할 수 없습니다.")
+    if "|" in memo or "\\" in memo:
+        raise ValueError(f"{field_name}에 | 또는 \\ 문자를 포함할 수 없습니다.")
     if len(memo) > RESERVATION_MEMO_MAX_LENGTH:
         raise ValueError(f"{field_name}는 {RESERVATION_MEMO_MAX_LENGTH}자 이하여야 합니다.")
 
@@ -87,6 +93,8 @@ def validate_equipment_name(name: str) -> None:
         raise ValueError("장비 이름에 공백을 포함할 수 없습니다.")
     if len(name) < 1 or len(name) > 10:
         raise ValueError("장비 이름은 1자 이상 10자 이하여야 합니다.")
+    if not re.search(r"[가-힣]", name):
+        raise ValueError("장비 이름에는 한글을 1자 이상 포함해야 합니다.")
 
 
 def validate_equipment_asset_type(asset_type: str) -> None:
@@ -94,8 +102,10 @@ def validate_equipment_asset_type(asset_type: str) -> None:
         raise ValueError("장비 종류를 입력해주세요.")
     if has_whitespace(asset_type):
         raise ValueError("장비 종류에 공백을 포함할 수 없습니다.")
-    if len(asset_type) < 1 or len(asset_type) > 10:
-        raise ValueError("장비 종류는 1자 이상 10자 이하여야 합니다.")
+    if len(asset_type) < 1 or len(asset_type) > 15:
+        raise ValueError("장비 종류는 1자 이상 15자 이하여야 합니다.")
+    if not re.fullmatch(r"[a-z]+", asset_type):
+        raise ValueError("장비 종류는 영문 소문자만 사용할 수 있습니다.")
 
 
 def validate_equipment_serial(serial_number: str) -> None:
