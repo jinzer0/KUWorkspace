@@ -180,7 +180,7 @@ def temp_data_dir(tmp_path):
     room_bookings_file = data_dir / "room_bookings.txt"
     equipment_bookings_file = data_dir / "equipment_booking.txt"
     room_maintenance_file = data_dir / "room_maintenance.txt"
-    waitlist_file = data_dir / "waitlist.txt"
+    waitlist_file = data_dir / "waiting_list.txt"
     penalties_file = data_dir / "penalties.txt"
     audit_log_file = data_dir / "audit_log.txt"
     clock_file = data_dir / "clock.txt"
@@ -252,7 +252,7 @@ def user_factory():
         **overrides,
     ):
         _counter[0] += 1
-        resolved_username = username or f"testuser{_counter[0]}"
+        resolved_username = username or f"Testuser{_counter[0]}"
         return User(
             id=id or resolved_username,
             username=resolved_username,
@@ -304,7 +304,7 @@ def equipment_factory():
     def _create(
         id=None,
         name=None,
-        asset_type="노트북",
+        asset_type="notebook",
         serial_number=None,
         status=ResourceStatus.AVAILABLE,
         description="",
@@ -572,6 +572,7 @@ def equipment_service(
 @pytest.fixture
 def policy_service(
     user_repo,
+    room_repo,
     room_booking_repo,
     equipment_booking_repo,
     equipment_repo,
@@ -589,6 +590,7 @@ def policy_service(
 
     return PolicyService(
         user_repo=user_repo,
+        room_repo=room_repo,
         room_booking_repo=room_booking_repo,
         equipment_booking_repo=equipment_booking_repo,
         equipment_repo=equipment_repo,
