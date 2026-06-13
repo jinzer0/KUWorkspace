@@ -17,6 +17,7 @@ from src.domain.equipment_service import EquipmentBookingError
 from src.domain.models import (
     EquipmentBooking,
     EquipmentBookingStatus,
+    PenaltyReason,
     RoomBookingStatus,
     ResourceStatus,
     UserRole,
@@ -111,23 +112,43 @@ class TestEquipmentFutureStatusScheduling:
             equipment_id=equipment.id,
             start_time=datetime(2024, 6, 16, 9, 0, 0),
             end_time=datetime(2024, 6, 16, 18, 0, 0),
-            status=ResourceStatus.DISABLED,
+            status=ResourceStatus.MAINTENANCE,
         )
         stored = equipment_repo.get_by_id(equipment.id)
 
         decoded = decode_future_status_changes(stored.future_status_changes)
-        assert decoded[0]["id"] == item["id"]
-        assert decoded[0]["status"] == ResourceStatus.DISABLED.value
+        assert decoded[0]["id"] == "maintenance-2024-06-16"
+        assert decoded[0]["status"] == ResourceStatus.MAINTENANCE.value
 
         cancelled = equipment_service.cancel_future_status_change(
             admin=admin,
             equipment_id=equipment.id,
-            schedule_id=item["id"],
+            schedule_id=decoded[0]["id"],
         )
 
         assert cancelled["state"] == "cancelled"
         stored = equipment_repo.get_by_id(equipment.id)
-        assert decode_future_status_changes(stored.future_status_changes)[0]["state"] == "cancelled"
+        assert decode_future_status_changes(stored.future_status_changes) == []
+
+    def test_schedule_future_status_change_accepts_disabled_status(
+        self, equipment_service, equipment_repo, create_test_user, create_test_equipment, fake_clock
+    ):
+        fake_clock(datetime(2024, 6, 15, 9, 0, 0))
+        admin = create_test_user(role=UserRole.ADMIN)
+        equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)
+
+        item = equipment_service.schedule_future_status_change(
+            admin=admin,
+            equipment_id=equipment.id,
+            start_time=datetime(2024, 6, 16, 9, 0, 0),
+            end_time=datetime(2024, 6, 16, 18, 0, 0),
+            status=ResourceStatus.DISABLED,
+        )
+
+        stored = equipment_repo.get_by_id(equipment.id)
+        decoded = decode_future_status_changes(stored.future_status_changes)
+        assert item["status"] == ResourceStatus.DISABLED.value
+        assert decoded[0]["status"] == ResourceStatus.DISABLED.value
 
     def test_policy_applies_start_end_and_removes_completed_schedule(
         self,
@@ -155,7 +176,7 @@ class TestEquipmentFutureStatusScheduling:
         started = equipment_repo.get_by_id(equipment.id)
 
         assert started.status == ResourceStatus.MAINTENANCE
-        assert decode_future_status_changes(started.future_status_changes)[0]["state"] == "started"
+        assert decode_future_status_changes(started.future_status_changes)[0]["state"] == "pending"
         assert start_result["equipment_future_status_changes"]
 
         fake_clock(datetime(2024, 6, 16, 18, 0, 0))
@@ -203,10 +224,9 @@ class TestEquipmentFutureStatusScheduling:
                     end_time=fixed_time + timedelta(days=1),
                 )
 
-    def test_create_booking_time_conflict(
-        self, equipment_service, create_test_user, create_test_equipment, mock_now
+    def test_create_booking_rejects_confirmed_conflict_without_pending_write(
+        self, equipment_service, equipment_booking_repo, create_test_user, create_test_equipment, mock_now
     ):
-        """시간 충돌 시 실패"""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
@@ -217,18 +237,69 @@ class TestEquipmentFutureStatusScheduling:
             start = fixed_time + timedelta(hours=1)
             end = fixed_time + timedelta(days=3)
 
-            # 첫 번째 예약 성공
             equipment_service.create_booking(user1, equipment.id, start, end)
+            before_ids = {booking.id for booking in equipment_booking_repo.get_all()}
 
-            # 겹치는 시간대 예약은 우선권 대기 상태로 생성
-            pending = equipment_service.create_booking(
-                user2,
+            with pytest.raises(EquipmentBookingError, match="이미 예약"):
+                equipment_service.create_booking(
+                    user2,
+                    equipment.id,
+                    fixed_time + timedelta(days=1),
+                    fixed_time + timedelta(days=4),
+                )
+
+            after_bookings = equipment_booking_repo.get_all()
+            assert {booking.id for booking in after_bookings} == before_ids
+            assert all(booking.status != EquipmentBookingStatus.PENDING for booking in after_bookings)
+
+    def test_create_daily_booking_rejects_confirmed_conflict_without_pending_write(
+        self, equipment_service, equipment_booking_repo, create_test_user, create_test_equipment, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user1 = create_test_user(username="DailyOwner")
+            user2 = create_test_user(username="DailyRequester")
+            equipment = create_test_equipment()
+
+            equipment_service.create_daily_booking(
+                user1,
                 equipment.id,
-                fixed_time + timedelta(days=1),
-                fixed_time + timedelta(days=4),
+                date(2024, 6, 16),
+                date(2024, 6, 16),
             )
+            before_ids = {booking.id for booking in equipment_booking_repo.get_all()}
 
-            assert pending.status == EquipmentBookingStatus.PENDING
+            with pytest.raises(EquipmentBookingError, match="이미 예약"):
+                equipment_service.create_daily_booking(
+                    user2,
+                    equipment.id,
+                    date(2024, 6, 16),
+                    date(2024, 6, 16),
+                )
+
+            after_bookings = equipment_booking_repo.get_all()
+            assert {booking.id for booking in after_bookings} == before_ids
+            assert all(booking.status != EquipmentBookingStatus.PENDING for booking in after_bookings)
+
+    def test_create_daily_booking_same_operating_moment_conflict_creates_pending(
+        self, equipment_service, create_test_user, create_test_equipment, fake_clock
+    ):
+        current_time = datetime(2024, 6, 15, 9, 0, 0)
+        fake_clock(current_time)
+        owner = create_test_user(username="PriorityDailyOwner")
+        waiter = create_test_user(username="PriorityDailyWaiter")
+        equipment = create_test_equipment(serial_number="PD-001")
+
+        first = equipment_service.create_daily_booking(
+            owner, equipment.id, date(2024, 6, 16), date(2024, 6, 16)
+        )
+        second = equipment_service.create_daily_booking(
+            waiter, equipment.id, date(2024, 6, 16), date(2024, 6, 16)
+        )
+
+        assert first.status == EquipmentBookingStatus.RESERVED
+        assert second.status == EquipmentBookingStatus.PENDING
 
     def test_create_booking_cannot_bypass_limit_with_large_max_active(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
@@ -238,7 +309,7 @@ class TestEquipmentFutureStatusScheduling:
         with mock_now(fixed_time):
             user = create_test_user()
             equipment_items = [
-                create_test_equipment(name=f"장비{i}") for i in range(2)
+                create_test_equipment(name=f"장비{i}") for i in range(4)
             ]
 
             equipment_service.create_booking(
@@ -249,16 +320,122 @@ class TestEquipmentFutureStatusScheduling:
                 max_active=99,
             )
 
-            with pytest.raises(EquipmentBookingError) as exc_info:
+            for index in range(1, 3):
                 equipment_service.create_booking(
                     user,
-                    equipment_items[1].id,
-                    fixed_time + timedelta(hours=3),
-                    fixed_time + timedelta(days=2),
+                    equipment_items[index].id,
+                    fixed_time + timedelta(days=index, hours=1),
+                    fixed_time + timedelta(days=index + 1),
                     max_active=99,
                 )
 
-            assert "1건" in str(exc_info.value)
+            with pytest.raises(EquipmentBookingError) as exc_info:
+                equipment_service.create_booking(
+                    user,
+                    equipment_items[3].id,
+                    fixed_time + timedelta(days=3, hours=1),
+                    fixed_time + timedelta(days=4),
+                    max_active=99,
+                )
+
+            assert "3건" in str(exc_info.value)
+
+    def test_plan0001_normal_user_equipment_limit_is_three(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(username="EquipLimitUser")
+            equipment_items = [
+                create_test_equipment(serial_number=f"PL-{index:03d}")
+                for index in range(1, 5)
+            ]
+            bookings = [
+                equipment_service.create_booking(
+                    user,
+                    equipment_items[index].id,
+                    fixed_time + timedelta(days=index + 1),
+                    fixed_time + timedelta(days=index + 1, hours=9),
+                )
+                for index in range(3)
+            ]
+
+            assert [booking.status for booking in bookings] == [EquipmentBookingStatus.RESERVED] * 3
+            with pytest.raises(EquipmentBookingError, match="3건|한도|초과"):
+                equipment_service.create_booking(
+                    user,
+                    equipment_items[3].id,
+                    fixed_time + timedelta(days=4),
+                    fixed_time + timedelta(days=4, hours=9),
+                )
+
+    def test_inspect1_pending_equipment_bookings_do_not_consume_active_quota(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        equipment_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(username="InspectEquipmentPendingQuotaUser")
+            owner = create_test_user(username="InspectEquipmentPendingOwner")
+            conflict_equipment = create_test_equipment(serial_number="EP-000")
+            target_equipment = [
+                create_test_equipment(serial_number=f"EQ-{index + 1:03d}")
+                for index in range(3)
+            ]
+            conflict_start = fixed_time + timedelta(days=10)
+            conflict_end = fixed_time + timedelta(days=10, hours=9)
+            with global_lock():
+                equipment_booking_repo.add(
+                    equipment_booking_factory(
+                        id="inspect1-equipment-quota-conflict",
+                        user_id=owner.id,
+                        equipment_id=conflict_equipment.id,
+                        start_time=conflict_start.isoformat(),
+                        end_time=conflict_end.isoformat(),
+                        status=EquipmentBookingStatus.RESERVED,
+                    )
+                )
+                for index in range(3):
+                    equipment_booking_repo.add(
+                        equipment_booking_factory(
+                            id=f"inspect1-equipment-quota-pending-{index}",
+                            user_id=user.id,
+                            equipment_id=conflict_equipment.id,
+                            start_time=conflict_start.isoformat(),
+                            end_time=conflict_end.isoformat(),
+                            status=EquipmentBookingStatus.PENDING,
+                        )
+                    )
+
+            bookings = [
+                equipment_service.create_booking(
+                    user,
+                    equipment.id,
+                    fixed_time + timedelta(days=index + 1),
+                    fixed_time + timedelta(days=index + 1, hours=9),
+                )
+                for index, equipment in enumerate(target_equipment)
+            ]
+
+            assert [booking.status for booking in bookings] == [EquipmentBookingStatus.RESERVED] * 3
+            assert all(
+                equipment_booking_repo.get_by_id(
+                    f"inspect1-equipment-quota-pending-{index}"
+                ).status
+                == EquipmentBookingStatus.PENDING
+                for index in range(3)
+            )
 
     def test_create_booking_restricted_user_with_existing_room_booking_succeeds(
         self,
@@ -482,6 +659,104 @@ class TestCancelEquipmentBooking:
 
 class TestCheckoutReturn:
     """대여/반납 테스트"""
+
+    def test_request_pickup_before_start_rejects_without_write(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            equipment = create_test_equipment()
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time.replace(hour=9),
+                fixed_time.replace(hour=18),
+            )
+            before = equipment_booking_repo.get_by_id(booking.id)
+
+            with pytest.raises(EquipmentBookingError) as exc_info:
+                equipment_service.request_pickup(user, booking.id)
+
+            after = equipment_booking_repo.get_by_id(booking.id)
+            assert "현재 운영 시점" in str(exc_info.value)
+            assert before.status == EquipmentBookingStatus.RESERVED
+            assert after.status == EquipmentBookingStatus.RESERVED
+            assert after.requested_pickup_at is None
+
+    def test_request_pickup_at_start_records_request_timestamp(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            equipment = create_test_equipment()
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time,
+                fixed_time.replace(hour=18),
+            )
+
+            requested = equipment_service.request_pickup(user, booking.id)
+            persisted = equipment_booking_repo.get_by_id(booking.id)
+
+            assert requested.status == EquipmentBookingStatus.PICKUP_REQUESTED
+            assert datetime.fromisoformat(requested.requested_pickup_at) == fixed_time
+            assert datetime.fromisoformat(requested.updated_at) == fixed_time
+            assert persisted.status == EquipmentBookingStatus.PICKUP_REQUESTED
+            assert datetime.fromisoformat(persisted.requested_pickup_at) == fixed_time
+
+    def test_request_pickup_group_updates_all_members_with_request_timestamp(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(username="PickupGroupUser")
+            first = create_test_equipment(serial_number="PU-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="PU-002", asset_type="webcam")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time,
+                end_time=fixed_time.replace(hour=18),
+            )
+            group_id = bookings[0].group_id
+
+            updated = equipment_service.request_pickup(user, bookings[1].id)
+            persisted = equipment_booking_repo.get_by_group_id(group_id)
+
+            assert len(updated) == 2
+            assert {booking.status for booking in updated} == {
+                EquipmentBookingStatus.PICKUP_REQUESTED
+            }
+            assert {datetime.fromisoformat(booking.requested_pickup_at) for booking in updated} == {
+                fixed_time
+            }
+            assert {booking.status for booking in persisted} == {
+                EquipmentBookingStatus.PICKUP_REQUESTED
+            }
+            assert {datetime.fromisoformat(booking.requested_pickup_at) for booking in persisted} == {
+                fixed_time
+            }
 
     def test_checkout_success(
         self, equipment_service, create_test_user, create_test_equipment, mock_now
@@ -735,6 +1010,80 @@ class TestCheckoutReturn:
             assert delay == 60
             assert auth_service.get_user(user.id).penalty_points == 2
 
+    def test_request_return_before_end_from_checked_out_records_request_timestamp(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user()
+            admin = create_test_user(username="admin_early_return", role=UserRole.ADMIN)
+            equipment = create_test_equipment()
+            booking = equipment_service.create_booking(
+                user,
+                equipment.id,
+                fixed_time,
+                fixed_time.replace(hour=18),
+            )
+            equipment_service.request_pickup(user, booking.id)
+            equipment_service.checkout(admin, booking.id)
+
+            requested = equipment_service.request_return(user, booking.id)
+            persisted = equipment_booking_repo.get_by_id(booking.id)
+
+            assert requested.status == EquipmentBookingStatus.RETURN_REQUESTED
+            assert datetime.fromisoformat(requested.requested_return_at) == fixed_time
+            assert datetime.fromisoformat(requested.updated_at) == fixed_time
+            assert persisted.status == EquipmentBookingStatus.RETURN_REQUESTED
+            assert datetime.fromisoformat(persisted.requested_return_at) == fixed_time
+
+    def test_request_return_group_updates_all_members_before_end(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_repo,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(username="ReturnGroupUser")
+            admin = create_test_user(username="admin_return_group", role=UserRole.ADMIN)
+            first = create_test_equipment(serial_number="RT-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="RT-002", asset_type="webcam")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time,
+                end_time=fixed_time.replace(hour=18),
+            )
+            group_id = bookings[0].group_id
+            equipment_service.request_pickup(user, bookings[0].id)
+            equipment_service.checkout(admin, bookings[0].id)
+
+            updated = equipment_service.request_return(user, bookings[1].id)
+            persisted = equipment_booking_repo.get_by_group_id(group_id)
+
+            assert len(updated) == 2
+            assert {booking.status for booking in updated} == {
+                EquipmentBookingStatus.RETURN_REQUESTED
+            }
+            assert {datetime.fromisoformat(booking.requested_return_at) for booking in updated} == {
+                fixed_time
+            }
+            assert {booking.status for booking in persisted} == {
+                EquipmentBookingStatus.RETURN_REQUESTED
+            }
+            assert {datetime.fromisoformat(booking.requested_return_at) for booking in persisted} == {
+                fixed_time
+            }
+
 
 class TestAdminEquipmentFunctions:
     """관리자 장비 기능 테스트"""
@@ -971,7 +1320,7 @@ class TestEquipmentBookingMemo:
         mock_now,
     ):
         fixed_time = datetime(2024, 6, 15, 8, 0, 0)
-        memo = r"회의|준비\자료"
+        memo = "회의 준비 자료"
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -1019,7 +1368,7 @@ class TestEquipmentBookingMemo:
                 start_date=date(2024, 6, 17),
                 end_date=date(2024, 6, 17),
                 max_active=2,
-                memo=r"\-",
+                memo="-",
             )
 
         reloaded_repo = EquipmentBookingRepository(
@@ -1031,7 +1380,7 @@ class TestEquipmentBookingMemo:
         assert reloaded_empty is not None
         assert reloaded_sentinel is not None
         assert reloaded_empty.memo == ""
-        assert reloaded_sentinel.memo == r"\-"
+        assert reloaded_sentinel.memo == "-"
 
     def test_modify_booking_updates_memo_after_reload(
         self,
@@ -1042,7 +1391,7 @@ class TestEquipmentBookingMemo:
         mock_now,
     ):
         fixed_time = datetime(2024, 6, 15, 8, 0, 0)
-        memo = r"회의|준비\자료"
+        memo = "회의 준비 자료"
 
         with mock_now(fixed_time):
             user = create_test_user()
@@ -1115,6 +1464,214 @@ class TestEquipmentBookingMemo:
 
 
 class TestEquipmentGroupBooking:
+    def test_group_booking_rejects_confirmed_conflict_without_writes(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            owner = create_test_user(username="InspectGroupOwner")
+            waiter = create_test_user(username="InspectGroupWaiter")
+            conflicting = create_test_equipment(serial_number="IG-001", name="노트북A", asset_type="laptop")
+            available = create_test_equipment(serial_number="IG-002", name="웹캠A", asset_type="webcam")
+            equipment_service.create_booking(
+                owner,
+                conflicting.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=2),
+            )
+
+            with pytest.raises(EquipmentBookingError, match="이미 예약"):
+                equipment_service.create_group_booking(
+                    user=waiter,
+                    equipment_ids=[conflicting.id, available.id],
+                    start_time=fixed_time + timedelta(days=1),
+                    end_time=fixed_time + timedelta(days=2),
+                )
+
+        assert equipment_booking_repo.get_by_user(waiter.id) == []
+
+    def test_group_booking_same_operating_moment_conflict_creates_partial_pending(
+        self,
+        equipment_service,
+        create_test_user,
+        create_test_equipment,
+        fake_clock,
+    ):
+        current_time = datetime(2024, 6, 15, 9, 0, 0)
+        fake_clock(current_time)
+        owner = create_test_user(username="GroupPriorityOwner")
+        waiter = create_test_user(username="GroupPriorityWaiter")
+        conflicting = create_test_equipment(
+            serial_number="PG-001", name="노트북A", asset_type="laptop"
+        )
+        available = create_test_equipment(
+            serial_number="PG-002", name="웹캠A", asset_type="webcam"
+        )
+        start = current_time + timedelta(days=1)
+        end = current_time + timedelta(days=2)
+
+        equipment_service.create_booking(owner, conflicting.id, start, end)
+        bookings = equipment_service.create_group_booking(
+            user=waiter,
+            equipment_ids=[conflicting.id, available.id],
+            start_time=start,
+            end_time=end,
+        )
+
+        statuses = {booking.equipment_id: booking.status for booking in bookings}
+        assert statuses == {
+            conflicting.id: EquipmentBookingStatus.PENDING,
+            available.id: EquipmentBookingStatus.RESERVED,
+        }
+        assert len({booking.group_id for booking in bookings}) == 1
+
+    def test_inspect1_group_booking_rejects_unavailable_member_without_writes(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="InspectGroupRejectUser")
+            available = create_test_equipment(serial_number="IR-001")
+            disabled = create_test_equipment(
+                serial_number="IR-002",
+                status=ResourceStatus.DISABLED,
+            )
+
+            with pytest.raises(EquipmentBookingError, match="disabled"):
+                equipment_service.create_group_booking(
+                    user=user,
+                    equipment_ids=[available.id, disabled.id],
+                    start_time=fixed_time + timedelta(days=1),
+                    end_time=fixed_time + timedelta(days=2),
+                )
+
+        assert equipment_booking_repo.get_by_user(user.id) == []
+
+    def test_inspect1_group_booking_rejects_duplicate_member_without_writes(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="InspectGroupDuplicateUser")
+            equipment = create_test_equipment(serial_number="ID-001")
+
+            with pytest.raises(EquipmentBookingError, match="중복"):
+                equipment_service.create_group_booking(
+                    user=user,
+                    equipment_ids=[equipment.id, equipment.id],
+                    start_time=fixed_time + timedelta(days=1),
+                    end_time=fixed_time + timedelta(days=2),
+                )
+
+        assert equipment_booking_repo.get_by_user(user.id) == []
+
+    def test_group_booking_rejects_same_asset_type_members_without_writes(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="SameTypeGroupUser")
+            first = create_test_equipment(serial_number="ST-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="ST-002", asset_type="laptop")
+
+            with pytest.raises(EquipmentBookingError, match="같은 종류"):
+                equipment_service.create_group_booking(
+                    user=user,
+                    equipment_ids=[first.id, second.id],
+                    start_time=fixed_time + timedelta(days=1),
+                    end_time=fixed_time + timedelta(days=2),
+                )
+
+        assert equipment_booking_repo.get_by_user(user.id) == []
+
+    def test_group_booking_counts_as_one_active_equipment_quota(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="GroupQuotaUser")
+            first = create_test_equipment(serial_number="GQ-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="GQ-002", asset_type="webcam")
+            third = create_test_equipment(serial_number="GQ-003", asset_type="projector")
+            single = create_test_equipment(serial_number="GQ-004", asset_type="scanner")
+            equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id, third.id],
+                start_time=fixed_time + timedelta(days=1),
+                end_time=fixed_time + timedelta(days=2),
+                max_active=3,
+            )
+
+            booking = equipment_service.create_daily_booking(
+                user=user,
+                equipment_id=single.id,
+                start_date=date(2024, 6, 18),
+                end_date=date(2024, 6, 18),
+                max_active=3,
+            )
+
+        assert booking.status == EquipmentBookingStatus.RESERVED
+        assert len(equipment_booking_repo.get_by_user(user.id)) == 4
+
+    def test_group_booking_counts_as_one_active_equipment_quota_for_time_booking(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="GroupQuotaTimeUser")
+            first = create_test_equipment(serial_number="GT-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="GT-002", asset_type="webcam")
+            third = create_test_equipment(serial_number="GT-003", asset_type="projector")
+            single = create_test_equipment(serial_number="GT-004", asset_type="scanner")
+            equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id, third.id],
+                start_time=fixed_time + timedelta(days=1),
+                end_time=fixed_time + timedelta(days=2),
+                max_active=3,
+            )
+
+            booking = equipment_service.create_booking(
+                user=user,
+                equipment_id=single.id,
+                start_time=fixed_time + timedelta(days=4),
+                end_time=fixed_time + timedelta(days=5),
+                max_active=3,
+            )
+
+        assert booking.status == EquipmentBookingStatus.RESERVED
+        assert len(equipment_booking_repo.get_by_user(user.id)) == 4
+
     def test_create_and_cancel_group_booking_is_one_atomic_operation(
         self,
         equipment_service,
@@ -1128,8 +1685,8 @@ class TestEquipmentGroupBooking:
 
         with mock_now(fixed_time):
             user = create_test_user()
-            first = create_test_equipment(serial_number="GP-001")
-            second = create_test_equipment(serial_number="GP-002")
+            first = create_test_equipment(serial_number="GP-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="GP-002", asset_type="webcam")
 
             bookings = equipment_service.create_group_booking(
                 user=user,
@@ -1165,7 +1722,7 @@ class TestEquipmentGroupBooking:
         assert audit_actions.count("create_equipment_group_booking") == 1
         assert audit_actions.count("cancel_equipment_booking") == 1
 
-    def test_group_cancel_rejects_mixed_status_group_without_mutation(
+    def test_group_cancel_rejects_mixed_status_without_writes(
         self,
         equipment_service,
         equipment_booking_repo,
@@ -1177,9 +1734,9 @@ class TestEquipmentGroupBooking:
         fixed_time = datetime(2024, 6, 15, 8, 0, 0)
 
         with mock_now(fixed_time):
-            user = create_test_user()
-            first = create_test_equipment(serial_number="MS-001")
-            second = create_test_equipment(serial_number="MS-002")
+            user = create_test_user(username="MixedCancelUser")
+            first = create_test_equipment(serial_number="MS-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="MS-002", asset_type="webcam")
             bookings = equipment_service.create_group_booking(
                 user=user,
                 equipment_ids=[first.id, second.id],
@@ -1187,13 +1744,13 @@ class TestEquipmentGroupBooking:
                 end_time=fixed_time + timedelta(days=2),
             )
             group_id = bookings[0].group_id
-            corrupted_member = replace(
+            checked_out_member = replace(
                 bookings[1], status=EquipmentBookingStatus.CHECKED_OUT
             )
             with global_lock():
-                equipment_booking_repo.update(corrupted_member)
+                equipment_booking_repo.update(checked_out_member)
 
-            with pytest.raises(EquipmentBookingError) as exc_info:
+            with pytest.raises(EquipmentBookingError, match="checked_out"):
                 equipment_service.cancel_booking(user, bookings[0].id)
 
         reloaded_repo = EquipmentBookingRepository(
@@ -1204,7 +1761,6 @@ class TestEquipmentGroupBooking:
         }
         audit_actions = [entry.action for entry in audit_repo.get_all()]
 
-        assert "checked_out" in str(exc_info.value)
         assert reloaded_by_id[bookings[0].id].status == EquipmentBookingStatus.RESERVED
         assert reloaded_by_id[bookings[1].id].status == EquipmentBookingStatus.CHECKED_OUT
         assert audit_actions.count("cancel_equipment_booking") == 0
@@ -1222,8 +1778,8 @@ class TestEquipmentGroupBooking:
 
         with mock_now(fixed_time):
             user = create_test_user()
-            first = create_test_equipment(serial_number="RB-001")
-            second = create_test_equipment(serial_number="RB-002")
+            first = create_test_equipment(serial_number="RB-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="RB-002", asset_type="webcam")
             bookings = equipment_service.create_group_booking(
                 user=user,
                 equipment_ids=[first.id, second.id],
@@ -1257,3 +1813,189 @@ class TestEquipmentGroupBooking:
         assert {booking.status for booking in reloaded_group} == {
             EquipmentBookingStatus.RESERVED
         }
+
+    def test_modify_daily_group_booking_updates_all_reserved_members(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="ModifyGroupUser")
+            first = create_test_equipment(serial_number="MG-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="MG-002", asset_type="webcam")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time + timedelta(days=3),
+                end_time=fixed_time + timedelta(days=4),
+                memo="기존메모",
+            )
+            group_id = bookings[0].group_id
+
+            updated = equipment_service.modify_daily_booking(
+                user=user,
+                booking_id=bookings[0].id,
+                start_date=date(2024, 6, 20),
+                end_date=date(2024, 6, 21),
+                memo="변경메모",
+            )
+
+        reloaded = equipment_booking_repo.get_by_group_id(group_id)
+        assert len(updated) == 2
+        assert {booking.group_id for booking in updated} == {group_id}
+        assert {datetime.fromisoformat(booking.start_time) for booking in reloaded} == {
+            datetime(2024, 6, 20, 9, 0)
+        }
+        assert {datetime.fromisoformat(booking.end_time) for booking in reloaded} == {
+            datetime(2024, 6, 21, 18, 0)
+        }
+        assert {booking.memo for booking in reloaded} == {"변경메모"}
+
+    def test_admin_modify_daily_group_booking_updates_all_reserved_members(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        create_test_user,
+        create_test_equipment,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="AdminDailyGroupUser")
+            admin = create_test_user(username="AdminDailyGroupAdmin", role=UserRole.ADMIN)
+            first = create_test_equipment(serial_number="AD-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="AD-002", asset_type="webcam")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time + timedelta(days=3),
+                end_time=fixed_time + timedelta(days=4),
+            )
+            group_id = bookings[0].group_id
+
+            updated = equipment_service.admin_modify_daily_booking(
+                admin=admin,
+                booking_id=bookings[0].id,
+                start_date=date(2024, 6, 22),
+                end_date=date(2024, 6, 23),
+            )
+
+        reloaded = equipment_booking_repo.get_by_group_id(group_id)
+        assert len(updated) == 2
+        assert {datetime.fromisoformat(booking.start_time) for booking in reloaded} == {
+            datetime(2024, 6, 22, 9, 0)
+        }
+        assert {datetime.fromisoformat(booking.end_time) for booking in reloaded} == {
+            datetime(2024, 6, 23, 18, 0)
+        }
+
+    def test_group_cancel_counts_each_reserved_member_for_frequent_cancel(
+        self,
+        equipment_service,
+        equipment_booking_repo,
+        penalty_repo,
+        create_test_user,
+        create_test_equipment,
+        equipment_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="GroupCancelCountUser")
+            for index in range(2):
+                with global_lock():
+                    equipment_booking_repo.add(
+                        equipment_booking_factory(
+                            id=f"prior-group-cancel-{index}",
+                            user_id=user.id,
+                            equipment_id=f"prior-equipment-{index}",
+                            start_time=(fixed_time + timedelta(days=10 + index)).isoformat(),
+                            end_time=(fixed_time + timedelta(days=10 + index, hours=9)).isoformat(),
+                            status=EquipmentBookingStatus.CANCELLED,
+                            cancelled_at=(fixed_time - timedelta(days=1 + index)).isoformat(),
+                        )
+                    )
+            first = create_test_equipment(serial_number="GC-001", asset_type="laptop")
+            second = create_test_equipment(serial_number="GC-002", asset_type="webcam")
+            bookings = equipment_service.create_group_booking(
+                user=user,
+                equipment_ids=[first.id, second.id],
+                start_time=fixed_time + timedelta(days=10),
+                end_time=fixed_time + timedelta(days=11),
+            )
+
+            equipment_service.cancel_booking(user, bookings[0].id)
+
+        frequent_penalties = [
+            penalty for penalty in penalty_repo.get_by_user(user.id)
+            if penalty.reason == PenaltyReason.FREQUENT_CANCEL
+        ]
+        assert len(frequent_penalties) == 2
+        assert {penalty.related_id for penalty in frequent_penalties} == {booking.id for booking in bookings}
+
+
+class TestAdminEquipmentResourceManagement:
+    def test_add_edit_delete_equipment_resource_through_service(
+        self, equipment_service, create_test_user, create_test_equipment
+    ):
+        admin = create_test_user(role=UserRole.ADMIN)
+        for index in range(12):
+            create_test_equipment(serial_number=f"QA-{index + 1:03d}")
+
+        equipment = equipment_service.add_equipment_resource(admin, "예비장비", "scanner")
+        edited = equipment_service.edit_equipment_resource_name(
+            admin, equipment.id, "수정장비"
+        )
+        deleted = equipment_service.delete_equipment_resource(admin, equipment.id)
+
+        assert equipment.status == ResourceStatus.AVAILABLE
+        assert equipment.serial_number.startswith("SC-")
+        assert edited.name == "수정장비"
+        assert deleted.id == equipment.id
+        assert equipment_service.get_equipment(equipment.id) is None
+
+    def test_delete_equipment_resource_requires_more_than_twelve_records(
+        self, equipment_service, create_test_user, create_test_equipment
+    ):
+        admin = create_test_user(role=UserRole.ADMIN)
+        target = create_test_equipment(serial_number="DL-001")
+        for index in range(11):
+            create_test_equipment(serial_number=f"DL-{index + 2:03d}")
+
+        with pytest.raises(EquipmentBookingError, match="최소 12개"):
+            equipment_service.delete_equipment_resource(admin, target.id)
+
+        assert equipment_service.get_equipment(target.id) is not None
+
+    def test_equipment_resource_edit_and_delete_preconditions_leave_data_unchanged(
+        self, equipment_service, create_test_user, create_test_equipment, mock_now
+    ):
+        fixed_time = datetime(2024, 6, 15, 8, 0, 0)
+        with mock_now(fixed_time):
+            admin = create_test_user(role=UserRole.ADMIN)
+            user = create_test_user(username="EquipUser")
+            target = create_test_equipment(serial_number="ER-001", name="원래장비")
+            for index in range(12):
+                create_test_equipment(serial_number=f"ER-{index + 2:03d}")
+            booking = equipment_service.create_booking(
+                user,
+                target.id,
+                fixed_time + timedelta(days=1),
+                fixed_time + timedelta(days=2),
+            )
+
+            with pytest.raises(EquipmentBookingError, match="예약"):
+                equipment_service.delete_equipment_resource(admin, target.id)
+
+            checked_out = replace(booking, status=EquipmentBookingStatus.CHECKED_OUT)
+            with global_lock():
+                equipment_service.booking_repo.update(checked_out)
+            with pytest.raises(EquipmentBookingError, match="대여 중"):
+                equipment_service.edit_equipment_resource_name(admin, target.id, "새장비")
+
+        unchanged = equipment_service.get_equipment(target.id)
+        assert unchanged.name == "원래장비"
