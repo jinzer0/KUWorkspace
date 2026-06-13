@@ -78,7 +78,8 @@ class TestTask6CancelImpact:
         assert impact.frequent_cancel_count == 3
         assert impact.applies_cancel_restriction is True
         assert impact.cancel_restriction_field == "room_cancel_restricted_until"
-        assert impact.applies_frequent_cancel_penalty is False
+        assert impact.applies_frequent_cancel_penalty is True
+        assert impact.penalty_reasons == (PenaltyReason.FREQUENT_CANCEL,)
         assert penalty_repo.get_by_user(user.id) == []
         unchanged_user = room_service.user_repo.get_by_id(user.id)
         assert unchanged_user.room_cancel_restricted_until is None
@@ -112,7 +113,10 @@ class TestTask6CancelImpact:
         updated_user = room_service.user_repo.get_by_id(user.id)
         assert updated_user.room_cancel_restricted_until is not None
         assert updated_user.equipment_cancel_restricted_until is None
-        assert penalty_repo.get_by_user(user.id) == []
+        penalties = penalty_repo.get_by_user(user.id)
+        assert [(penalty.reason, penalty.points) for penalty in penalties] == [
+            (PenaltyReason.FREQUENT_CANCEL, 1)
+        ]
 
     def test_fourth_frequent_cancel_adds_frequent_cancel_penalty(
         self,
@@ -147,7 +151,8 @@ class TestTask6CancelImpact:
         penalties = penalty_repo.get_by_user(user.id)
         assert [penalty.reason for penalty in penalties] == [PenaltyReason.FREQUENT_CANCEL]
         assert penalties[0].related_id == current.id
-        assert penalties[0].points == 2
+        assert penalties[0].points == 1
+        assert room_service.user_repo.get_by_id(user.id).room_cancel_restricted_until is None
 
     def test_cancel_at_least_fourteen_days_before_start_is_excluded(
         self,
@@ -273,6 +278,6 @@ class TestTask6CancelImpact:
         penalties = penalty_repo.get_by_user(user.id)
         reasons = [penalty.reason for penalty in penalties]
         assert reasons.count(PenaltyReason.LATE_CANCEL) == 1
-        assert reasons.count(PenaltyReason.FREQUENT_CANCEL) == 1
-        assert len(penalties) == 2
+        assert reasons.count(PenaltyReason.FREQUENT_CANCEL) == 0
+        assert len(penalties) == 1
         assert {penalty.related_id for penalty in penalties} == {current.id}

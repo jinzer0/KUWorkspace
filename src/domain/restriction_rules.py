@@ -7,6 +7,8 @@ from src.config import (
     PENALTY_BAN_THRESHOLD,
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+    MAX_RESTRICTED_ROOM_BOOKINGS,
+    MAX_RESTRICTED_EQUIPMENT_BOOKINGS,
 )
 from src.runtime_clock import get_current_time
 
@@ -32,7 +34,10 @@ def evaluate_user_restriction(user, current_time=None):
                 max_active_bookings = 0
             else:
                 is_restricted = True
-                max_active_bookings = 1
+                max_active_bookings = (
+                    MAX_RESTRICTED_ROOM_BOOKINGS
+                    + MAX_RESTRICTED_EQUIPMENT_BOOKINGS
+                )
         else:
             restriction_until = None
 

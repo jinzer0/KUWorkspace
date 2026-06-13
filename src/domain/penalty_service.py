@@ -37,11 +37,20 @@ from src.config import (
 from src.domain.field_rules import validate_reason_text
 
 
-FREQUENT_CANCEL_PENALTY = 2
+FREQUENT_CANCEL_PENALTY = 1
 FREQUENT_CANCEL_LOOKBACK_DAYS = 30
 FREQUENT_CANCEL_EXCLUDE_BEFORE_DAYS = 14
 FREQUENT_CANCEL_RESTRICTION_COUNT = 3
-FREQUENT_CANCEL_PENALTY_COUNT = 4
+FREQUENT_CANCEL_PENALTY_COUNT = FREQUENT_CANCEL_RESTRICTION_COUNT
+
+
+@dataclass(frozen=True)
+class CancelRestrictionSummary:
+    room_cancel_count_30d: int
+    equipment_cancel_count_30d: int
+    max_cancel_count: int
+    room_cancel_restricted_until: str | None
+    equipment_cancel_restricted_until: str | None
 
 
 @dataclass(frozen=True)
@@ -144,7 +153,7 @@ class PenaltyService:
         raise PenaltyError("지원하지 않는 예약 유형입니다.")
 
     def _count_recent_frequent_cancels(
-        self, bookings, booking_type, user_id, current_time
+        self, bookings, booking_type, user_id, current_time, include_late=False
     ):
         lookback_start = current_time - timedelta(days=FREQUENT_CANCEL_LOOKBACK_DAYS)
         if booking_type == "room_booking":
@@ -168,9 +177,37 @@ class PenaltyService:
             if cancelled_at < lookback_start or cancelled_at > current_time:
                 continue
             start_time = datetime.fromisoformat(booking.start_time)
+            if self._is_late_cancel_time(start_time, cancelled_at):
+                if include_late:
+                    count += 1
+                continue
             if self._is_qualifying_frequent_cancel(start_time, cancelled_at):
                 count += 1
         return count
+
+
+    def get_cancel_restriction_summary(self, user, room_bookings, equipment_bookings):
+        current_user = self._get_existing_user(user)
+        current_time = self.clock.now()
+        return CancelRestrictionSummary(
+            room_cancel_count_30d=self._count_recent_frequent_cancels(
+                room_bookings,
+                "room_booking",
+                current_user.id,
+                current_time,
+                include_late=True,
+            ),
+            equipment_cancel_count_30d=self._count_recent_frequent_cancels(
+                equipment_bookings,
+                "equipment_booking",
+                current_user.id,
+                current_time,
+                include_late=True,
+            ),
+            max_cancel_count=FREQUENT_CANCEL_RESTRICTION_COUNT,
+            room_cancel_restricted_until=current_user.room_cancel_restricted_until,
+            equipment_cancel_restricted_until=current_user.equipment_cancel_restricted_until,
+        )
 
     def decide_cancel_impact(
         self, user, booking_type, booking_id, booking_start_time, domain_bookings
@@ -181,8 +218,9 @@ class PenaltyService:
             booking_start_time = datetime.fromisoformat(booking_start_time)
 
         is_late_cancel = self._is_late_cancel_time(booking_start_time, current_time)
-        qualifies_frequent_cancel = self._is_qualifying_frequent_cancel(
-            booking_start_time, current_time
+        qualifies_frequent_cancel = (
+            not is_late_cancel
+            and self._is_qualifying_frequent_cancel(booking_start_time, current_time)
         )
         prior_count = self._count_recent_frequent_cancels(
             domain_bookings, booking_type, user.id, current_time
@@ -190,8 +228,10 @@ class PenaltyService:
         frequent_count = prior_count + (1 if qualifies_frequent_cancel else 0)
         restriction_field = self._restriction_field_for_booking_type(booking_type)
         applies_restriction = (
+            not is_late_cancel
+            and
             qualifies_frequent_cancel
-            and frequent_count >= FREQUENT_CANCEL_RESTRICTION_COUNT
+            and frequent_count == FREQUENT_CANCEL_RESTRICTION_COUNT
         )
         restriction_until = None
         if applies_restriction:
@@ -200,7 +240,9 @@ class PenaltyService:
             ).isoformat()
 
         applies_frequent_penalty = (
-            qualifies_frequent_cancel and frequent_count >= FREQUENT_CANCEL_PENALTY_COUNT
+            not is_late_cancel
+            and qualifies_frequent_cancel
+            and frequent_count >= FREQUENT_CANCEL_PENALTY_COUNT
         )
         penalty_reasons = []
         total_points = 0
