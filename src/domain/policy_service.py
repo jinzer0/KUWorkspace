@@ -9,31 +9,52 @@ from src.domain.models import (
     EquipmentBookingStatus,
     ResourceStatus,
     UserRole,
+    RoomBooking,
+    EquipmentBooking,
     decode_future_status_changes,
     encode_future_status_changes,
+    generate_id,
     now_iso,
 )
 from src.storage.repositories import (
     UserRepository,
+    RoomRepository,
     RoomBookingRepository,
     EquipmentBookingRepository,
     EquipmentAssetRepository,
     RoomMaintenanceRepository,
     PenaltyRepository,
     AuditLogRepository,
+    WaitingListRepository,
     UnitOfWork,
     stage_waitlist_projection,
 )
 from src.storage.file_lock import global_lock
 from src.storage.integrity import validate_all_data_files
 from src.domain.penalty_service import PenaltyService, PenaltyError
+from src.domain.restriction_rules import evaluate_user_restriction
 from src import config
 from src.config import (
     PENALTY_BAN_THRESHOLD,
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+    MAX_RESTRICTED_ROOM_BOOKINGS,
+    MAX_RESTRICTED_EQUIPMENT_BOOKINGS,
 )
 from src.runtime_clock import format_clock_marker, get_runtime_clock
+
+
+def _count_active_booking_units(bookings: list[RoomBooking] | list[EquipmentBooking]) -> int:
+    seen_group_ids = set()
+    count = 0
+    for booking in bookings:
+        group_id = getattr(booking, "group_id", None)
+        if group_id:
+            if group_id in seen_group_ids:
+                continue
+            seen_group_ids.add(group_id)
+        count += 1
+    return count
 
 
 class PolicyService:
@@ -42,6 +63,7 @@ class PolicyService:
     def __init__(
         self,
         user_repo=None,
+        room_repo=None,
         room_booking_repo=None,
         equipment_booking_repo=None,
         equipment_repo=None,
@@ -49,10 +71,12 @@ class PolicyService:
         audit_repo=None,
         room_maintenance_repo=None,
         penalty_service=None,
+        waiting_list_repo=None,
         clock=None,
     ):
         self.clock = clock or get_runtime_clock()
         self.user_repo = user_repo or UserRepository()
+        self.room_repo = room_repo or RoomRepository()
         self.room_booking_repo = room_booking_repo or RoomBookingRepository()
         self.equipment_booking_repo = (
             equipment_booking_repo or EquipmentBookingRepository()
@@ -61,6 +85,7 @@ class PolicyService:
         self.penalty_repo = penalty_repo or PenaltyRepository()
         self.audit_repo = audit_repo or AuditLogRepository()
         self.room_maintenance_repo = room_maintenance_repo or RoomMaintenanceRepository()
+        self.waiting_list_repo = waiting_list_repo or WaitingListRepository()
         self.penalty_service = penalty_service or PenaltyService(
             user_repo=self.user_repo,
             penalty_repo=self.penalty_repo,
@@ -90,7 +115,9 @@ class PolicyService:
             "waitlist_projection": "",
         }
 
-        results["room_maintenance_expired"] = self._cleanup_expired_room_maintenance(current_time)
+        active_maintenance, completed_maintenance = self._sync_room_maintenance_lifecycle(current_time)
+        results["room_maintenance_active"] = active_maintenance
+        results["room_maintenance_expired"] = completed_maintenance
         results["equipment_future_status_changes"] = self._apply_equipment_future_status_changes(current_time)
 
         room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
@@ -116,6 +143,41 @@ class PolicyService:
 
     def _cleanup_expired_room_maintenance(self, current_time):
         return self.room_maintenance_repo.delete_expired(current_time)
+
+    def _sync_room_maintenance_lifecycle(self, current_time):
+        timestamp = current_time.isoformat()
+        activated = []
+        for schedule in self.room_maintenance_repo.get_ready_to_activate(current_time):
+            updated = replace(schedule, status="active", updated_at=timestamp)
+            self.room_maintenance_repo.update(updated)
+            room = self.room_repo.get_by_id(schedule.room_id)
+            if room is not None:
+                self.room_repo.update(
+                    replace(room, status=ResourceStatus.MAINTENANCE, updated_at=timestamp)
+                )
+            self.audit_repo.log_action(
+                actor_id="system",
+                action="activate_room_maintenance",
+                target_type="room_maintenance",
+                target_id=schedule.id,
+                details=f"room maintenance active for {schedule.room_id}",
+            )
+            activated.append(updated.id)
+        completed = self._cleanup_expired_room_maintenance(current_time)
+        for schedule in completed:
+            room = self.room_repo.get_by_id(schedule.room_id)
+            if room is not None and room.status == ResourceStatus.MAINTENANCE:
+                self.room_repo.update(
+                    replace(room, status=ResourceStatus.AVAILABLE, updated_at=timestamp)
+                )
+            self.audit_repo.log_action(
+                actor_id="system",
+                action="complete_room_maintenance",
+                target_type="room_maintenance",
+                target_id=schedule.id,
+                details=f"room maintenance completed for {schedule.room_id}",
+            )
+        return activated, [schedule.id for schedule in completed]
 
     def _room_maintenance_conflicts(self, booking):
         return bool(
@@ -268,6 +330,102 @@ class PolicyService:
                 cancelled.append(loser.id)
                 processed.add(loser.id)
         return promoted, cancelled
+
+    def _user_can_accept_room_waitlist_promotion(self, user, current_time):
+        status = evaluate_user_restriction(user, current_time)
+        if status["is_banned"]:
+            return False, "banned_user"
+        active_count = len(self.room_booking_repo.get_quota_active_by_user(user.id))
+        limit = MAX_RESTRICTED_ROOM_BOOKINGS if status["is_restricted"] else MAX_ACTIVE_ROOM_BOOKINGS
+        if active_count >= limit:
+            return False, "room_quota_full"
+        return True, ""
+
+    def _user_can_accept_equipment_waitlist_promotion(self, user, current_time):
+        status = evaluate_user_restriction(user, current_time)
+        if status["is_banned"]:
+            return False, "banned_user"
+        active_count = len(self.equipment_booking_repo.get_quota_active_by_user(user.id))
+        limit = MAX_RESTRICTED_EQUIPMENT_BOOKINGS if status["is_restricted"] else MAX_ACTIVE_EQUIPMENT_BOOKINGS
+        if active_count >= limit:
+            return False, "equipment_quota_full"
+        return True, ""
+
+    def _remove_waitlist_entry_with_audit(self, entry, reason, actor_id="system"):
+        self.waiting_list_repo.delete(entry.id)
+        self.audit_repo.log_action(
+            actor_id=actor_id,
+            action="remove_waitlist_entry_ineligible",
+            target_type=entry.related_type,
+            target_id=entry.related_id,
+            details=f"대기 항목 {entry.id} 제거: {reason}",
+        )
+
+    def promote_room_waitlist_for_booking(self, target_booking, actor_id="system", current_time=None):
+        current_time = current_time or self.clock.now()
+        for entry in self.waiting_list_repo.get_ordered_by_related("room_booking", target_booking.id):
+            user = self.user_repo.get_by_username(entry.username)
+            if user is None:
+                self._remove_waitlist_entry_with_audit(entry, "missing_user", actor_id)
+                continue
+            allowed, reason = self._user_can_accept_room_waitlist_promotion(user, current_time)
+            if not allowed:
+                self._remove_waitlist_entry_with_audit(entry, reason, actor_id)
+                continue
+            room = self.room_repo.get_by_id(target_booking.room_id)
+            if room is not None and room.capacity < entry.user_count:
+                self._remove_waitlist_entry_with_audit(entry, "room_capacity", actor_id)
+                continue
+            promoted = RoomBooking(
+                id=generate_id(),
+                user_id=user.id,
+                room_id=target_booking.room_id,
+                start_time=target_booking.start_time,
+                end_time=target_booking.end_time,
+                status=RoomBookingStatus.RESERVED,
+            )
+            self.room_booking_repo.add(promoted)
+            self.waiting_list_repo.delete(entry.id)
+            self.audit_repo.log_action(
+                actor_id=actor_id,
+                action="promote_room_waitlist_entry",
+                target_type="room_booking",
+                target_id=promoted.id,
+                details=f"대상 예약 {target_booking.id} 취소로 대기 {entry.id} 승계",
+            )
+            return promoted
+        return None
+
+    def promote_equipment_waitlist_for_booking(self, target_booking, actor_id="system", current_time=None):
+        current_time = current_time or self.clock.now()
+        for entry in self.waiting_list_repo.get_ordered_by_related("equipment_booking", target_booking.id):
+            user = self.user_repo.get_by_username(entry.username)
+            if user is None:
+                self._remove_waitlist_entry_with_audit(entry, "missing_user", actor_id)
+                continue
+            allowed, reason = self._user_can_accept_equipment_waitlist_promotion(user, current_time)
+            if not allowed:
+                self._remove_waitlist_entry_with_audit(entry, reason, actor_id)
+                continue
+            promoted = EquipmentBooking(
+                id=generate_id(),
+                user_id=user.id,
+                equipment_id=target_booking.equipment_id,
+                start_time=target_booking.start_time,
+                end_time=target_booking.end_time,
+                status=EquipmentBookingStatus.RESERVED,
+            )
+            self.equipment_booking_repo.add(promoted)
+            self.waiting_list_repo.delete(entry.id)
+            self.audit_repo.log_action(
+                actor_id=actor_id,
+                action="promote_equipment_waitlist_entry",
+                target_type="equipment_booking",
+                target_id=promoted.id,
+                details=f"대상 예약 {target_booking.id} 취소로 대기 {entry.id} 승계",
+            )
+            return promoted
+        return None
 
     def _apply_equipment_future_status_changes(self, current_time):
         events = []
@@ -432,6 +590,7 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
+                self.promote_room_waitlist_for_booking(booking, actor_id=actor_id, current_time=current_time)
                 user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
                     self.penalty_service.apply_late_cancel(
@@ -464,6 +623,7 @@ class PolicyService:
                         updated_at=now,
                     )
                 )
+                self.promote_equipment_waitlist_for_booking(booking, actor_id=actor_id, current_time=current_time)
                 user = self._get_penalty_user(booking.user_id, penalty_owner_id)
                 if user:
                     self.penalty_service.apply_late_cancel(
@@ -780,6 +940,7 @@ class PolicyService:
                                 updated_at=now_iso(),
                             )
                             self.room_booking_repo.update(updated)
+                            self.promote_room_waitlist_for_booking(booking, actor_id="system", current_time=current_time)
                             cancelled_ids.append(booking.id)
 
                             self.audit_repo.log_action(
@@ -802,6 +963,7 @@ class PolicyService:
                                 updated_at=now_iso(),
                             )
                             self.equipment_booking_repo.update(updated)
+                            self.promote_equipment_waitlist_for_booking(booking, actor_id="system", current_time=current_time)
                             cancelled_ids.append(booking.id)
 
                             self.audit_repo.log_action(
@@ -831,20 +993,29 @@ class PolicyService:
             )
 
         if status.get("is_restricted"):
-            room_active = len(self.room_booking_repo.get_active_by_user(user.id))
-            equipment_active = len(
+            room_active = _count_active_booking_units(
+                self.room_booking_repo.get_active_by_user(user.id)
+            )
+            equipment_active = _count_active_booking_units(
                 self.equipment_booking_repo.get_active_by_user(user.id)
             )
+            restricted_total = (
+                MAX_RESTRICTED_ROOM_BOOKINGS
+                + MAX_RESTRICTED_EQUIPMENT_BOOKINGS
+            )
 
-            if room_active >= MAX_ACTIVE_ROOM_BOOKINGS and equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS:
+            if (
+                room_active >= MAX_RESTRICTED_ROOM_BOOKINGS
+                and equipment_active >= MAX_RESTRICTED_EQUIPMENT_BOOKINGS
+            ):
                 return (
                     False,
-                    MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+                    restricted_total,
                     "패널티로 인해 추가 예약이 불가합니다.",
                 )
             return (
                 True,
-                MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+                restricted_total,
                 "패널티로 인해 각 예약 유형별 1건까지만 유지할 수 있습니다.",
             )
 
@@ -861,29 +1032,22 @@ class PolicyService:
         Returns:
             (max_room_bookings: int, max_equipment_bookings: int)
         """
-        can_book, max_total, _ = self.check_user_can_book(user)
+        can_book, _, _ = self.check_user_can_book(user)
 
         if not can_book:
             return (0, 0)
 
-        if max_total == MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS:
-            room_active = len(self.room_booking_repo.get_active_by_user(user.id))
-            equipment_active = len(
-                self.equipment_booking_repo.get_active_by_user(user.id)
-            )
-            return (
-                0 if room_active >= MAX_ACTIVE_ROOM_BOOKINGS else MAX_ACTIVE_ROOM_BOOKINGS,
-                0 if equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS else MAX_ACTIVE_EQUIPMENT_BOOKINGS,
-            )
-
-        return (MAX_ACTIVE_ROOM_BOOKINGS, MAX_ACTIVE_EQUIPMENT_BOOKINGS)
+        limits = self.get_user_flow_limits(user)
+        return (int(limits["room_limit"]), int(limits["equipment_limit"]))
 
     def get_user_flow_limits(self, user):
         status = self.penalty_service.get_user_status(user)
-        room_active = len(self.room_booking_repo.get_active_by_user(user.id))
-        equipment_active = len(self.equipment_booking_repo.get_active_by_user(user.id))
-        total_active = room_active + equipment_active
-
+        room_active = _count_active_booking_units(
+            self.room_booking_repo.get_active_by_user(user.id)
+        )
+        equipment_active = _count_active_booking_units(
+            self.equipment_booking_repo.get_active_by_user(user.id)
+        )
         if status.get("is_banned"):
             return {
                 "can_book": False,
@@ -893,8 +1057,16 @@ class PolicyService:
             }
 
         if status.get("is_restricted"):
-            room_limit = 0 if room_active >= MAX_ACTIVE_ROOM_BOOKINGS else MAX_ACTIVE_ROOM_BOOKINGS
-            equipment_limit = 0 if equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS else MAX_ACTIVE_EQUIPMENT_BOOKINGS
+            room_limit = (
+                0
+                if room_active >= MAX_RESTRICTED_ROOM_BOOKINGS
+                else MAX_RESTRICTED_ROOM_BOOKINGS
+            )
+            equipment_limit = (
+                0
+                if equipment_active >= MAX_RESTRICTED_EQUIPMENT_BOOKINGS
+                else MAX_RESTRICTED_EQUIPMENT_BOOKINGS
+            )
             if room_limit == 0 and equipment_limit == 0:
                 return {
                     "can_book": False,
@@ -911,7 +1083,11 @@ class PolicyService:
 
         return {
             "can_book": True,
-            "room_limit": 0 if room_active >= 1 else 1,
-            "equipment_limit": 0 if equipment_active >= 1 else 1,
+            "room_limit": 0 if room_active >= MAX_ACTIVE_ROOM_BOOKINGS else MAX_ACTIVE_ROOM_BOOKINGS,
+            "equipment_limit": (
+                0
+                if equipment_active >= MAX_ACTIVE_EQUIPMENT_BOOKINGS
+                else MAX_ACTIVE_EQUIPMENT_BOOKINGS
+            ),
             "message": "",
         }

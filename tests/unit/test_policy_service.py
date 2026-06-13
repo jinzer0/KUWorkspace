@@ -3,6 +3,7 @@
 import pytest
 from datetime import datetime, timedelta
 
+from src.cli.admin_menu import AdminMenu
 from src.storage.integrity import DataIntegrityError
 from src.domain.penalty_service import PenaltyError
 from src.domain.models import (
@@ -110,8 +111,8 @@ class TestClockAdvance:
         current_time = datetime(2024, 6, 16, 9, 0, 0)
         clock = fake_clock(current_time)
         clock_file = temp_data_dir / "clock.txt"
-        booking_user = auth_service.signup("atomic_success_user", "pass")
-        admin = auth_service.signup("atomic_success_admin", "pass", role=UserRole.ADMIN)
+        booking_user = auth_service.signup("Atomic_success_user", "pass1")
+        admin = auth_service.signup("Atomic_success_admin", "pass1", role=UserRole.ADMIN)
         room = create_test_room()
 
         booking = RoomBooking(
@@ -480,8 +481,8 @@ class TestClockAdvance:
     ):
         current_time = datetime(2024, 6, 16, 9, 0, 0)
         fake_clock(current_time)
-        booking_user = auth_service.signup("booking_user", "pass")
-        advancing_user = auth_service.signup("advancing_user", "pass")
+        booking_user = auth_service.signup("Booking_user", "pass1")
+        advancing_user = auth_service.signup("Advancing_user", "pass1")
         room = create_test_room()
 
         booking = RoomBooking(
@@ -523,8 +524,8 @@ class TestClockAdvance:
     ):
         current_time = datetime(2024, 6, 16, 9, 0, 0)
         fake_clock(current_time)
-        booking_user = auth_service.signup("admin_force_user", "pass")
-        admin = auth_service.signup("clock_admin", "pass", role=UserRole.ADMIN)
+        booking_user = auth_service.signup("Admin_force_user", "pass1")
+        admin = auth_service.signup("Clock_admin", "pass1", role=UserRole.ADMIN)
         room = create_test_room()
 
         booking = RoomBooking(
@@ -557,8 +558,8 @@ class TestClockAdvance:
     ):
         current_time = datetime(2024, 6, 16, 18, 0, 0)
         fake_clock(current_time)
-        booking_user = auth_service.signup("late_checkout_owner", "pass")
-        advancing_user = auth_service.signup("late_checkout_forcer", "pass")
+        booking_user = auth_service.signup("Late_checkout_owner", "pass1")
+        advancing_user = auth_service.signup("Late_checkout_forcer", "pass1")
         room = create_test_room()
 
         booking = RoomBooking(
@@ -666,14 +667,173 @@ class TestBannedUserBookingCancellation:
 
 
 class TestCheckUserCanBook:
+    def test_inspect1_pending_bookings_do_not_count_toward_active_quota(
+        self,
+        policy_service,
+        create_test_user,
+        room_booking_repo,
+        equipment_booking_repo,
+        room_booking_factory,
+        equipment_booking_factory,
+    ):
+        user = create_test_user(username="InspectQuotaUser")
+        with global_lock():
+            for index in range(3):
+                room_booking_repo.add(
+                    room_booking_factory(
+                        id=f"inspect1-room-pending-{index}",
+                        user_id=user.id,
+                        room_id=f"room-{index}",
+                        status=RoomBookingStatus.PENDING,
+                    )
+                )
+                equipment_booking_repo.add(
+                    equipment_booking_factory(
+                        id=f"inspect1-equipment-pending-{index}",
+                        user_id=user.id,
+                        equipment_id=f"equipment-{index}",
+                        status=EquipmentBookingStatus.PENDING,
+                    )
+                )
+
+        limits = policy_service.get_user_flow_limits(user)
+
+        assert room_booking_repo.get_quota_active_by_user(user.id) == []
+        assert equipment_booking_repo.get_quota_active_by_user(user.id) == []
+        assert limits["room_limit"] == 3
+        assert limits["equipment_limit"] == 3
+
+    def test_inspect1_confirmed_statuses_still_count_toward_active_quota(
+        self,
+        policy_service,
+        create_test_user,
+        room_booking_repo,
+        equipment_booking_repo,
+        room_booking_factory,
+        equipment_booking_factory,
+    ):
+        user = create_test_user(username="InspectConfirmedQuotaUser")
+        with global_lock():
+            for status in (
+                RoomBookingStatus.RESERVED,
+                RoomBookingStatus.CHECKIN_REQUESTED,
+                RoomBookingStatus.CHECKED_IN,
+                RoomBookingStatus.CHECKOUT_REQUESTED,
+            ):
+                room_booking_repo.add(
+                    room_booking_factory(
+                        id=f"inspect1-room-{status.value}",
+                        user_id=user.id,
+                        status=status,
+                    )
+                )
+            for status in (
+                EquipmentBookingStatus.RESERVED,
+                EquipmentBookingStatus.PICKUP_REQUESTED,
+                EquipmentBookingStatus.CHECKED_OUT,
+                EquipmentBookingStatus.RETURN_REQUESTED,
+            ):
+                equipment_booking_repo.add(
+                    equipment_booking_factory(
+                        id=f"inspect1-equipment-{status.value}",
+                        user_id=user.id,
+                        status=status,
+                    )
+                )
+
+        limits = policy_service.get_user_flow_limits(user)
+
+        assert len(room_booking_repo.get_quota_active_by_user(user.id)) == 4
+        assert len(equipment_booking_repo.get_quota_active_by_user(user.id)) == 4
+        assert limits["room_limit"] == 0
+        assert limits["equipment_limit"] == 0
+
+    def test_inspect1_restricted_user_pending_bookings_do_not_consume_one_each_limit(
+        self,
+        policy_service,
+        create_test_user,
+        room_booking_repo,
+        equipment_booking_repo,
+        room_booking_factory,
+        equipment_booking_factory,
+        fake_clock,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        fake_clock(fixed_time)
+        user = create_test_user(
+            username="InspectRestrictedPendingQuotaUser",
+            penalty_points=3,
+            restriction_until=(fixed_time + timedelta(days=7)).isoformat(),
+        )
+        with global_lock():
+            room_booking_repo.add(
+                room_booking_factory(
+                    id="inspect1-restricted-room-pending",
+                    user_id=user.id,
+                    status=RoomBookingStatus.PENDING,
+                )
+            )
+            equipment_booking_repo.add(
+                equipment_booking_factory(
+                    id="inspect1-restricted-equipment-pending",
+                    user_id=user.id,
+                    status=EquipmentBookingStatus.PENDING,
+                )
+            )
+
+        can_book, max_total, message = policy_service.check_user_can_book(user)
+        limits = policy_service.get_user_flow_limits(user)
+
+        assert can_book is True
+        assert max_total == 2
+        assert "1건" in message
+        assert limits["room_limit"] == 1
+        assert limits["equipment_limit"] == 1
+
     def test_normal_user_can_book(self, policy_service, create_test_user):
         user = create_test_user(penalty_points=0)
 
         can_book, max_total, message = policy_service.check_user_can_book(user)
 
         assert can_book is True
-        assert max_total == 2
+        assert max_total == 6
         assert message == ""
+
+    def test_plan0001_admin_dispatch_renumbers_resource_menus(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+        capsys,
+    ):
+        admin = create_test_user(username="DispatchAdmin", role=UserRole.ADMIN)
+        menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+        )
+        inputs = iter(["0"])
+
+        monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
+        monkeypatch.setattr(menu, "_refresh_admin", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        monkeypatch.setattr("src.cli.admin_menu.confirm", lambda _msg: True)
+        monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
+
+        assert menu.run() is True
+        output = capsys.readouterr().out
+        assert "7. 회의실 수정 (관리자)" in output
+        assert "8. 전체 장비 예약 조회" in output
+        assert "20. 운영 시계" in output
+        assert "21." not in output
+        assert "잘못된 선택입니다." in output
 
     def test_banned_user_cannot_book(self, policy_service, create_test_user, mock_now):
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
