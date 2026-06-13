@@ -26,27 +26,27 @@ class TestUserSignupLoginFlow:
     def test_signup_and_login_flow(self, auth_service):
         """정상 회원가입 후 로그인"""
         # 회원가입
-        user = auth_service.signup(username="e2e_user", password="securepass123")
+        user = auth_service.signup(username="E2EUser1", password="securepass123")
 
         assert user.id is not None
         assert user.role == UserRole.USER
 
         # 로그인
-        logged_in = auth_service.login("e2e_user", "securepass123")
+        logged_in = auth_service.login("E2EUser1", "securepass123")
 
         assert logged_in.id == user.id
 
     def test_signup_duplicate_then_login(self, auth_service):
         """중복 가입 시도 후 기존 계정 로그인"""
-        auth_service.signup("existing_user", "pass1")
+        auth_service.signup("ExistingUser1", "pass1")
 
         # 중복 시도
         with pytest.raises(AuthError):
-            auth_service.signup("existing_user", "pass2")
+            auth_service.signup("ExistingUser1", "pass2")
 
         # 원래 비밀번호로 로그인
-        user = auth_service.login("existing_user", "pass1")
-        assert user.username == "existing_user"
+        user = auth_service.login("ExistingUser1", "pass1")
+        assert user.username == "ExistingUser1"
 
 
 class TestBookingCompleteFlow:
@@ -60,8 +60,8 @@ class TestBookingCompleteFlow:
 
         with mock_now(fixed_time):
             # 1. 회원가입
-            user = auth_service.signup("booking_user", "pass")
-            admin = auth_service.signup("admin_user", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("BookingUser1", "pass1")
+            admin = auth_service.signup("AdminUser1", "pass1", role=UserRole.ADMIN)
 
             # 2. 회의실 생성
             room = create_test_room(name="회의실9C")
@@ -106,8 +106,8 @@ class TestBookingCompleteFlow:
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("eq_user", "pass")
-            admin = auth_service.signup("eq_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("EqUser1", "pass1")
+            admin = auth_service.signup("EqAdmin1", "pass1", role=UserRole.ADMIN)
 
             equipment = create_test_equipment(name="장비102")
 
@@ -144,7 +144,7 @@ class TestBookingModificationFlow:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("modify_user", "pass")
+            user = auth_service.signup("ModifyUser1", "pass1")
             room = create_test_room()
 
             # 원래 예약
@@ -173,7 +173,7 @@ class TestBookingModificationFlow:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("cancel_user", "pass")
+            user = auth_service.signup("CancelUser1", "pass1")
             room = create_test_room()
 
             # 2시간 후 예약
@@ -207,7 +207,7 @@ class TestPenaltyAccumulationFlow:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("penalty_user", "pass")
+            user = auth_service.signup("PenaltyUser1", "pass1")
 
             penalty_service.apply_late_cancel(user, "room_booking", "fake-booking-1")
 
@@ -216,7 +216,7 @@ class TestPenaltyAccumulationFlow:
 
             assert status["points"] == 2
             assert status["is_restricted"] is False
-            assert status["max_active_bookings"] == 2
+            assert status["max_active_bookings"] == 6
 
     def test_restricted_user_can_hold_one_room_and_one_equipment(
         self,
@@ -232,12 +232,12 @@ class TestPenaltyAccumulationFlow:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("banned_user", "pass")
+            user = auth_service.signup("BannedUser1", "pass1")
             room = create_test_room(name="회의실9D")
             equipment = create_test_equipment(name="장비103")
 
             penalty_service.apply_damage(
-                admin=auth_service.signup("restricted_admin", "pass", role=UserRole.ADMIN),
+                admin=auth_service.signup("RestrictedAdmin1", "pass1", role=UserRole.ADMIN),
                 user=user,
                 booking_type="room_booking",
                 booking_id="b1",
@@ -275,7 +275,7 @@ class TestStreakBonusFlow:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("streak_user", "pass")
+            user = auth_service.signup("StreakUser1", "pass1")
 
             # 처음에 패널티 부여
             penalty_service.apply_late_cancel(user, "room_booking", "b1")  # +2점
@@ -310,8 +310,8 @@ class TestLateReturnPenaltyFlow:
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("late_user", "pass")
-            admin = auth_service.signup("late_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("LateUser1", "pass1")
+            admin = auth_service.signup("LateAdmin1", "pass1", role=UserRole.ADMIN)
             room = create_test_room()
 
             # 예약 및 체크인
@@ -334,7 +334,7 @@ class TestLateReturnPenaltyFlow:
 class TestMultipleBookingsFlow:
     """여러 예약 관리 흐름"""
 
-    def test_user_max_1_room_booking(
+    def test_user_max_3_room_bookings(
         self,
         auth_service,
         room_service,
@@ -343,28 +343,28 @@ class TestMultipleBookingsFlow:
         room_repo,
         mock_now,
     ):
-        """사용자는 최대 1개의 회의실 활성 예약만 가질 수 있다."""
+        """사용자는 최대 3개의 회의실 활성 예약을 가질 수 있다."""
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("multi_booking_user", "pass")
+            user = auth_service.signup("MultiBookingUser1", "pass1")
 
-            rooms = [create_test_room(name=f"회의실{i}A") for i in range(2)]
+            rooms = [create_test_room(name=f"회의실{i}A") for i in range(4)]
 
-            room_service.create_booking(
-                user,
-                rooms[0].id,
-                fixed_time + timedelta(hours=1),
-                fixed_time + timedelta(hours=2),
-            )
+            for index in range(3):
+                room_service.create_booking(
+                    user,
+                    rooms[index].id,
+                    fixed_time + timedelta(hours=index + 1),
+                    fixed_time + timedelta(hours=index + 2),
+                )
 
-            # 2번째 예약 실패
             with pytest.raises(RoomBookingError) as exc_info:
                 room_service.create_booking(
                     user,
-                    rooms[1].id,
-                    fixed_time + timedelta(hours=3),
-                    fixed_time + timedelta(hours=4),
+                    rooms[3].id,
+                    fixed_time + timedelta(hours=5),
+                    fixed_time + timedelta(hours=6),
                 )
 
             assert "한도" in str(exc_info.value) or "초과" in str(exc_info.value)
