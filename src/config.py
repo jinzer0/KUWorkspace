@@ -16,7 +16,7 @@ EQUIPMENTS_FILE = DATA_DIR / "equipments.txt"
 ROOM_BOOKINGS_FILE = DATA_DIR / "room_bookings.txt"
 EQUIPMENT_BOOKING_FILE = DATA_DIR / "equipment_booking.txt"
 ROOM_MAINTENANCE_FILE = DATA_DIR / "room_maintenance.txt"
-WAITLIST_FILE = DATA_DIR / "waitlist.txt"
+WAITLIST_FILE = DATA_DIR / "waiting_list.txt"
 PENALTIES_FILE = DATA_DIR / "penalties.txt"
 AUDIT_LOG_FILE = DATA_DIR / "audit_log.txt"
 CLOCK_FILE = DATA_DIR / "clock.txt"
@@ -43,8 +43,10 @@ FIXED_BOOKING_START_MINUTE = 0
 FIXED_BOOKING_END_HOUR = 18
 FIXED_BOOKING_END_MINUTE = 0
 TIME_SLOT_MINUTES = 30
-MAX_ACTIVE_ROOM_BOOKINGS = 1  # 회의실 최대 활성 예약 수
-MAX_ACTIVE_EQUIPMENT_BOOKINGS = 1  # 장비 최대 활성 예약 수
+MAX_ACTIVE_ROOM_BOOKINGS = 3  # 정상 사용자 회의실 최대 활성 예약 수
+MAX_ACTIVE_EQUIPMENT_BOOKINGS = 3  # 정상 사용자 장비 최대 활성 예약 수
+MAX_RESTRICTED_ROOM_BOOKINGS = 1  # 제한 사용자 회의실 최대 활성 예약 수
+MAX_RESTRICTED_EQUIPMENT_BOOKINGS = 1  # 제한 사용자 장비 최대 활성 예약 수
 
 # 패널티 상수
 LATE_CANCEL_PENALTY = 2  # 직전 취소 패널티 점수

@@ -30,7 +30,7 @@ def test_ensure_data_dir_creates_all_data_files(tmp_path, monkeypatch):
             tmp_path / "room_bookings.txt",
             tmp_path / "equipment_booking.txt",
             tmp_path / "room_maintenance.txt",
-            tmp_path / "waitlist.txt",
+            tmp_path / "waiting_list.txt",
             tmp_path / "penalties.txt",
             tmp_path / "audit_log.txt",
             tmp_path / "clock.txt",
@@ -46,7 +46,7 @@ def test_ensure_data_dir_creates_all_data_files(tmp_path, monkeypatch):
         tmp_path / "room_bookings.txt",
         tmp_path / "equipment_booking.txt",
         tmp_path / "room_maintenance.txt",
-        tmp_path / "waitlist.txt",
+        tmp_path / "waiting_list.txt",
         tmp_path / "penalties.txt",
         tmp_path / "audit_log.txt",
         tmp_path / "clock.txt",
@@ -62,12 +62,46 @@ def test_clock_file_decision_uses_only_clock_txt():
 
     assert CLOCK_FILE.name == "clock.txt"
     assert ROOM_MAINTENANCE_FILE.name == "room_maintenance.txt"
-    assert WAITLIST_FILE.name == "waitlist.txt"
+    assert WAITLIST_FILE.name == "waiting_list.txt"
     assert "clock.txt" in data_file_names
     assert "room_maintenance.txt" in data_file_names
-    assert "waitlist.txt" in data_file_names
+    assert "waiting_list.txt" in data_file_names
     assert "system_clock.txt" not in data_file_names
-    assert "waiting_list.txt" not in data_file_names
+    assert "waitlist.txt" not in data_file_names
+
+
+def test_plan0001_waiting_list_file_is_required():
+    data_file_names = {file_path.name for file_path in DATA_FILES}
+
+    assert WAITLIST_FILE.name == "waiting_list.txt"
+    assert "waiting_list.txt" in data_file_names
+    assert "waitlist.txt" not in data_file_names
+
+
+def test_plan0001_ensure_data_dir_creates_waiting_and_room_maintenance_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.DATA_DIR", tmp_path)
+    monkeypatch.setattr("src.config.CLOCK_FILE", tmp_path / "clock.txt")
+    monkeypatch.setattr(
+        "src.config.DATA_FILES",
+        [
+            tmp_path / "users.txt",
+            tmp_path / "rooms.txt",
+            tmp_path / "equipments.txt",
+            tmp_path / "room_bookings.txt",
+            tmp_path / "equipment_booking.txt",
+            tmp_path / "room_maintenance.txt",
+            tmp_path / "waiting_list.txt",
+            tmp_path / "penalties.txt",
+            tmp_path / "audit_log.txt",
+            tmp_path / "clock.txt",
+        ],
+    )
+
+    ensure_data_dir()
+
+    assert (tmp_path / "waiting_list.txt").exists()
+    assert (tmp_path / "room_maintenance.txt").exists()
+    assert not (tmp_path / "waitlist.txt").exists()
 
 
 def test_runtime_clock_slots_are_locked_to_09_and_18():

@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 import main as main_module
 from main import prompt_initial_clock
+from src.clock_bootstrap import load_persisted_clock
 from src.domain.models import UserRole
+from src.storage.integrity import DataIntegrityError
 
 
 def test_prompt_initial_clock_retries_on_invalid_date(monkeypatch, capsys):
@@ -205,6 +207,48 @@ def test_main_prompts_when_clock_file_is_sentinel(tmp_path, monkeypatch):
 
     assert clock.now() == datetime(2026, 6, 15, 9, 0, 0)
     assert sentinel_file.read_text(encoding="utf-8").strip() == "2026-06-15T09:00"
+
+
+def test_prompt_initial_clock_invalid_slot_does_not_persist_before_retry(tmp_path, monkeypatch):
+    sentinel_file = tmp_path / "clock.txt"
+    sentinel_file.write_text("0000-00-00T00:00", encoding="utf-8")
+    inputs = ["2026-06-15", "12:00", "2026-06-15", "18:00"]
+    index = {"value": 0}
+
+    monkeypatch.setattr("src.config.CLOCK_FILE", sentinel_file)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", sentinel_file)
+    monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
+
+    def fake_input(_prompt=""):
+        if index["value"] == 2:
+            assert sentinel_file.read_text(encoding="utf-8").strip() == "0000-00-00T00:00"
+        value = inputs[index["value"]]
+        index["value"] += 1
+        return value
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    clock = prompt_initial_clock()
+
+    assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
+    assert sentinel_file.read_text(encoding="utf-8").strip() == "2026-06-15T18:00"
+
+
+def test_load_persisted_clock_rejects_non_operating_slot(tmp_path, monkeypatch):
+    clock_file = tmp_path / "clock.txt"
+    clock_file.write_text("2026-06-15T12:00", encoding="utf-8")
+
+    monkeypatch.setattr("src.config.DATA_DIR", tmp_path)
+    monkeypatch.setattr("src.config.CLOCK_FILE", clock_file)
+    monkeypatch.setattr("src.config.DATA_FILES", [clock_file])
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_DIR", tmp_path)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", clock_file)
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_FILES", [clock_file])
+
+    with pytest.raises(DataIntegrityError, match="09:00 또는 18:00"):
+        load_persisted_clock()
+
+    assert clock_file.read_text(encoding="utf-8").strip() == "2026-06-15T12:00"
 
 
 def test_main_routes_admin_to_admin_menu(monkeypatch):

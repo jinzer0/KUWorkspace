@@ -1,17 +1,18 @@
 from datetime import datetime
 
 from src import config
-from src.storage.integrity import DataIntegrityError
 
-from src.storage.repositories import (
-    UserRepository,
-    RoomRepository,
-    EquipmentAssetRepository,
-    RoomBookingRepository,
-    EquipmentBookingRepository,
-    PenaltyRepository,
-    AuditLogRepository,
-)
+
+def _data_integrity_error():
+    integrity_module = __import__("src.storage.integrity", fromlist=["DataIntegrityError"])
+    return integrity_module.DataIntegrityError
+
+
+def _normalize_clock_marker(current_time):
+    normalized = current_time.replace(second=0, microsecond=0)
+    if (normalized.hour, normalized.minute) not in {(9, 0), (18, 0)}:
+        raise ValueError("운영 시점은 09:00 또는 18:00만 사용할 수 있습니다.")
+    return normalized
 
 
 def read_clock_marker():
@@ -22,6 +23,7 @@ def read_clock_marker():
             or config.CLOCK_SENTINEL
         )
     except OSError as error:
+        DataIntegrityError = _data_integrity_error()
         raise DataIntegrityError(
             f"시계 파일을 읽을 수 없습니다: {config.CLOCK_FILE} ({error})"
         ) from error
@@ -32,10 +34,11 @@ def load_persisted_clock():
     if marker == config.CLOCK_SENTINEL:
         return None
     try:
-        return datetime.fromisoformat(marker)
+        return _normalize_clock_marker(datetime.fromisoformat(marker))
     except ValueError as error:
+        DataIntegrityError = _data_integrity_error()
         raise DataIntegrityError(
-            f"시계 파일 형식이 올바르지 않습니다: {config.CLOCK_FILE} ({marker})"
+            f"시계 파일 형식이 올바르지 않습니다: {config.CLOCK_FILE} ({marker}) - {error}"
         ) from error
 
 
@@ -48,6 +51,7 @@ def persist_clock(current_time):
     try:
         config.CLOCK_FILE.write_text(current_time, encoding="utf-8")
     except OSError as error:
+        DataIntegrityError = _data_integrity_error()
         raise DataIntegrityError(
             f"시계 파일을 저장할 수 없습니다: {config.CLOCK_FILE} ({error})"
         ) from error
@@ -64,14 +68,26 @@ def _iter_datetime_strings(record):
 
 
 def get_latest_data_timestamp():
+    repositories_module = __import__(
+        "src.storage.repositories",
+        fromlist=[
+            "UserRepository",
+            "RoomRepository",
+            "EquipmentAssetRepository",
+            "RoomBookingRepository",
+            "EquipmentBookingRepository",
+            "PenaltyRepository",
+            "AuditLogRepository",
+        ],
+    )
     repositories = [
-        UserRepository(),
-        RoomRepository(),
-        EquipmentAssetRepository(),
-        RoomBookingRepository(),
-        EquipmentBookingRepository(),
-        PenaltyRepository(),
-        AuditLogRepository(),
+        repositories_module.UserRepository(),
+        repositories_module.RoomRepository(),
+        repositories_module.EquipmentAssetRepository(),
+        repositories_module.RoomBookingRepository(),
+        repositories_module.EquipmentBookingRepository(),
+        repositories_module.PenaltyRepository(),
+        repositories_module.AuditLogRepository(),
     ]
 
     latest = None
