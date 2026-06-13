@@ -19,6 +19,7 @@ from src.domain.models import (
     EquipmentAsset,
     RoomBooking,
     EquipmentBooking,
+    WaitingListEntry,
     RoomMaintenanceSchedule,
     Penalty,
     AuditLog,
@@ -86,7 +87,7 @@ class TestUser:
 
     def test_user_record_keeps_first_phase_users_txt_width(self):
         record: list[str | None] = [
-            "student1",
+            "Student1",
             "pass123",
             "user",
             "3",
@@ -99,8 +100,8 @@ class TestUser:
         restored = User.from_record(record)
 
         assert len(record) == 8
-        assert restored.id == "student1"
-        assert restored.username == "student1"
+        assert restored.id == "Student1"
+        assert restored.username == "Student1"
         assert restored.password == "pass123"
         assert restored.role == UserRole.USER
         assert restored.penalty_points == 3
@@ -113,7 +114,7 @@ class TestUser:
     def test_user_record_writes_phase_two_users_txt_width(self):
         user = User.from_record(
             [
-                "student1",
+                "Student1",
                 "pass123",
                 "user",
                 "3",
@@ -131,6 +132,78 @@ class TestUser:
         assert len(record) == 10
         assert record[6] == "2026-03-22T09:00"
         assert record[7] is None
+
+    def test_inspect1_user_legacy_rows_remain_readable_but_new_rows_are_ten_fields(self):
+        legacy = User.from_record(
+            [
+                "LegacyUser",
+                "pass123",
+                "user",
+                "0",
+                "0",
+                None,
+                "2026-03-20T09:00",
+                "2026-03-20T09:00",
+            ]
+        )
+        current = User(
+            id="CurrentUser",
+            username="CurrentUser",
+            password="pass123",
+            role=UserRole.USER,
+        )
+
+        assert legacy.username == "LegacyUser"
+        assert len(current.to_record()) == 10
+
+    def test_user_record_reads_legacy_lowercase_admin_for_seed_compatibility(self):
+        user = User.from_record(
+            [
+                "admin",
+                "admin123",
+                "admin",
+                "0",
+                "0",
+                None,
+                "2026-03-20T09:00",
+                "2026-03-20T09:00",
+            ]
+        )
+
+        assert user.id == "admin"
+        assert user.username == "admin"
+        assert user.password == "admin123"
+        assert user.role == UserRole.ADMIN
+        assert user.to_record()[0] == "admin"
+
+    def test_user_record_rejects_blank_or_whitespace_legacy_credentials(self):
+        with pytest.raises(ValueError, match="사용자명"):
+            User.from_record(
+                [
+                    " ",
+                    "admin123",
+                    "admin",
+                    "0",
+                    "0",
+                    None,
+                    "2026-03-20T09:00",
+                    "2026-03-20T09:00",
+                ]
+            )
+
+        with pytest.raises(ValueError, match="비밀번호"):
+            User.from_record(
+                [
+                    "admin",
+                    "bad pass",
+                    "admin",
+                    "0",
+                    "0",
+                    None,
+                    "2026-03-20T09:00",
+                    "2026-03-20T09:00",
+                ]
+            )
 
     def test_user_record_rejects_malformed_width(self):
         with pytest.raises(ValueError, match="8 or 10"):
@@ -244,19 +317,47 @@ class TestEquipmentAsset:
         assert len(record) == 8
         assert decode_future_status_changes(record[7]) == decode_future_status_changes(encoded)
 
-    def test_equipment_future_status_changes_escape_pipe_backslash_and_none_sentinel(self):
-        encoded = encode_future_status_changes(
+    def test_inspect1_equipment_legacy_rows_remain_readable_but_new_rows_are_eight_fields(self):
+        legacy = EquipmentAsset.from_record(
             [
-                {
-                    "id": "schedule|with\\sentinel\\-",
-                    "start_time": "2026-04-01T09:00:59",
-                    "end_time": "2026-04-01T18:00:59",
-                    "status": "disabled",
-                    "restore_status": "available",
-                    "state": "pending",
-                }
+                "프로젝터",
+                "projector",
+                "PJ-001",
+                "available",
+                "HDMI포함",
+                "2026-03-20T09:00",
+                "2026-03-20T10:00",
             ]
         )
+        current = EquipmentAsset(
+            id="PJ-999",
+            name="프로젝터",
+            asset_type="projector",
+            serial_number="PJ-999",
+        )
+
+        assert legacy.serial_number == "PJ-001"
+        assert len(current.to_record()) == 8
+
+    def test_plan0001_future_status_uses_memo_format(self):
+        asset = EquipmentAsset.from_record(
+            [
+                "프로젝터",
+                "projector",
+                "PJ-001",
+                "available",
+                "HDMI포함",
+                "2026-03-20T09:00",
+                "2026-03-20T10:00",
+                "2026-04-01, maintenance; 2026-04-02, maintenance",
+            ]
+        )
+
+        assert asset.future_status_changes == "2026-04-01, maintenance; 2026-04-02, maintenance"
+        assert asset.to_record()[7] == "2026-04-01, maintenance; 2026-04-02, maintenance"
+
+    def test_equipment_future_status_changes_accepts_supported_legacy_json(self):
+        encoded = '[{"id":"schedule-1","start_time":"2026-04-01T09:00:59","status":"maintenance","state":"started"}]'
         restored = EquipmentAsset.from_record(
             [
                 "노트북",
@@ -272,9 +373,46 @@ class TestEquipmentAsset:
 
         decoded = decode_future_status_changes(restored.to_record()[7])
 
-        assert decoded[0]["id"] == "schedule|with\\sentinel\\-"
+        assert restored.to_record()[7] == "2026-04-01, maintenance"
+        assert decoded[0]["id"] == "maintenance-2026-04-01"
         assert decoded[0]["start_time"] == "2026-04-01T09:00"
         assert decoded[0]["end_time"] == "2026-04-01T18:00"
+
+    def test_equipment_future_status_changes_preserves_multiday_disabled_range(self):
+        encoded = encode_future_status_changes(
+            [
+                {
+                    "id": "schedule-1",
+                    "start_time": "2026-04-01T09:00",
+                    "end_time": "2026-04-03T18:00",
+                    "status": "disabled",
+                    "restore_status": "available",
+                    "state": "pending",
+                }
+            ]
+        )
+
+        [decoded] = decode_future_status_changes(encoded)
+
+        assert decoded["id"] == "schedule-1"
+        assert decoded["start_time"] == "2026-04-01T09:00"
+        assert decoded["end_time"] == "2026-04-03T18:00"
+        assert decoded["status"] == "disabled"
+
+    def test_equipment_future_status_changes_rejects_unknown_status(self):
+        with pytest.raises(ValueError, match="not a valid"):
+            encode_future_status_changes(
+                [
+                    {
+                        "id": "schedule-1",
+                        "start_time": "2026-04-01T09:00",
+                        "end_time": "2026-04-01T18:00",
+                        "status": "unknown",
+                        "restore_status": "available",
+                        "state": "pending",
+                    }
+                ]
+            )
 
     def test_equipment_record_rejects_malformed_width(self):
         with pytest.raises(ValueError, match="7 or 8"):
@@ -482,11 +620,70 @@ class TestRoomMaintenanceSchedule:
 
         assert schedule.id == "maintenance-1"
         assert schedule.room_id == "회의실2A"
-        assert len(record) == 7
+        assert schedule.status == "scheduled"
+        assert schedule.cancelled_at is None
+        assert len(record) == 8
+        assert record[4] == "scheduled"
+        assert record[7] == "-"
+
+    def test_plan0001_room_maintenance_record_has_status_and_cancelled_at(self):
+        schedule = RoomMaintenanceSchedule.from_record(
+            [
+                "maintenance-1",
+                "회의실2A",
+                "2027-06-15T09:00",
+                "2027-06-15T18:00",
+                "scheduled",
+                "2027-06-01T09:00",
+                "2027-06-01T09:00",
+                "-",
+            ]
+        )
+
+        record = schedule.to_record()
+
+        assert len(record) == 8
+        assert record[4] in {"scheduled", "active", "completed", "cancelled"}
+        assert record[7] == "-"
+        assert getattr(schedule, "status") == "scheduled"
+        assert getattr(schedule, "cancelled_at") is None
 
     def test_room_maintenance_record_rejects_malformed_width(self):
-        with pytest.raises(ValueError, match="7 fields"):
+        with pytest.raises(ValueError, match="7 or 8"):
             RoomMaintenanceSchedule.from_record(["maintenance-1"])
+
+
+class TestWaitingListEntry:
+    def test_waiting_list_record_roundtrip(self):
+        entry = WaitingListEntry.from_record(
+            [
+                "waiting-1",
+                "Student1",
+                "room_booking",
+                "room-booking-1",
+                "3",
+                "2027-06-01T09:00",
+                "2027-06-01T09:00",
+            ]
+        )
+
+        assert entry.id == "waiting-1"
+        assert entry.username == "Student1"
+        assert entry.related_type == "room_booking"
+        assert entry.user_count == 3
+        assert entry.to_record() == [
+            "waiting-1",
+            "Student1",
+            "room_booking",
+            "room-booking-1",
+            "3",
+            "2027-06-01T09:00",
+            "2027-06-01T09:00",
+        ]
+
+    def test_waiting_list_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="7 fields"):
+            WaitingListEntry.from_record(["waiting-1"])
 
 
 class TestPenalty:

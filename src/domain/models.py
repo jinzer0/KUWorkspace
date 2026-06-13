@@ -11,8 +11,6 @@ import json
 
 from src.runtime_clock import get_current_time
 from src.domain.field_rules import (
-    validate_username_text,
-    validate_password_text,
     validate_room_name,
     validate_room_capacity,
     validate_room_location,
@@ -104,7 +102,7 @@ def normalize_datetime_string(
     strict: bool = False,
     field_name: str = "datetime",
 ) -> Optional[str]:
-    if value is None:
+    if value is None or value == "-":
         return None
     try:
         dt = datetime.fromisoformat(value)
@@ -119,6 +117,26 @@ def normalize_persisted_text(value: Optional[str], max_length: int = 20) -> str:
     if value is None:
         return ""
     return value.replace("\r", " ").replace("\n", " ")[:max_length]
+
+
+def validate_persisted_credential(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name}을 입력해주세요.")
+    if any(char.isspace() for char in value):
+        raise ValueError(f"{field_name}에 공백을 포함할 수 없습니다.")
+
+
+def _future_status_date_item(date_text: str, status: ResourceStatus = ResourceStatus.MAINTENANCE) -> dict[str, str]:
+    date_value = datetime.strptime(date_text, "%Y-%m-%d").date()
+    date_iso = date_value.isoformat()
+    return {
+        "id": f"{status.value}-{date_iso}",
+        "start_time": f"{date_iso}T09:00",
+        "end_time": f"{date_iso}T18:00",
+        "status": status.value,
+        "restore_status": ResourceStatus.AVAILABLE.value,
+        "state": "pending",
+    }
 
 
 def _normalize_future_status_item(item: dict[str, Any]) -> dict[str, str]:
@@ -166,17 +184,56 @@ def _normalize_future_status_item(item: dict[str, Any]) -> dict[str, str]:
 def decode_future_status_changes(value: Optional[str]) -> list[dict[str, str]]:
     if not value:
         return []
+    stripped = value.strip()
+    if not stripped:
+        return []
+    if not stripped.startswith("["):
+        normalized = []
+        for raw_part in stripped.split(";"):
+            part = raw_part.strip()
+            if not part:
+                continue
+            pieces = [piece.strip() for piece in part.split(",")]
+            if len(pieces) == 2:
+                date_text, status = pieces
+                normalized.append(_future_status_date_item(date_text, ResourceStatus(status)))
+                continue
+            if len(pieces) != 5:
+                raise ValueError("future_status_changes must use supported memo entries")
+            schedule_id, start_time, end_time, status, state = pieces
+            normalized.append(
+                _normalize_future_status_item(
+                    {
+                        "id": schedule_id,
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "status": status,
+                        "state": state,
+                    }
+                )
+            )
+        return sorted(normalized, key=lambda item: (item["start_time"], item["id"]))
     try:
-        raw_items = json.loads(value)
+        raw_items = json.loads(stripped)
     except json.JSONDecodeError as error:
-        raise ValueError("future_status_changes must be canonical JSON") from error
+        raise ValueError("future_status_changes must be memo format or supported legacy JSON") from error
     if not isinstance(raw_items, list):
         raise ValueError("future_status_changes must be a list")
     normalized = []
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
             raise ValueError("future_status_changes items must be objects")
-        normalized.append(_normalize_future_status_item(raw_item))
+        if raw_item.get("state") not in {"pending", "started"}:
+            raise ValueError("legacy future_status_changes state must be pending or started")
+        start_time = normalize_datetime_string(
+            raw_item.get("start_time"), strict=True, field_name="future_status_start_time"
+        )
+        if start_time is None:
+            raise ValueError("legacy future_status_changes requires start_time")
+        if raw_item.get("end_time"):
+            normalized.append(_normalize_future_status_item(raw_item))
+        else:
+            normalized.append(_future_status_date_item(start_time[:10], ResourceStatus(raw_item.get("status"))))
     return sorted(normalized, key=lambda item: (item["start_time"], item["end_time"], item["id"]))
 
 
@@ -185,7 +242,23 @@ def encode_future_status_changes(items: list[dict[str, Any]]) -> str:
     normalized.sort(key=lambda item: (item["start_time"], item["end_time"], item["id"]))
     if not normalized:
         return ""
-    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    for item in normalized:
+        if item["state"] not in {"pending", "started"}:
+            raise ValueError("future_status_changes only stores pending or started entries")
+    entries = []
+    for item in normalized:
+        date_text = item["start_time"][:10]
+        if (
+            item["start_time"] == f"{date_text}T09:00"
+            and item["end_time"] == f"{date_text}T18:00"
+            and item["state"] in {"pending", "started"}
+        ):
+            entries.append(f"{date_text}, {item['status']}")
+        else:
+            entries.append(
+                f"{item['id']}, {item['start_time']}, {item['end_time']}, {item['status']}, {item['state']}"
+            )
+    return "; ".join(entries)
 
 
 # ===== Dataclasses =====
@@ -230,8 +303,8 @@ class User:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
-        validate_username_text(self.username)
-        validate_password_text(self.password)
+        validate_persisted_credential(self.username, "사용자명")
+        validate_persisted_credential(self.password, "비밀번호")
         return [
             self.username,
             self.password,
@@ -267,8 +340,8 @@ class User:
         else:
             raise ValueError("users.txt record must contain 8 or 10 fields")
         user_key = username or ""
-        validate_username_text(user_key)
-        validate_password_text(password or "")
+        validate_persisted_credential(user_key, "사용자명")
+        validate_persisted_credential(password or "", "비밀번호")
         return cls(
             id=user_key,
             username=user_key,
@@ -500,7 +573,7 @@ class RoomBooking:
             normalize_datetime_string(self.requested_checkin_at),
             normalize_datetime_string(self.requested_checkout_at),
             normalize_datetime_string(self.completed_at),
-            normalize_datetime_string(self.cancelled_at),
+            normalize_datetime_string(self.cancelled_at) or "-",
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
             normalize_persisted_text(self.memo),
@@ -598,7 +671,7 @@ class EquipmentBooking:
             normalize_datetime_string(self.requested_pickup_at),
             normalize_datetime_string(self.requested_return_at),
             normalize_datetime_string(self.returned_at),
-            normalize_datetime_string(self.cancelled_at),
+            normalize_datetime_string(self.cancelled_at) or "-",
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
             self.group_id,
@@ -651,6 +724,67 @@ class EquipmentBooking:
 
 
 @dataclass
+class WaitingListEntry:
+    id: str
+    username: str
+    related_type: str
+    related_id: str
+    user_count: int
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WaitingListEntry":
+        return cls(**data)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "WaitingListEntry":
+        return cls.from_dict(json.loads(json_str))
+
+    def to_record(self) -> List[Optional[str]]:
+        if self.related_type not in {"room_booking", "equipment_booking"}:
+            raise ValueError("waiting_list.txt related_type must be room_booking or equipment_booking")
+        if self.user_count < 1:
+            raise ValueError("waiting_list.txt user_count must be positive")
+        return [
+            self.id,
+            self.username,
+            self.related_type,
+            self.related_id,
+            str(self.user_count),
+            normalize_datetime_string(self.created_at),
+            normalize_datetime_string(self.updated_at),
+        ]
+
+    @classmethod
+    def from_record(cls, record: List[Optional[str]]) -> "WaitingListEntry":
+        if len(record) != 7:
+            raise ValueError("waiting_list.txt record must contain 7 fields")
+        waiting_id, username, related_type, related_id, user_count, created_at, updated_at = record
+        related_type_value = related_type or ""
+        if related_type_value not in {"room_booking", "equipment_booking", "room", "equipment"}:
+            raise ValueError("waiting_list.txt related_type must be room_booking or equipment_booking")
+        count = int(user_count or "0")
+        if count < 1:
+            raise ValueError("waiting_list.txt user_count must be positive")
+        return cls(
+            id=waiting_id or generate_id(),
+            username=username or "",
+            related_type=related_type_value,
+            related_id=related_id or "",
+            user_count=count,
+            created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
+            updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
+        )
+
+
+@dataclass
 class RoomMaintenanceSchedule:
     """회의실 점검 일정"""
 
@@ -659,6 +793,8 @@ class RoomMaintenanceSchedule:
     start_time: str
     end_time: str
     reason: str = ""
+    status: str = "scheduled"
+    cancelled_at: Optional[str] = None
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
@@ -677,27 +813,43 @@ class RoomMaintenanceSchedule:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        if self.status not in {"scheduled", "active", "completed", "cancelled"}:
+            raise ValueError("room_maintenance.txt status is invalid")
         return [
             self.id,
             self.room_id,
             normalize_datetime_string(self.start_time),
             normalize_datetime_string(self.end_time),
-            normalize_persisted_text(self.reason),
+            self.status,
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
+            normalize_datetime_string(self.cancelled_at) or "-",
         ]
 
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "RoomMaintenanceSchedule":
-        if len(record) != 7:
-            raise ValueError("room_maintenance.txt record must contain 7 fields")
-        schedule_id, room_id, start_time, end_time, reason, created_at, updated_at = record
+        if len(record) == 7:
+            schedule_id, room_id, start_time, end_time, reason, created_at, updated_at = record
+            status = "scheduled"
+            cancelled_at = None
+        elif len(record) == 8:
+            schedule_id, room_id, start_time, end_time, status, created_at, updated_at, cancelled_at = record
+            reason = ""
+        else:
+            raise ValueError("room_maintenance.txt record must contain 7 or 8 fields")
+        status_value = status or ""
+        if cancelled_at == "-":
+            cancelled_at = None
+        if status_value not in {"scheduled", "active", "completed", "cancelled"}:
+            raise ValueError("room_maintenance.txt status is invalid")
         return cls(
             id=schedule_id or generate_id(),
             room_id=room_id or "",
             start_time=normalize_datetime_string(start_time, strict=True, field_name="start_time") or now_iso(),
             end_time=normalize_datetime_string(end_time, strict=True, field_name="end_time") or now_iso(),
             reason=normalize_persisted_text(reason),
+            status=status_value,
+            cancelled_at=normalize_datetime_string(cancelled_at, strict=True, field_name="cancelled_at"),
             created_at=normalize_datetime_string(created_at, strict=True, field_name="created_at") or now_iso(),
             updated_at=normalize_datetime_string(updated_at, strict=True, field_name="updated_at") or now_iso(),
         )
