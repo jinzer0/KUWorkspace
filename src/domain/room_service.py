@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from src.domain.models import (
     User,
+    Room,
     RoomBooking,
     RoomBookingStatus,
     RoomMaintenanceSchedule,
@@ -16,7 +17,9 @@ from src.domain.models import (
     now_iso,
 )
 from src.domain.daily_booking_rules import (
+    build_maintenance_period,
     build_daily_booking_period,
+    validate_maintenance_dates,
     validate_daily_booking_dates,
 )
 from src.domain.restriction_rules import evaluate_user_restriction
@@ -33,13 +36,23 @@ from src.storage.file_lock import global_lock
 from src.runtime_clock import get_runtime_clock
 from src.config import (
     MAX_ACTIVE_ROOM_BOOKINGS,
+    MAX_RESTRICTED_ROOM_BOOKINGS,
     LATE_CANCEL_THRESHOLD_MINUTES,
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
     FIXED_BOOKING_END_HOUR,
     FIXED_BOOKING_END_MINUTE,
 )
-from src.domain.field_rules import validate_reason_text, validate_reservation_memo_text
+from src.domain.field_rules import (
+    validate_reason_text,
+    validate_reservation_memo_text,
+    validate_room_capacity,
+    validate_room_location,
+    validate_room_name,
+)
+
+
+MAX_ROOM_RESOURCES = 20
 
 
 class RoomBookingError(Exception):
@@ -138,7 +151,7 @@ class RoomService:
 
         if status["is_restricted"]:
             room_active = len(self.booking_repo.get_quota_active_by_user(current_user.id))
-            if room_active >= 1:
+            if room_active >= MAX_RESTRICTED_ROOM_BOOKINGS:
                 raise RoomBookingError(
                     "패널티로 인해 추가 예약이 불가합니다."
                 )
@@ -171,6 +184,32 @@ class RoomService:
                 "해당 시간대에 회의실 점검 일정이 있습니다. 다른 시간을 선택해주세요."
             )
 
+    def _validate_maintenance_time(self, start_time, end_time):
+        valid, error, _ = validate_maintenance_dates(
+            start_time.date(), end_time.date(), self.clock.now()
+        )
+        if not valid:
+            raise RoomBookingError(error)
+        return build_maintenance_period(start_time.date(), end_time.date())
+
+    def _get_non_terminal_room_booking_conflicts(self, room_id, start_time, end_time):
+        blocking_statuses = {
+            RoomBookingStatus.PENDING,
+            RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
+            RoomBookingStatus.CHECKED_IN,
+            RoomBookingStatus.CHECKOUT_REQUESTED,
+        }
+        conflicts = []
+        for booking in self.booking_repo.get_by_room(room_id):
+            if booking.status not in blocking_statuses:
+                continue
+            booking_start = datetime.fromisoformat(booking.start_time)
+            booking_end = datetime.fromisoformat(booking.end_time)
+            if not (end_time <= booking_start or start_time >= booking_end):
+                conflicts.append(booking)
+        return conflicts
+
     def create_maintenance_schedule(self, admin, room_id, start_time, end_time, reason=""):
         admin = self._get_existing_admin(admin)
         try:
@@ -185,12 +224,20 @@ class RoomService:
                 if room is None:
                     raise RoomBookingError("존재하지 않는 회의실입니다.")
 
-                start_time, end_time = self._validate_booking_time(start_time, end_time)
+                start_time, end_time = self._validate_maintenance_time(start_time, end_time)
                 conflicts = self.maintenance_repo.get_conflicting(
                     room_id, start_time.isoformat(), end_time.isoformat()
                 )
                 if conflicts:
                     raise RoomBookingError("해당 시간대에 이미 점검 일정이 있습니다.")
+
+                booking_conflicts = self._get_non_terminal_room_booking_conflicts(
+                    room_id, start_time, end_time
+                )
+                if booking_conflicts:
+                    raise RoomBookingError(
+                        "해당 기간에 겹치는 예약이 있어 점검 일정을 생성할 수 없습니다."
+                    )
 
                 schedule = RoomMaintenanceSchedule(
                     id=generate_id(),
@@ -198,29 +245,9 @@ class RoomService:
                     start_time=start_time.isoformat(),
                     end_time=end_time.isoformat(),
                     reason=reason,
+                    status="scheduled",
                 )
                 self.maintenance_repo.add(schedule)
-
-                cancelled_bookings = []
-                for booking in self.booking_repo.get_confirmed_conflicting(
-                    room_id, start_time.isoformat(), end_time.isoformat()
-                ):
-                    booking_start = datetime.fromisoformat(booking.start_time)
-                    if booking_start <= self.clock.now():
-                        raise RoomBookingError(
-                            "이미 시작된 예약과 겹치는 점검 일정은 생성할 수 없습니다."
-                        )
-                    booking_user = self.user_repo.get_by_id(booking.user_id)
-                    if booking_user is None:
-                        raise RoomBookingError("존재하지 않는 사용자입니다.")
-                    updated_booking = replace(
-                        booking,
-                        status=RoomBookingStatus.ADMIN_CANCELLED,
-                        cancelled_at=now_iso(),
-                        updated_at=now_iso(),
-                    )
-                    self.booking_repo.update(updated_booking)
-                    cancelled_bookings.append(updated_booking)
 
                 self.audit_repo.log_action(
                     actor_id=admin.id,
@@ -229,7 +256,7 @@ class RoomService:
                     target_id=schedule.id,
                     details=(
                         f"회의실: {room.name}, 기간: {start_time} ~ {end_time}, "
-                        f"사유: {reason}, 취소된 예약: {len(cancelled_bookings)}건"
+                        f"사유: {reason}"
                     ),
                 )
                 return schedule
@@ -248,7 +275,22 @@ class RoomService:
                 if schedule is None:
                     raise RoomBookingError("존재하지 않는 점검 일정입니다.")
 
-                self.maintenance_repo.delete(schedule_id)
+                if schedule.status in {"completed", "cancelled"}:
+                    raise RoomBookingError("이미 종료되었거나 취소된 점검 일정입니다.")
+                room = self.room_repo.get_by_id(schedule.room_id)
+                if room is None:
+                    raise RoomBookingError("존재하지 않는 회의실입니다.")
+                cancelled = replace(
+                    schedule,
+                    status="cancelled",
+                    cancelled_at=now_iso(),
+                    updated_at=now_iso(),
+                )
+                self.maintenance_repo.update(cancelled)
+                if schedule.status == "active" and room.status == ResourceStatus.MAINTENANCE:
+                    self.room_repo.update(
+                        replace(room, status=ResourceStatus.AVAILABLE, updated_at=now_iso())
+                    )
                 self.audit_repo.log_action(
                     actor_id=admin.id,
                     action="cancel_room_maintenance",
@@ -256,7 +298,7 @@ class RoomService:
                     target_id=schedule_id,
                     details=f"사유: {reason}",
                 )
-                return schedule
+                return cancelled
 
     def _require_current_boundary(self, boundary_time, action_name):
         current_time = self.clock.now()
@@ -271,7 +313,11 @@ class RoomService:
 
     def _require_end_request_window(self, booking):
         end_time = datetime.fromisoformat(booking.end_time)
-        self._require_current_boundary(end_time, "퇴실 요청")
+        current_time = self.clock.now()
+        if current_time > end_time:
+            raise RoomBookingError(
+                f"퇴실 요청은 예약 종료 시점({end_time.strftime('%Y-%m-%d %H:%M')}) 이전 또는 해당 시점에서만 가능합니다."
+            )
 
     def _is_late_cancel(self, booking, current_time=None):
         if current_time is None:
@@ -332,8 +378,22 @@ class RoomService:
                 available.append(room)
         return available
 
+    def _is_eighteen_next_day_request(self, start_time):
+        current_time = self.clock.now()
+        return (
+            current_time.hour == FIXED_BOOKING_END_HOUR
+            and current_time.minute == FIXED_BOOKING_END_MINUTE
+            and start_time.date() == (current_time + timedelta(days=1)).date()
+        )
+
+    def _reject_eighteen_next_day_conflict(self, start_time, conflicts):
+        if conflicts and self._is_eighteen_next_day_request(start_time):
+            raise RoomBookingError(
+                "18:00 다음날 예약은 선착순 예외 정책에 따라 이후 동일 자원/기간 요청이 거부됩니다."
+            )
+
     def create_daily_booking(
-        self, user, room_id, start_date, end_date, attendee_count, max_active=1, memo=""
+        self, user, room_id, start_date, end_date, attendee_count, max_active=MAX_ACTIVE_ROOM_BOOKINGS, memo=""
     ):
         with global_lock():
             self._run_policy_checks()
@@ -373,6 +433,7 @@ class RoomService:
                 conflicts = self.booking_repo.get_confirmed_conflicting(
                     room_id, start_time.isoformat(), end_time.isoformat()
                 )
+                self._reject_eighteen_next_day_conflict(start_time, conflicts)
 
                 self._ensure_no_room_maintenance(room_id, start_time, end_time)
                 validate_reservation_memo_text(memo)
@@ -552,6 +613,7 @@ class RoomService:
                 conflicts = self.booking_repo.get_confirmed_conflicting(
                     room_id, start_time.isoformat(), end_time.isoformat()
                 )
+                self._reject_eighteen_next_day_conflict(start_time, conflicts)
 
                 self._ensure_no_room_maintenance(room_id, start_time, end_time)
                 validate_reservation_memo_text(memo)
@@ -683,6 +745,22 @@ class RoomService:
 
                 return updated
 
+
+    def _promote_waitlist_for_cancelled_booking(self, booking, actor_id):
+        from src.domain.policy_service import PolicyService
+
+        return PolicyService(
+            user_repo=self.user_repo,
+            room_repo=self.room_repo,
+            room_booking_repo=self.booking_repo,
+            equipment_booking_repo=self.equipment_booking_repo,
+            penalty_repo=self.penalty_service.penalty_repo,
+            audit_repo=self.audit_repo,
+            room_maintenance_repo=self.maintenance_repo,
+            penalty_service=self.penalty_service,
+            clock=self.clock,
+        ).promote_room_waitlist_for_booking(booking, actor_id=actor_id)
+
     def cancel_booking(self, user, booking_id):
         """
         예약 취소 (사용자)
@@ -719,6 +797,7 @@ class RoomService:
                     target_id=booking_id,
                     details="사용자 취소",
                 )
+                self._promote_waitlist_for_cancelled_booking(booking, actor_id=user.id)
 
                 return updated, impact.is_late_cancel
 
@@ -760,6 +839,7 @@ class RoomService:
                     target_id=booking_id,
                     details=f"사유: {reason}",
                 )
+                self._promote_waitlist_for_cancelled_booking(booking, actor_id=admin.id)
 
                 return updated
 
@@ -1107,21 +1187,13 @@ class RoomService:
             upcoming_bookings.sort(key=lambda item: item.start_time)
 
             if current_bookings:
-                primary = current_bookings[0]
                 operational_status = "사용중"
-                reservation_summary = self._format_overview_summary(
-                    primary.start_time,
-                    primary.end_time,
-                    len(current_bookings),
-                )
+                display_bookings = current_bookings + upcoming_bookings
+                display_bookings.sort(key=lambda item: item.start_time)
+                reservation_summary = self._format_overview_summary(display_bookings)
             elif upcoming_bookings:
-                primary = upcoming_bookings[0]
                 operational_status = "예약있음"
-                reservation_summary = self._format_overview_summary(
-                    primary.start_time,
-                    primary.end_time,
-                    len(upcoming_bookings),
-                )
+                reservation_summary = self._format_overview_summary(upcoming_bookings)
             else:
                 operational_status = "예약없음"
                 reservation_summary = "X"
@@ -1138,17 +1210,131 @@ class RoomService:
 
         return overview
 
-    def _format_overview_summary(self, start_time, end_time, booking_count):
-        start_dt = datetime.fromisoformat(start_time)
-        end_dt = datetime.fromisoformat(end_time)
-        summary = f"{start_dt.strftime('%Y-%m-%d')} ~ {end_dt.strftime('%Y-%m-%d')}"
-        if booking_count > 1:
-            summary += f" 외 {booking_count - 1}건"
-        return summary
+    def _format_overview_summary(self, bookings):
+        ranges = []
+        for booking in bookings:
+            start_dt = datetime.fromisoformat(booking.start_time)
+            end_dt = datetime.fromisoformat(booking.end_time)
+            ranges.append(
+                f"{start_dt.strftime('%Y-%m-%d')} ~ {end_dt.strftime('%Y-%m-%d')}"
+            )
+        return "\n".join(ranges)
 
     def get_room_bookings(self, room_id):
         """회의실별 예약 조회"""
         return self.booking_repo.get_by_room(room_id)
+
+    def _has_active_or_future_room_bookings(self, room_id):
+        now = self.clock.now()
+        blocking_statuses = {
+            RoomBookingStatus.PENDING,
+            RoomBookingStatus.RESERVED,
+            RoomBookingStatus.CHECKIN_REQUESTED,
+            RoomBookingStatus.CHECKED_IN,
+            RoomBookingStatus.CHECKOUT_REQUESTED,
+        }
+        for booking in self.booking_repo.get_by_room(room_id):
+            if booking.status not in blocking_statuses:
+                continue
+            if datetime.fromisoformat(booking.end_time) > now:
+                return True
+        return False
+
+    def _has_active_room_maintenance(self, room_id):
+        return any(
+            schedule.status in {"scheduled", "active"}
+            for schedule in self.maintenance_repo.get_by_room(room_id)
+        )
+
+    def _ensure_room_resource_editable(self, room):
+        if room.status != ResourceStatus.AVAILABLE:
+            raise RoomBookingError("사용 가능한 회의실만 수정 또는 삭제할 수 있습니다.")
+        if self._has_active_or_future_room_bookings(room.id):
+            raise RoomBookingError("활성 또는 미래 예약이 있는 회의실은 수정 또는 삭제할 수 없습니다.")
+        if self._has_active_room_maintenance(room.id):
+            raise RoomBookingError("예정 또는 진행 중인 점검 일정이 있는 회의실은 수정 또는 삭제할 수 없습니다.")
+
+    def add_room_resource(self, admin, name, capacity, location, description=""):
+        admin = self._get_existing_admin(admin)
+        try:
+            capacity = int(capacity)
+            validate_room_name(name)
+            validate_room_capacity(capacity)
+            validate_room_location(location)
+        except (TypeError, ValueError) as error:
+            raise RoomBookingError(str(error)) from error
+
+        with global_lock(), UnitOfWork():
+            rooms = self.room_repo.get_all()
+            if len(rooms) >= MAX_ROOM_RESOURCES:
+                raise RoomBookingError("회의실은 최대 20개까지 등록할 수 있습니다.")
+            if any(room.name == name for room in rooms):
+                raise RoomBookingError("이미 등록된 회의실 이름입니다.")
+
+            room = Room(
+                id=name,
+                name=name,
+                capacity=capacity,
+                location=location,
+                status=ResourceStatus.AVAILABLE,
+                description=description or "자원관리",
+            )
+            self.room_repo.add(room)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="add_room_resource",
+                target_type="room",
+                target_id=room.id,
+                details=f"회의실 추가: {room.name}",
+            )
+            return room
+
+    def edit_room_resource(self, admin, room_id, capacity, location):
+        admin = self._get_existing_admin(admin)
+        try:
+            capacity = int(capacity)
+            validate_room_capacity(capacity)
+            validate_room_location(location)
+        except (TypeError, ValueError) as error:
+            raise RoomBookingError(str(error)) from error
+
+        with global_lock(), UnitOfWork():
+            room = self.room_repo.get_by_id(room_id)
+            if room is None:
+                raise RoomBookingError("존재하지 않는 회의실입니다.")
+            self._ensure_room_resource_editable(room)
+            updated_room = replace(
+                room,
+                capacity=capacity,
+                location=location,
+                updated_at=now_iso(),
+            )
+            self.room_repo.update(updated_room)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="edit_room_resource",
+                target_type="room",
+                target_id=room.id,
+                details=f"수정: {capacity}명, {location}",
+            )
+            return updated_room
+
+    def delete_room_resource(self, admin, room_id):
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            room = self.room_repo.get_by_id(room_id)
+            if room is None:
+                raise RoomBookingError("존재하지 않는 회의실입니다.")
+            self._ensure_room_resource_editable(room)
+            self.room_repo.delete(room_id)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="delete_room_resource",
+                target_type="room",
+                target_id=room.id,
+                details=f"회의실 삭제: {room.name}",
+            )
+            return room
 
     def update_room_status(self, admin, room_id, new_status):
         admin = self._get_existing_admin(admin)
