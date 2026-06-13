@@ -1,8 +1,10 @@
+from datetime import datetime
 from src.cli.guest_menu import GuestMenu
 from src.cli.admin_menu import AdminMenu
 from src.domain.penalty_service import PenaltyError
 from src.domain.room_service import RoomBookingError, RoomOperationalOverview
-from src.domain.models import UserRole, EquipmentBookingStatus
+from src.domain.models import UserRole, EquipmentBookingStatus, RoomBooking, RoomBookingStatus
+from src.storage.file_lock import global_lock
 
 
 class TestGuestMenuPolicyChecks:
@@ -28,10 +30,10 @@ class TestGuestMenuPolicyChecks:
     def test_login_handles_penalty_error_from_status_lookup(
         self, monkeypatch, auth_service, policy_service
     ):
-        user = auth_service.signup("guestuser", "pass1234")
+        user = auth_service.signup("Guestuser1", "pass1234")
         menu = GuestMenu(auth_service=auth_service, policy_service=policy_service)
 
-        inputs = iter(["guestuser", "pass1234"])
+        inputs = iter(["1", "Guestuser1", "pass1234"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
         monkeypatch.setattr(menu, "_run_policy_checks", lambda: True)
         monkeypatch.setattr(
@@ -79,7 +81,7 @@ class TestAdminMenuPolicyChecks:
             "run_all_checks",
             lambda: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
         )
-        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: print("0. 돌아가기"))
         messages = []
         monkeypatch.setattr("src.cli.admin_menu.print_error", messages.append)
 
@@ -109,7 +111,7 @@ class TestAdminMenuPolicyChecks:
         )
 
         monkeypatch.setattr(menu.auth_service, "is_admin", lambda user: False)
-        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: print("0. 돌아가기"))
         messages = []
         monkeypatch.setattr("src.cli.admin_menu.print_error", messages.append)
 
@@ -260,7 +262,7 @@ class TestAdminMenuPolicyChecks:
                     capacity=4,
                     location="1층",
                     operational_status="예약있음",
-                    reservation_summary="2026-06-15 ~ 2026-06-15 외 1건",
+                    reservation_summary="2026-06-15 ~ 2026-06-15\n2026-06-16 ~ 2026-06-17",
                 ),
                 RoomOperationalOverview(
                     room_name="회의실4B",
@@ -271,20 +273,127 @@ class TestAdminMenuPolicyChecks:
                 ),
             ],
         )
-        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+        monkeypatch.setattr("src.cli.admin_menu.pause", lambda: print("0. 돌아가기"))
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda title: print(title))
 
         menu._show_all_room_bookings()
 
         output = capsys.readouterr().out
         assert "이름" in output
+        assert "수용인원" in output
+        assert "위치" in output
         assert "현황" in output
         assert "예약일" in output
         assert "회의실4A" in output
         assert "예약있음" in output
-        assert "외 1건" in output
+        assert "2026-06-15 ~ 2026-06-15" in output
+        assert "2026-06-16 ~ 2026-06-17" in output
+        assert "외" not in output
         assert "회의실4B" in output
         assert "예약없음" in output
+        assert "X" in output
+        assert output.count("0. 돌아가기") == 1
+
+    def test_show_all_room_bookings_with_real_repos_renders_overview_without_writes(
+        self,
+        monkeypatch,
+        auth_service,
+        room_service,
+        equipment_service,
+        penalty_service,
+        policy_service,
+        create_test_user,
+        create_test_room,
+        temp_data_dir,
+        mock_now,
+        capsys,
+    ):
+        admin = create_test_user(role=UserRole.ADMIN)
+        menu = AdminMenu(
+            user=admin,
+            auth_service=auth_service,
+            room_service=room_service,
+            equipment_service=equipment_service,
+            penalty_service=penalty_service,
+            policy_service=policy_service,
+        )
+        fixed_time = datetime(2026, 6, 13, 10, 0, 0)
+
+        with mock_now(fixed_time):
+            user = create_test_user(username="room_user")
+            room_in_use = create_test_room(name="회의실6B", capacity=6, location="2층")
+            room_reserved = create_test_room(name="회의실6C", capacity=6, location="2층")
+            room_empty = create_test_room(name="회의실4A", capacity=4, location="1층")
+            with global_lock():
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="menu-current-room-booking",
+                        user_id=user.id,
+                        room_id=room_in_use.id,
+                        start_time=fixed_time.replace(hour=9).isoformat(),
+                        end_time=fixed_time.replace(hour=18).isoformat(),
+                        status=RoomBookingStatus.CHECKED_IN,
+                    )
+                )
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="menu-current-room-future-booking",
+                        user_id=user.id,
+                        room_id=room_in_use.id,
+                        start_time=fixed_time.replace(day=15, hour=9).isoformat(),
+                        end_time=fixed_time.replace(day=15, hour=18).isoformat(),
+                        status=RoomBookingStatus.RESERVED,
+                    )
+                )
+                room_service.booking_repo.add(
+                    RoomBooking(
+                        id="menu-reserved-room-future-booking",
+                        user_id=user.id,
+                        room_id=room_reserved.id,
+                        start_time=fixed_time.replace(day=14, hour=9).isoformat(),
+                        end_time=fixed_time.replace(day=14, hour=18).isoformat(),
+                        status=RoomBookingStatus.RESERVED,
+                    )
+                )
+
+            watched_files = [
+                temp_data_dir / "users.txt",
+                temp_data_dir / "rooms.txt",
+                temp_data_dir / "room_bookings.txt",
+                temp_data_dir / "audit_log.txt",
+            ]
+            before = {
+                path.name: path.read_text(encoding="utf-8") if path.exists() else None
+                for path in watched_files
+            }
+            monkeypatch.setattr("src.cli.admin_menu.pause", lambda: print("0. 돌아가기"))
+            monkeypatch.setattr("src.cli.admin_menu.print_header", lambda title: print(title))
+
+            menu._show_all_room_bookings()
+
+            after = {
+                path.name: path.read_text(encoding="utf-8") if path.exists() else None
+                for path in watched_files
+            }
+
+        output = capsys.readouterr().out
+        assert "이름" in output
+        assert "수용인원" in output
+        assert "위치" in output
+        assert "현황" in output
+        assert "예약일" in output
+        assert "회의실6B" in output
+        assert "사용중" in output
+        assert "2026-06-13 ~ 2026-06-13" in output
+        assert "2026-06-15 ~ 2026-06-15" in output
+        assert "회의실6C" in output
+        assert "예약있음" in output
+        assert "2026-06-14 ~ 2026-06-14" in output
+        assert room_empty.name in output
+        assert "예약없음" in output
+        assert "X" in output
+        assert output.count("0. 돌아가기") == 1
+        assert before == after
 
     def test_equipment_checkout_handles_stale_booking_owner(
         self,
@@ -315,6 +424,7 @@ class TestAdminMenuPolicyChecks:
         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
         monkeypatch.setattr("src.cli.admin_menu.print_info", lambda *_: None)
+        monkeypatch.setattr("src.cli.admin_menu.review_action", lambda *_: "confirm")
         messages = []
         monkeypatch.setattr("src.cli.admin_menu.print_error", messages.append)
 
@@ -368,6 +478,7 @@ class TestAdminMenuPolicyChecks:
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
         monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
         monkeypatch.setattr("src.cli.admin_menu.print_info", lambda *_: None)
+        monkeypatch.setattr("src.cli.admin_menu.review_action", lambda *_: "confirm")
         messages = []
         monkeypatch.setattr("src.cli.admin_menu.print_error", messages.append)
 

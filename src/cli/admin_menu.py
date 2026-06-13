@@ -34,7 +34,7 @@ from src.config import (
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
 )
-from src.cli.menu import confirm, pause, select_from_list
+from src.cli.menu import confirm, input_start_gate, pause, review_action, select_from_list
 from src.cli.clock_menu import ClockMenu
 from src.cli.formatters import (
     print_header,
@@ -107,6 +107,11 @@ class AdminMenu:
         )
         print("  예약 시작일은 내일부터 최대 180일, 예약 기간은 최대 14일입니다.")
 
+    def _print_review_rows(self, rows):
+        print_subheader("입력 내용 확인")
+        for label, value in rows:
+            print(f"  {label}: {value}")
+
     def _refresh_admin(self):
         try:
             self.user = self.auth_service.get_user(self.user.id)
@@ -172,27 +177,25 @@ class AdminMenu:
             print("  4. 회의실 퇴실 승인 처리")
             print("  5. 회의실 예약 변경 (관리자)")
             print("  6. 회의실 예약 취소 (관리자)")
-            print("  20. 회의실 점검 일정 생성")
-            print("  21. 회의실 점검 일정 취소")
+            print("  7. 회의실 수정 (관리자)")
 
             print("\n[장비 관리]")
-            print("  7. 전체 장비 예약 조회")
-            print("  8. 장비 목록 조회 및 상태 변경")
-            print("  9. 장비 대여 시작 처리")
-            print("  10. 장비 반납 승인 처리")
-            print("  11. 장비 예약 변경 (관리자)")
-            print("  12. 장비 예약 취소 (관리자)")
-            print("  22. 장비 미래 상태 예약")
-            print("  23. 장비 미래 상태 예약 취소")
+            print("  8. 전체 장비 예약 조회")
+            print("  9. 장비 목록 조회 및 상태 변경")
+            print("  10. 장비 대여 시작 처리")
+            print("  11. 장비 반납 승인 처리")
+            print("  12. 장비 예약 변경 (관리자)")
+            print("  13. 장비 예약 취소 (관리자)")
 
             print("\n[사용자 관리]")
-            print("  13. 사용자 목록")
-            print("  14. 사용자 상세 조회")
-            print("  15. 파손/오염 패널티 부여")
-            print("  16. 예약 직전 취소 패널티 부여")
-            print("  17. 회의실 퇴실 지연 처리")
-            print("  18. 장비 반납 지연 처리")
-            print("  19. 운영 시계")
+            print("  14. 사용자 목록")
+            print("  15. 사용자 상세 조회")
+            print("  16. 파손/오염 패널티 부여")
+            print("  17. 예약 직전 취소 패널티 부여")
+            print("  18. 회의실 퇴실 지연 처리")
+            print("  19. 장비 반납 지연 처리")
+            print("  20. 운영 시계")
+            print("  기존 독립 점검/미래 상태 메뉴 번호는 잘못된 선택입니다.")
 
             print("\n  0. 로그아웃")
             print("-" * 50)
@@ -212,39 +215,33 @@ class AdminMenu:
             elif choice == "6":
                 self._admin_cancel_room_booking()
             elif choice == "7":
-                self._show_all_equipment_bookings()
+                self._manage_room_resources()
             elif choice == "8":
-                self._show_equipment_and_change_status()
+                self._show_all_equipment_bookings()
             elif choice == "9":
-                self._equipment_checkout()
+                self._show_equipment_and_change_status()
             elif choice == "10":
-                self._equipment_return()
+                self._equipment_checkout()
             elif choice == "11":
-                self._admin_modify_equipment_booking_time()
+                self._equipment_return()
             elif choice == "12":
-                self._admin_cancel_equipment_booking()
+                self._admin_modify_equipment_booking_time()
             elif choice == "13":
-                self._show_users()
+                self._admin_cancel_equipment_booking()
             elif choice == "14":
-                self._show_user_detail()
+                self._show_users()
             elif choice == "15":
-                self._apply_damage_penalty()
+                self._show_user_detail()
             elif choice == "16":
-                self._force_late_cancel_penalty()
+                self._apply_damage_penalty()
             elif choice == "17":
-                self._force_room_late_checkout()
+                self._force_late_cancel_penalty()
             elif choice == "18":
-                self._force_equipment_late_return()
+                self._force_room_late_checkout()
             elif choice == "19":
-                ClockMenu(self.policy_service, actor_id=self.user.id).run()
+                self._force_equipment_late_return()
             elif choice == "20":
-                self._create_room_maintenance()
-            elif choice == "21":
-                self._cancel_room_maintenance()
-            elif choice == "22":
-                self._schedule_equipment_future_status()
-            elif choice == "23":
-                self._cancel_equipment_future_status()
+                ClockMenu(self.policy_service, actor_id=self.user.id).run()
             elif choice == "0":
                 if confirm("로그아웃 하시겠습니까?"):
                     print_success("로그아웃 되었습니다.")
@@ -282,6 +279,109 @@ class AdminMenu:
         """회의실 목록 조회 및 상태 변경"""
         self._change_room_status()
 
+    def _manage_room_resources(self):
+        print_header("회의실 수정 (관리자)")
+        print("  1. 회의실 추가")
+        print("  2. 회의실 삭제")
+        print("  3. 회의실 수용인원/위치 수정")
+        print("  0. 취소")
+        choice = input("선택: ").strip()
+        if choice == "1":
+            self._add_room_resource()
+        elif choice == "2":
+            self._delete_room_resource()
+        elif choice == "3":
+            self._edit_room_resource()
+        elif choice == "0":
+            return
+        else:
+            print_error("잘못된 선택입니다.")
+            pause()
+
+    def _add_room_resource(self):
+        while True:
+            if not input_start_gate("회의실 추가 입력"):
+                return
+            name = input("회의실 이름: ").strip()
+            capacity_text = input("수용 인원: ").strip()
+            location = input("위치: ").strip()
+            self._print_review_rows([("회의실 이름", name), ("수용 인원", capacity_text), ("위치", location)])
+            decision = review_action("회의실 추가 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("회의실 추가를 취소했습니다.")
+                pause()
+                return
+        try:
+            room = self.room_service.add_room_resource(
+                self.user, name, capacity_text, location
+            )
+            print_success(f"회의실이 추가되었습니다: {room.name}")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _select_room_resource(self, prompt):
+        rooms = self.room_service.get_all_rooms()
+        if not rooms:
+            print_info("등록된 회의실이 없습니다.")
+            pause()
+            return None
+        return select_from_list(
+            [
+                (room.id, f"{room.name} ({room.capacity}명, {room.location}) {format_status_badge(room.status.value)}")
+                for room in rooms
+            ],
+            prompt,
+        )
+
+    def _delete_room_resource(self):
+        while True:
+            room_id = self._select_room_resource("삭제할 회의실 선택")
+            if not room_id:
+                return
+            self._print_review_rows([("회의실 ID", room_id[:8])])
+            decision = review_action("회의실 삭제 검토", "처리")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("회의실 삭제를 취소했습니다.")
+                pause()
+                return
+        try:
+            room = self.room_service.delete_room_resource(self.user, room_id)
+            print_success(f"회의실이 삭제되었습니다: {room.name}")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _edit_room_resource(self):
+        while True:
+            if not input_start_gate("회의실 수정 입력"):
+                return
+            room_id = self._select_room_resource("수정할 회의실 선택")
+            if not room_id:
+                return
+            capacity_text = input("새 수용 인원: ").strip()
+            location = input("새 위치: ").strip()
+            self._print_review_rows([("회의실 ID", room_id[:8]), ("새 수용 인원", capacity_text), ("새 위치", location)])
+            decision = review_action("회의실 수정 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("회의실 수정을 취소했습니다.")
+                pause()
+                return
+        try:
+            room = self.room_service.edit_room_resource(
+                self.user, room_id, capacity_text, location
+            )
+            print_success(f"회의실이 수정되었습니다: {room.name}")
+        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
     def _change_room_status(self):
         """회의실 상태 변경"""
         print_header("회의실 목록 조회 및 상태 변경")
@@ -297,6 +397,29 @@ class AdminMenu:
         ]
         room_id = select_from_list(items, "회의실 선택")
         if not room_id:
+            return
+
+        print("\n선택한 회의실 작업:")
+        print("  1. 상태 변경")
+        print("  2. 정기 점검")
+        print("  0. 취소")
+        action_choice = input("\n선택: ").strip()
+        if action_choice == "2":
+            active_schedules = [
+                schedule
+                for schedule in self.room_service.maintenance_repo.get_all()
+                if schedule.room_id == room_id and schedule.status in {"scheduled", "active"}
+            ]
+            if active_schedules:
+                self._cancel_room_maintenance(room_id)
+            else:
+                self._create_room_maintenance(room_id)
+            return
+        if action_choice == "0":
+            return
+        if action_choice != "1":
+            print_error("잘못된 선택입니다.")
+            pause()
             return
 
         print("\n변경할 상태:")
@@ -320,8 +443,14 @@ class AdminMenu:
 
         if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
             print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
-            if not confirm("계속하시겠습니까?"):
-                return
+        self._print_review_rows([("회의실 ID", room_id[:8]), ("새 상태", new_status.value)])
+        decision = review_action("회의실 상태 변경 검토", "처리")
+        if decision == "retry":
+            return self._change_room_status()
+        if decision == "cancel":
+            print_info("회의실 상태 변경을 취소했습니다.")
+            pause()
+            return
 
         try:
             room, cancelled = self.room_service.update_room_status(
@@ -351,18 +480,32 @@ class AdminMenu:
 
         headers = ["이름", "수용인원", "위치", "현황", "예약일"]
         rows = []
+        reservation_width = len("예약일")
         for item in overview:
+            reservation_lines = item.reservation_summary.splitlines() or ["X"]
+            reservation_width = max(
+                reservation_width, *(len(line) for line in reservation_lines)
+            )
             rows.append(
                 [
                     item.room_name,
                     f"{item.capacity}명",
                     item.location,
                     item.operational_status,
-                    item.reservation_summary,
+                    reservation_lines[0],
                 ]
             )
+            for reservation_line in reservation_lines[1:]:
+                rows.append(["", "", "", "", reservation_line])
 
-        print(format_table(headers, rows))
+        col_widths = [
+            min(max(len("이름"), *(len(str(row[0])) for row in rows)) + 2, 40),
+            min(max(len("수용인원"), *(len(str(row[1])) for row in rows)) + 2, 40),
+            min(max(len("위치"), *(len(str(row[2])) for row in rows)) + 2, 40),
+            min(max(len("현황"), *(len(str(row[3])) for row in rows)) + 2, 40),
+            reservation_width + 2,
+        ]
+        print(format_table(headers, rows, col_widths=col_widths))
 
         pause()
 
@@ -397,6 +540,14 @@ class AdminMenu:
 
         booking_id = select_from_list(items, "체크인할 예약 선택")
         if not booking_id:
+            return
+        self._print_review_rows([("예약 ID", booking_id[:8])])
+        decision = review_action("회의실 체크인 처리 검토", "처리")
+        if decision == "retry":
+            return self._room_checkin()
+        if decision == "cancel":
+            print_info("체크인 처리를 취소했습니다.")
+            pause()
             return
 
         try:
@@ -440,6 +591,14 @@ class AdminMenu:
         booking_id = select_from_list(items, "퇴실 승인할 예약 선택")
         if not booking_id:
             return
+        self._print_review_rows([("예약 ID", booking_id[:8])])
+        decision = review_action("회의실 퇴실 승인 검토", "처리")
+        if decision == "retry":
+            return self._room_checkout()
+        if decision == "cancel":
+            print_info("퇴실 승인을 취소했습니다.")
+            pause()
+            return
 
         try:
             self.room_service.approve_checkout_request(self.user, booking_id)
@@ -482,6 +641,14 @@ class AdminMenu:
 
         booking_id = select_from_list(items, "퇴실 지연 처리할 예약 선택")
         if not booking_id:
+            return
+        self._print_review_rows([("예약 ID", booking_id[:8])])
+        decision = review_action("회의실 퇴실 지연 처리 검토", "처리")
+        if decision == "retry":
+            return self._force_room_late_checkout()
+        if decision == "cancel":
+            print_info("퇴실 지연 처리를 취소했습니다.")
+            pause()
             return
 
         try:
@@ -541,7 +708,13 @@ class AdminMenu:
         booking_type = (
             "room_booking" if any(b.id == booking_id for b in room_bookings) else "equipment_booking"
         )
-        if not confirm(f"{user.username}에게 직전 취소 패널티 2점을 부여하시겠습니까?"):
+        self._print_review_rows([("사용자", user.username), ("예약 ID", booking_id[:8]), ("패널티", "2점")])
+        decision = review_action("직전 취소 패널티 부여 검토", "처리")
+        if decision == "retry":
+            return self._force_late_cancel_penalty()
+        if decision == "cancel":
+            print_info("직전 취소 패널티 부여를 취소했습니다.")
+            pause()
             return
 
         try:
@@ -584,14 +757,25 @@ class AdminMenu:
                 )
             )
 
-        booking_id = select_from_list(items, "변경할 예약 선택")
-        if not booking_id:
-            return
+        while True:
+            if not input_start_gate("관리자 회의실 예약 변경 입력"):
+                return
+            booking_id = select_from_list(items, "변경할 예약 선택")
+            if not booking_id:
+                return
 
-        self._print_daily_booking_guide()
-        start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
-        if start_date is None or end_date is None:
-            return
+            self._print_daily_booking_guide()
+            start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
+            if start_date is None or end_date is None:
+                return
+            self._print_review_rows([("예약 ID", booking_id[:8]), ("새 기간", f"{start_date} ~ {end_date}")])
+            decision = review_action("관리자 회의실 예약 변경 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("예약 변경을 취소했습니다.")
+                pause()
+                return
 
         try:
             booking = self.room_service.admin_modify_daily_booking(
@@ -639,15 +823,23 @@ class AdminMenu:
         if not booking_id:
             return
 
-        reason = input("취소 사유: ").strip()
-        valid, error = validate_reason(reason)
-        if not valid:
-            print_error(error)
-            pause()
-            return
-
-        if not confirm("정말 취소하시겠습니까?"):
-            return
+        while True:
+            if not input_start_gate("관리자 회의실 예약 취소 입력"):
+                return
+            reason = input("취소 사유: ").strip()
+            valid, error = validate_reason(reason)
+            if not valid:
+                print_error(error)
+                pause()
+                return
+            self._print_review_rows([("예약 ID", booking_id[:8]), ("취소 사유", reason or "-")])
+            decision = review_action("관리자 회의실 예약 취소 검토", "처리")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("예약 취소를 취소했습니다.")
+                pause()
+                return
 
         try:
             self.room_service.admin_cancel_booking(self.user, booking_id, reason)
@@ -697,6 +889,40 @@ class AdminMenu:
             pause()
             return
 
+        headers = ["ID", "이름", "종류", "시리얼번호", "상태"]
+        rows = [
+            [
+                item.id[:8],
+                item.name,
+                item.asset_type,
+                item.serial_number,
+                format_status_badge(item.status.value),
+            ]
+            for item in equipment_list
+        ]
+        print(format_table(headers, rows))
+        print("\n  1. 현재 시점 상태 변경")
+        print("  2. 미래 날짜 상태 예약")
+        print("  3. 미래 상태 예약 취소")
+        print("\n  +. 편집")
+        print("  0. 취소")
+        first_choice = input("\n선택: ").strip()
+        if first_choice == "+":
+            self._manage_equipment_resources()
+            return
+        if first_choice == "2":
+            self._schedule_equipment_future_status()
+            return
+        if first_choice == "3":
+            self._cancel_equipment_future_status()
+            return
+        if first_choice == "0":
+            return
+        if first_choice != "1":
+            print_error("잘못된 선택입니다.")
+            pause()
+            return
+
         items = [
             (e.id, f"{e.name} ({e.asset_type}) {format_status_badge(e.status.value)}")
             for e in equipment_list
@@ -726,8 +952,14 @@ class AdminMenu:
 
         if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
             print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
-            if not confirm("계속하시겠습니까?"):
-                return
+        self._print_review_rows([("장비 ID", equipment_id[:8]), ("새 상태", new_status.value)])
+        decision = review_action("장비 상태 변경 검토", "처리")
+        if decision == "retry":
+            return self._change_equipment_status()
+        if decision == "cancel":
+            print_info("장비 상태 변경을 취소했습니다.")
+            pause()
+            return
 
         try:
             equip, cancelled = self.equipment_service.update_equipment_status(
@@ -746,6 +978,130 @@ class AdminMenu:
         ) as e:
             print_error(str(e))
 
+        pause()
+
+    def _manage_equipment_resources(self):
+        print_header("장비 편집")
+        print("  1. 장비 이름 수정")
+        print("  2. 장비 삭제")
+        print("  3. 장비 추가")
+        print("  0. 취소")
+        choice = input("선택: ").strip()
+        if choice == "1":
+            self._edit_equipment_resource()
+        elif choice == "2":
+            self._delete_equipment_resource()
+        elif choice == "3":
+            self._add_equipment_resource()
+        elif choice == "0":
+            return
+        else:
+            print_error("잘못된 선택입니다.")
+            pause()
+
+    def _select_equipment_resource(self, prompt):
+        equipment_list = self.equipment_service.get_all_equipment()
+        if not equipment_list:
+            print_info("등록된 장비가 없습니다.")
+            pause()
+            return None
+        return select_from_list(
+            [
+                (item.id, f"{item.name} ({item.asset_type}, S/N: {item.serial_number}) {format_status_badge(item.status.value)}")
+                for item in equipment_list
+            ],
+            prompt,
+        )
+
+    def _edit_equipment_resource(self):
+        while True:
+            if not input_start_gate("장비 이름 수정 입력"):
+                return
+            equipment_id = self._select_equipment_resource("수정할 장비 선택")
+            if not equipment_id:
+                return
+            name = input("새 장비 이름: ").strip()
+            self._print_review_rows([("장비 ID", equipment_id[:8]), ("새 이름", name)])
+            decision = review_action("장비 이름 수정 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("장비 이름 수정을 취소했습니다.")
+                pause()
+                return
+        try:
+            equipment = self.equipment_service.edit_equipment_resource_name(
+                self.user, equipment_id, name
+            )
+            print_success(f"장비 이름이 수정되었습니다: {equipment.name}")
+        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _delete_equipment_resource(self):
+        while True:
+            equipment_id = self._select_equipment_resource("삭제할 장비 선택")
+            if not equipment_id:
+                return
+            self._print_review_rows([("장비 ID", equipment_id[:8])])
+            decision = review_action("장비 삭제 검토", "처리")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("장비 삭제를 취소했습니다.")
+                pause()
+                return
+        try:
+            equipment = self.equipment_service.delete_equipment_resource(
+                self.user, equipment_id
+            )
+            print_success(f"장비가 삭제되었습니다: {equipment.name}")
+        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
+        pause()
+
+    def _add_equipment_resource(self):
+        while True:
+            if not input_start_gate("장비 추가 입력"):
+                return
+            equipment_list = self.equipment_service.get_all_equipment()
+            existing_types = sorted({item.asset_type for item in equipment_list})
+            print("\n장비 종류:")
+            for index, asset_type in enumerate(existing_types, 1):
+                print(f"  {index}. {asset_type}")
+            print("  +. 직접 입력")
+            print("  0. 취소")
+            type_choice = input("종류 선택: ").strip()
+            if type_choice == "0":
+                return
+            if type_choice == "+":
+                asset_type = input("새 장비 종류: ").strip().lower()
+            else:
+                try:
+                    asset_type = existing_types[int(type_choice) - 1]
+                except (ValueError, IndexError):
+                    print_error("잘못된 선택입니다.")
+                    pause()
+                    return
+            name = input("장비 이름: ").strip()
+            description = input("설명 (선택): ").strip()
+            self._print_review_rows([("장비 이름", name), ("종류", asset_type), ("설명", description or "-")])
+            decision = review_action("장비 추가 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("장비 추가를 취소했습니다.")
+                pause()
+                return
+        try:
+            equipment = self.equipment_service.add_equipment_resource(
+                self.user, name, asset_type, description
+            )
+            print_success(
+                f"장비가 추가되었습니다: {equipment.name} / S/N: {equipment.serial_number}"
+            )
+        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+            print_error(str(e))
         pause()
 
     def _show_all_equipment_bookings(self):
@@ -818,6 +1174,14 @@ class AdminMenu:
         booking_id = select_from_list(items, "대여 시작할 예약 선택")
         if not booking_id:
             return
+        self._print_review_rows([("예약 ID", booking_id[:8])])
+        decision = review_action("장비 대여 시작 검토", "처리")
+        if decision == "retry":
+            return self._equipment_checkout()
+        if decision == "cancel":
+            print_info("장비 대여 시작을 취소했습니다.")
+            pause()
+            return
 
         try:
             self.equipment_service.checkout(self.user, booking_id)
@@ -864,6 +1228,14 @@ class AdminMenu:
 
         booking_id = select_from_list(items, "반납 승인할 예약 선택")
         if not booking_id:
+            return
+        self._print_review_rows([("예약 ID", booking_id[:8])])
+        decision = review_action("장비 반납 승인 검토", "처리")
+        if decision == "retry":
+            return self._equipment_return()
+        if decision == "cancel":
+            print_info("장비 반납 승인을 취소했습니다.")
+            pause()
             return
 
         try:
@@ -916,6 +1288,14 @@ class AdminMenu:
         booking_id = select_from_list(items, "반납 지연 처리할 예약 선택")
         if not booking_id:
             return
+        self._print_review_rows([("예약 ID", booking_id[:8])])
+        decision = review_action("장비 반납 지연 처리 검토", "처리")
+        if decision == "retry":
+            return self._force_equipment_late_return()
+        if decision == "cancel":
+            print_info("장비 반납 지연 처리를 취소했습니다.")
+            pause()
+            return
 
         try:
             _, delay_minutes = self.equipment_service.force_complete_return(
@@ -962,14 +1342,25 @@ class AdminMenu:
                 )
             )
 
-        booking_id = select_from_list(items, "변경할 예약 선택")
-        if not booking_id:
-            return
+        while True:
+            if not input_start_gate("관리자 장비 예약 변경 입력"):
+                return
+            booking_id = select_from_list(items, "변경할 예약 선택")
+            if not booking_id:
+                return
 
-        self._print_daily_booking_guide()
-        start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
-        if start_date is None or end_date is None:
-            return
+            self._print_daily_booking_guide()
+            start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
+            if start_date is None or end_date is None:
+                return
+            self._print_review_rows([("예약 ID", booking_id[:8]), ("새 기간", f"{start_date} ~ {end_date}")])
+            decision = review_action("관리자 장비 예약 변경 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("예약 변경을 취소했습니다.")
+                pause()
+                return
 
         try:
             booking = self.equipment_service.admin_modify_daily_booking(
@@ -1022,15 +1413,23 @@ class AdminMenu:
         if not booking_id:
             return
 
-        reason = input("취소 사유: ").strip()
-        valid, error = validate_reason(reason)
-        if not valid:
-            print_error(error)
-            pause()
-            return
-
-        if not confirm("정말 취소하시겠습니까?"):
-            return
+        while True:
+            if not input_start_gate("관리자 장비 예약 취소 입력"):
+                return
+            reason = input("취소 사유: ").strip()
+            valid, error = validate_reason(reason)
+            if not valid:
+                print_error(error)
+                pause()
+                return
+            self._print_review_rows([("예약 ID", booking_id[:8]), ("취소 사유", reason or "-")])
+            decision = review_action("관리자 장비 예약 취소 검토", "처리")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("예약 취소를 취소했습니다.")
+                pause()
+                return
 
         try:
             self.equipment_service.admin_cancel_booking(self.user, booking_id, reason)
@@ -1045,33 +1444,46 @@ class AdminMenu:
 
         pause()
 
-    def _create_room_maintenance(self):
+    def _create_room_maintenance(self, selected_room_id=None):
         print_header("회의실 점검 일정 생성")
         rooms = self.room_service.get_all_rooms()
         if not rooms:
             print_info("등록된 회의실이 없습니다.")
             pause()
             return
-        room_id = select_from_list(
-            [(room.id, f"{room.name} ({room.location})") for room in rooms],
-            "점검 회의실 선택",
-        )
-        if not room_id:
-            return
-        self._print_daily_booking_guide()
-        start_date, end_date = get_daily_date_range_input("점검 시작 날짜", "점검 종료 날짜")
-        if start_date is None or end_date is None:
-            return
-        reason = input("점검 사유 (선택, 20자 이하): ").strip()
-        valid, error = validate_reason(reason)
-        if not valid:
-            print_error(error)
-            pause()
-            return
+        while True:
+            if not input_start_gate("회의실 점검 일정 입력"):
+                return
+            room_id = selected_room_id
+            if room_id is None:
+                room_id = select_from_list(
+                    [(room.id, f"{room.name} ({room.location})") for room in rooms],
+                    "점검 회의실 선택",
+                )
+            if not room_id:
+                return
+            self._print_daily_booking_guide()
+            start_date, end_date = get_daily_date_range_input("점검 시작 날짜", "점검 종료 날짜")
+            if start_date is None or end_date is None:
+                return
+            reason = input("점검 사유 (선택, 20자 이하): ").strip()
+            valid, error = validate_reason(reason)
+            if not valid:
+                print_error(error)
+                pause()
+                return
+            self._print_review_rows([("회의실 ID", room_id[:8]), ("기간", f"{start_date} ~ {end_date}"), ("사유", reason or "-")])
+            decision = review_action("회의실 점검 일정 생성 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("회의실 점검 일정 생성을 취소했습니다.")
+                pause()
+                return
         try:
-            from src.domain.daily_booking_rules import build_daily_booking_period
+            from src.domain.daily_booking_rules import build_maintenance_period
 
-            start_time, end_time = build_daily_booking_period(start_date, end_date)
+            start_time, end_time = build_maintenance_period(start_date, end_date)
             schedule = self.room_service.create_maintenance_schedule(
                 self.user, room_id, start_time, end_time, reason
             )
@@ -1082,9 +1494,14 @@ class AdminMenu:
             print_error(str(e))
         pause()
 
-    def _cancel_room_maintenance(self):
+    def _cancel_room_maintenance(self, selected_room_id=None):
         print_header("회의실 점검 일정 취소")
-        schedules = self.room_service.maintenance_repo.get_all()
+        schedules = [
+            schedule
+            for schedule in self.room_service.maintenance_repo.get_all()
+            if schedule.status in {"scheduled", "active"}
+            and (selected_room_id is None or schedule.room_id == selected_room_id)
+        ]
         if not schedules:
             print_info("취소 가능한 점검 일정이 없습니다.")
             pause()
@@ -1097,16 +1514,23 @@ class AdminMenu:
         schedule_id = select_from_list(items, "취소할 점검 일정 선택")
         if not schedule_id:
             return
-        reason = input("취소 사유 (선택, 20자 이하): ").strip()
-        valid, error = validate_reason(reason)
-        if not valid:
-            print_error(error)
-            pause()
-            return
-        if not confirm("점검 일정을 취소하시겠습니까?"):
-            print_info("점검 일정 취소를 중단했습니다.")
-            pause()
-            return
+        while True:
+            if not input_start_gate("회의실 점검 일정 취소 입력"):
+                return
+            reason = input("취소 사유 (선택, 20자 이하): ").strip()
+            valid, error = validate_reason(reason)
+            if not valid:
+                print_error(error)
+                pause()
+                return
+            self._print_review_rows([("일정 ID", schedule_id[:8]), ("취소 사유", reason or "-")])
+            decision = review_action("회의실 점검 일정 취소 검토", "처리")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("점검 일정 취소를 중단했습니다.")
+                pause()
+                return
         try:
             cancelled = self.room_service.cancel_maintenance_schedule(self.user, schedule_id, reason)
             print_success("회의실 점검 일정이 취소되었습니다.")
@@ -1122,25 +1546,41 @@ class AdminMenu:
             print_info("등록된 장비가 없습니다.")
             pause()
             return
-        equipment_id = select_from_list(
-            [(item.id, f"{item.name} ({item.asset_type}, S/N: {item.serial_number})") for item in equipment_list],
-            "상태 예약 장비 선택",
-        )
-        if not equipment_id:
-            return
-        print("\n예약할 상태:")
-        print("  1. 점검중 (maintenance)")
-        print("  2. 사용불가 (disabled)")
-        choice = input("\n선택: ").strip()
-        status_map = {"1": ResourceStatus.MAINTENANCE, "2": ResourceStatus.DISABLED}
-        if choice not in status_map:
-            print_error("잘못된 선택입니다.")
-            pause()
-            return
-        self._print_daily_booking_guide()
-        start_date, end_date = get_daily_date_range_input("상태 시작 날짜", "상태 종료 날짜")
-        if start_date is None or end_date is None:
-            return
+        status_map = {
+            "1": ResourceStatus.AVAILABLE,
+            "2": ResourceStatus.MAINTENANCE,
+            "3": ResourceStatus.DISABLED,
+        }
+        while True:
+            if not input_start_gate("장비 미래 상태 예약 입력"):
+                return
+            equipment_id = select_from_list(
+                [(item.id, f"{item.name} ({item.asset_type}, S/N: {item.serial_number})") for item in equipment_list],
+                "상태 예약 장비 선택",
+            )
+            if not equipment_id:
+                return
+            print("\n예약할 상태:")
+            print("  1. 사용가능 (available)")
+            print("  2. 점검중 (maintenance)")
+            print("  3. 사용불가 (disabled)")
+            choice = input("\n선택: ").strip()
+            if choice not in status_map:
+                print_error("목록에 존재하는 번호를 입력해주세요.")
+                pause()
+                return
+            self._print_daily_booking_guide()
+            start_date, end_date = get_daily_date_range_input("상태 시작 날짜", "상태 종료 날짜")
+            if start_date is None or end_date is None:
+                return
+            self._print_review_rows([("장비 ID", equipment_id[:8]), ("상태", status_map[choice].value), ("기간", f"{start_date} ~ {end_date}")])
+            decision = review_action("장비 미래 상태 예약 검토", "저장")
+            if decision == "confirm":
+                break
+            if decision == "cancel":
+                print_info("장비 미래 상태 예약을 취소했습니다.")
+                pause()
+                return
         try:
             from src.domain.daily_booking_rules import build_daily_booking_period
 
@@ -1172,7 +1612,11 @@ class AdminMenu:
         if not selected:
             return
         equipment_id, schedule_id = selected.split("|", 1)
-        if not confirm("장비 미래 상태 예약을 취소하시겠습니까?"):
+        self._print_review_rows([("예약 ID", schedule_id[:8])])
+        decision = review_action("장비 미래 상태 예약 취소 검토", "처리")
+        if decision == "retry":
+            return self._cancel_equipment_future_status()
+        if decision == "cancel":
             print_info("장비 미래 상태 예약 취소를 중단했습니다.")
             pause()
             return
@@ -1333,6 +1777,7 @@ class AdminMenu:
         print("\n예약 유형:")
         print("  1. 회의실 예약")
         print("  2. 장비 예약")
+        print("  0. 돌아가기")
 
         type_choice = input("\n선택: ").strip()
 
@@ -1343,6 +1788,8 @@ class AdminMenu:
             elif type_choice == "2":
                 bookings = self.equipment_service.get_user_bookings(user.id)
                 booking_type = "equipment_booking"
+            elif type_choice == "0":
+                return
             else:
                 print_error("잘못된 선택입니다.")
                 pause()
@@ -1369,23 +1816,31 @@ class AdminMenu:
             return
 
         while True:
-            points_str = input("패널티 점수 (1~5): ").strip()
-            valid, points, error = validate_positive_int(points_str, 1, 5)
-            if valid and points is not None:
+            if not input_start_gate("파손/오염 패널티 입력"):
+                return
+            while True:
+                points_str = input("패널티 점수 (1~5): ").strip()
+                valid, points, error = validate_positive_int(points_str, 1, 5)
+                if valid and points is not None:
+                    break
+                print_error(error)
+
+            memo = input("사유: ").strip()
+            valid, error = validate_reason(memo)
+            if not valid:
+                print_error(error)
+                pause()
+                return
+            if not memo:
+                memo = "파손/오염"
+            self._print_review_rows([("사용자", user.username), ("예약 ID", booking_id[:8]), ("패널티", f"{points}점"), ("사유", memo)])
+            decision = review_action("파손/오염 패널티 부여 검토", "처리")
+            if decision == "confirm":
                 break
-            print_error(error)
-
-        memo = input("사유: ").strip()
-        valid, error = validate_reason(memo)
-        if not valid:
-            print_error(error)
-            pause()
-            return
-        if not memo:
-            memo = "파손/오염"
-
-        if not confirm(f"{user.username}에게 {points}점 패널티를 부여하시겠습니까?"):
-            return
+            if decision == "cancel":
+                print_info("파손/오염 패널티 부여를 취소했습니다.")
+                pause()
+                return
 
         try:
             penalty = self.penalty_service.apply_damage(
