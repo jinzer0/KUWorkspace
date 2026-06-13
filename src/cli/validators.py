@@ -3,9 +3,7 @@ CLI 입력 검증 유틸리티
 """
 
 from datetime import datetime
-
 import re
-from src.runtime_clock import get_current_time
 
 from src.domain.daily_booking_rules import validate_daily_booking_dates
 from src.domain.auth_rules import (
@@ -14,7 +12,6 @@ from src.domain.auth_rules import (
 )
 from src.domain.field_rules import validate_reason_text
 from src.runtime_clock import get_current_time
-
 
 
 def validate_positive_int(value_str, min_val=1, max_val=100):
@@ -26,10 +23,10 @@ def validate_positive_int(value_str, min_val=1, max_val=100):
     """
     value_str = value_str.strip()
 
-    try:
-        value = int(value_str)
-    except ValueError:
+    if not value_str.isdigit():
         return False, None, "숫자를 입력해주세요."
+
+    value = int(value_str)
 
     if value < min_val:
         return False, None, f"{min_val} 이상의 값을 입력해주세요."
@@ -61,16 +58,6 @@ def validate_password(password):
     Returns:
         (valid, error_message)
     """
-    if not isinstance(password, str):
-        return False, "비밀번호를 입력해주세요."
-
-    if any(ch in password for ch in (" ", "\t", "\n")):
-        return False, "비밀번호에 공백을 포함할 수 없습니다."
-
-    password = password.strip()
-    if not password:
-        return False, "비밀번호를 입력해주세요."
-
     return validate_auth_password(password)
 
 
@@ -293,13 +280,15 @@ def validate_reason(reason_str):
     """
     if not isinstance(reason_str, str):
         return False, "사유는 텍스트여야 합니다."
-
+    
+    # 앞뒤 공백 제거 (입력 후 strip 일반적 관례)
+    reason_str = reason_str.strip()
+    
     try:
         validate_reason_text(reason_str)
+        return True, ""
     except ValueError as error:
         return False, str(error)
-
-    return True, ""
 
 
 def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 날짜"):
@@ -329,7 +318,7 @@ def get_daily_date_range_input(start_prompt="시작 날짜", end_prompt="종료 
         print(f"  ✗ {error}")
 
 
-def get_positive_int_input(prompt, min_val=1, max_val=100, min_error_msg=None, max_error_msg=None):
+def get_positive_int_input(prompt, min_val=1, max_val=100):
     while True:
         value_str = input(f"{prompt}: ").strip()
         if value_str.lower() in ("q", "quit", "취소"):
@@ -338,14 +327,4 @@ def get_positive_int_input(prompt, min_val=1, max_val=100, min_error_msg=None, m
         valid, value, error = validate_positive_int(value_str, min_val, max_val)
         if valid:
             return value
-
-        try:
-            parsed = int(value_str)
-            if min_error_msg and parsed < min_val:
-                print(f"  ✗ {min_error_msg}")
-            elif max_error_msg and parsed > max_val:
-                print(f"  ✗ {max_error_msg}")
-            else:
-                print(f"  ✗ {error}")
-        except ValueError:
-            print(f"  ✗ {error}")
+        print(f"  ✗ {error}")

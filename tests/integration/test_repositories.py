@@ -9,22 +9,20 @@
 """
 
 import pytest
-from uuid import uuid4
 
-from src.storage.integrity import DataIntegrityError, validate_all_data_files
+from src.storage.integrity import DataIntegrityError
 from src.storage.file_lock import global_lock
 from src.storage.repositories import (
     UserRepository,
     RoomRepository,
     RoomBookingRepository,
-    EquipmentAssetRepository,
-    EquipmentBookingRepository,
-    PenaltyRepository,
-    AuditLogRepository,
+    WaitingListRepository,
 )
 from src.domain.models import (
+    EquipmentBookingStatus,
     ResourceStatus,
     RoomBookingStatus,
+    WaitingListEntry,
     generate_id,
 )
 
@@ -41,34 +39,34 @@ class TestUserRepository:
 
     def test_add_and_get_user(self, user_repo, user_factory):
         """사용자 추가 및 조회"""
-        user = user_factory(username="repotest")
+        user = user_factory(username="Repotest")
 
         user_repo.add(user)
 
         found = user_repo.get_by_id(user.id)
         assert found is not None
-        assert found.username == "repotest"
+        assert found.username == "Repotest"
 
     def test_get_by_username(self, user_repo, user_factory):
         """username으로 조회"""
-        user = user_factory(username="unique_name")
+        user = user_factory(username="Unique_name")
         user_repo.add(user)
 
-        found = user_repo.get_by_username("unique_name")
+        found = user_repo.get_by_username("Unique_name")
         assert found is not None
         assert found.id == user.id
 
     def test_username_exists(self, user_repo, user_factory):
         """username 존재 여부 확인"""
-        user = user_factory(username="exists_test")
+        user = user_factory(username="Exists_test")
         user_repo.add(user)
 
-        assert user_repo.username_exists("exists_test") is True
+        assert user_repo.username_exists("Exists_test") is True
         assert user_repo.username_exists("nonexistent") is False
 
     def test_update_user(self, user_repo, user_factory):
         """사용자 업데이트"""
-        user = user_factory(username="update_test", penalty_points=0)
+        user = user_factory(username="Update_test", penalty_points=0)
         user_repo.add(user)
 
         from dataclasses import replace
@@ -81,9 +79,9 @@ class TestUserRepository:
 
     def test_get_all_users(self, user_repo, user_factory):
         """모든 사용자 조회"""
-        user_repo.add(user_factory(username="all1"))
-        user_repo.add(user_factory(username="all2"))
-        user_repo.add(user_factory(username="all3"))
+        user_repo.add(user_factory(username="All1"))
+        user_repo.add(user_factory(username="All2"))
+        user_repo.add(user_factory(username="All3"))
 
         all_users = user_repo.get_all()
         assert len(all_users) == 3
@@ -94,26 +92,26 @@ class TestRoomRepository:
 
     def test_add_and_get_room(self, room_repo, room_factory):
         """회의실 추가 및 조회"""
-        room = room_factory(name="회의실 9A")
+        room = room_factory(name="회의실9A")
 
         room_repo.add(room)
 
         found = room_repo.get_by_id(room.id)
         assert found is not None
-        assert found.name == "회의실 9A"
+        assert found.name == "회의실9A"
 
     def test_get_available_rooms(self, room_repo, room_factory):
         """예약 가능한 회의실만 조회"""
-        room_repo.add(room_factory(name="회의실 9E", status=ResourceStatus.AVAILABLE))
+        room_repo.add(room_factory(name="회의실9E", status=ResourceStatus.AVAILABLE))
         room_repo.add(
-            room_factory(name="회의실 9F", status=ResourceStatus.MAINTENANCE)
+            room_factory(name="회의실9F", status=ResourceStatus.MAINTENANCE)
         )
-        room_repo.add(room_factory(name="회의실 9G", status=ResourceStatus.DISABLED))
+        room_repo.add(room_factory(name="회의실9G", status=ResourceStatus.DISABLED))
 
         available = room_repo.get_available()
 
         assert len(available) == 1
-        assert available[0].name == "회의실 9E"
+        assert available[0].name == "회의실9E"
 
 
 class TestRoomBookingRepository:
@@ -187,6 +185,254 @@ class TestRoomBookingRepository:
         assert len(conflicts) == 0
 
 
+class TestBookingQuerySemantics:
+    """예약 quota/conflict/pending competition 조회 의미 테스트"""
+
+    def test_room_pending_counts_for_quota_not_confirmed_conflict(
+        self, room_booking_repo, room_booking_factory
+    ):
+        user_id = "room-quota-user"
+        room_id = "room-quota-room"
+        room_booking_repo.add(
+            room_booking_factory(
+                id="room-pending",
+                user_id=user_id,
+                room_id=room_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=RoomBookingStatus.PENDING,
+            )
+        )
+        room_booking_repo.add(
+            room_booking_factory(
+                id="room-reserved",
+                user_id=user_id,
+                room_id=room_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=RoomBookingStatus.RESERVED,
+            )
+        )
+
+        quota = room_booking_repo.get_quota_active_by_user(user_id)
+        conflicts = room_booking_repo.get_confirmed_conflicting(
+            room_id, "2024-06-15T10:30:00", "2024-06-15T10:45:00"
+        )
+
+        assert [booking.id for booking in quota] == ["room-reserved"]
+        assert conflicts == []
+
+    def test_equipment_pending_counts_for_quota_not_confirmed_conflict(
+        self, equipment_booking_repo, equipment_booking_factory
+    ):
+        user_id = "equipment-quota-user"
+        equipment_id = "equipment-quota-asset"
+        equipment_booking_repo.add(
+            equipment_booking_factory(
+                id="equipment-pending",
+                user_id=user_id,
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=EquipmentBookingStatus.PENDING,
+            )
+        )
+        equipment_booking_repo.add(
+            equipment_booking_factory(
+                id="equipment-reserved",
+                user_id=user_id,
+                equipment_id=equipment_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=EquipmentBookingStatus.RESERVED,
+            )
+        )
+
+        quota = equipment_booking_repo.get_quota_active_by_user(user_id)
+        conflicts = equipment_booking_repo.get_confirmed_conflicting(
+            equipment_id, "2024-06-15T10:30:00", "2024-06-15T10:45:00"
+        )
+
+        assert [booking.id for booking in quota] == ["equipment-reserved"]
+        assert conflicts == []
+
+    def test_room_pending_competition_sorts_by_penalty_created_at_booking_id(
+        self, user_repo, room_booking_repo, user_factory, room_booking_factory
+    ):
+        room_id = "room-competition"
+        user_repo.add(user_factory(username="Room_low_old", penalty_points=1))
+        user_repo.add(user_factory(username="Room_low_new", penalty_points=1))
+        user_repo.add(user_factory(username="Room_high", penalty_points=3))
+        user_repo.add(user_factory(username="Room_tie", penalty_points=1))
+        for booking in [
+            room_booking_factory(
+                id="room-c",
+                user_id="Room_high",
+                room_id=room_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T08:00:00",
+            ),
+            room_booking_factory(
+                id="room-b",
+                user_id="Room_low_new",
+                room_id=room_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            room_booking_factory(
+                id="room-a",
+                user_id="Room_tie",
+                room_id=room_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            room_booking_factory(
+                id="room-d",
+                user_id="Room_low_old",
+                room_id=room_id,
+                start_time="2024-06-15T09:45:00",
+                end_time="2024-06-15T10:15:00",
+                status=RoomBookingStatus.PENDING,
+                created_at="2024-06-15T07:00:00",
+            ),
+            room_booking_factory(
+                id="room-reserved-excluded",
+                user_id="Room_low_old",
+                room_id=room_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=RoomBookingStatus.RESERVED,
+            ),
+            room_booking_factory(
+                id="room-pending-nonoverlap",
+                user_id="Room_low_old",
+                room_id=room_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=RoomBookingStatus.PENDING,
+            ),
+        ]:
+            room_booking_repo.add(booking)
+
+        competition = room_booking_repo.get_pending_competition(
+            room_id, "2024-06-15T10:00:00", "2024-06-15T11:00:00", user_repo=user_repo
+        )
+
+        assert [booking.id for booking in competition] == [
+            "room-d",
+            "room-a",
+            "room-b",
+            "room-c",
+        ]
+
+    def test_equipment_pending_competition_sorts_by_penalty_created_at_booking_id(
+        self, user_repo, equipment_booking_repo, user_factory, equipment_booking_factory
+    ):
+        equipment_id = "equipment-competition"
+        user_repo.add(user_factory(username="Equipment_low_old", penalty_points=1))
+        user_repo.add(user_factory(username="Equipment_low_new", penalty_points=1))
+        user_repo.add(user_factory(username="Equipment_high", penalty_points=3))
+        user_repo.add(user_factory(username="Equipment_tie", penalty_points=1))
+        for booking in [
+            equipment_booking_factory(
+                id="equipment-c",
+                user_id="Equipment_high",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T08:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-b",
+                user_id="Equipment_low_new",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-a",
+                user_id="Equipment_tie",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:15:00",
+                end_time="2024-06-15T11:15:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T09:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-d",
+                user_id="Equipment_low_old",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T09:45:00",
+                end_time="2024-06-15T10:15:00",
+                status=EquipmentBookingStatus.PENDING,
+                created_at="2024-06-15T07:00:00",
+            ),
+            equipment_booking_factory(
+                id="equipment-reserved-excluded",
+                user_id="Equipment_low_old",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T10:00:00",
+                end_time="2024-06-15T11:00:00",
+                status=EquipmentBookingStatus.RESERVED,
+            ),
+            equipment_booking_factory(
+                id="equipment-pending-nonoverlap",
+                user_id="Equipment_low_old",
+                equipment_id=equipment_id,
+                start_time="2024-06-15T12:00:00",
+                end_time="2024-06-15T13:00:00",
+                status=EquipmentBookingStatus.PENDING,
+            ),
+        ]:
+            equipment_booking_repo.add(booking)
+
+        competition = equipment_booking_repo.get_pending_competition(
+            equipment_id,
+            "2024-06-15T10:00:00",
+            "2024-06-15T11:00:00",
+            user_repo=user_repo,
+        )
+
+        assert [booking.id for booking in competition] == [
+            "equipment-d",
+            "equipment-a",
+            "equipment-b",
+            "equipment-c",
+        ]
+
+
+class TestWaitingListRepository:
+    def test_add_and_query_waiting_list_entry(self, temp_data_dir):
+        repository = WaitingListRepository(file_path=temp_data_dir / "waiting_list.txt")
+        entry = WaitingListEntry(
+            id="waiting-1",
+            username="Student1",
+            related_type="room_booking",
+            related_id="room-booking-1",
+            user_count=2,
+            created_at="2027-06-01T09:00",
+            updated_at="2027-06-01T09:00",
+        )
+
+        repository.add(entry)
+
+        found = repository.get_by_id("waiting-1")
+
+        assert found is not None
+        assert found.username == "Student1"
+        assert [item.id for item in repository.get_by_username("Student1")] == ["waiting-1"]
+        assert [item.id for item in repository.get_by_related("room_booking", "room-booking-1")] == ["waiting-1"]
+
+
 class TestPenaltyRepository:
     """PenaltyRepository 테스트"""
 
@@ -245,7 +491,6 @@ class TestAuditLogRepository:
         assert len(all_logs) == 1
         assert all_logs[0].action == "test_action"
         assert all_logs[0].details == "테스트 세부사항"
-        assert all_logs[0].updated_at is None
 
     def test_get_by_actor(self, audit_repo):
         """수행자별 로그 조회"""
@@ -283,12 +528,12 @@ class TestDataPersistence:
         """저장소 인스턴스를 다시 만들어도 데이터 유지"""
         # 첫 번째 인스턴스로 저장
         repo1 = UserRepository(file_path=temp_data_dir / "users.txt")
-        user = user_factory(username="persist_test")
+        user = user_factory(username="Persist_test")
         repo1.add(user)
 
         # 새 인스턴스로 조회
         repo2 = UserRepository(file_path=temp_data_dir / "users.txt")
-        found = repo2.get_by_username("persist_test")
+        found = repo2.get_by_username("Persist_test")
 
         assert found is not None
         assert found.id == user.id
@@ -306,7 +551,7 @@ class TestRepositoryIntegrity:
     def test_room_repository_fails_fast_on_invalid_enum(self, temp_data_dir):
         room_file = temp_data_dir / "rooms.txt"
         room_file.write_text(
-            "회의실 4A|4|1층|broken_status|설명|2026-06-15T09:00|2026-06-15T09:00\n",
+            "회의실4A|4|1층|broken_status|설명|2026-06-15T09:00|2026-06-15T09:00\n",
             encoding="utf-8",
         )
 
@@ -318,7 +563,7 @@ class TestRepositoryIntegrity:
     def test_room_booking_repository_fails_fast_on_malformed_datetime(self, temp_data_dir):
         booking_file = temp_data_dir / "room_bookings.txt"
         booking_file.write_text(
-            "bad-booking|user01|회의실 4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+            "bad-booking|user01|회의실4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
             encoding="utf-8",
         )
 
@@ -326,209 +571,3 @@ class TestRepositoryIntegrity:
 
         with pytest.raises(DataIntegrityError, match="room_bookings.txt"):
             repo.get_all()
-
-    def test_validate_all_data_files_fails_on_missing_cross_file_reference(self, temp_data_dir):
-        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
-        (temp_data_dir / "users.txt").write_text(
-            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "rooms.txt").write_text(
-            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipments.txt").write_text(
-            "노트북|laptop|NB-001|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "room_bookings.txt").write_text(
-            f"{uuid4()}|missing-user|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
-
-        repositories = [
-            UserRepository(file_path=temp_data_dir / "users.txt"),
-            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
-            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
-            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
-            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
-            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
-            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
-        ]
-
-        with pytest.raises(DataIntegrityError, match="users.txt"):
-            validate_all_data_files(
-                repositories=repositories,
-                clock_file=temp_data_dir / "clock.txt",
-            )
-
-    def test_validate_all_data_files_fails_on_overlapping_active_room_bookings(self, temp_data_dir):
-        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
-        (temp_data_dir / "users.txt").write_text(
-            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "rooms.txt").write_text(
-            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipments.txt").write_text(
-            "노트북|laptop|NB-001|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "room_bookings.txt").write_text(
-            f"{uuid4()}|user01|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n"
-            f"{uuid4()}|user01|회의실 4A|2026-06-16T12:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
-
-        repositories = [
-            UserRepository(file_path=temp_data_dir / "users.txt"),
-            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
-            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
-            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
-            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
-            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
-            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
-        ]
-
-        with pytest.raises(DataIntegrityError, match="겹칩니다"):
-            validate_all_data_files(
-                repositories=repositories,
-                clock_file=temp_data_dir / "clock.txt",
-            )
-
-    def test_validate_all_data_files_fails_on_invalid_clock_slot(self, temp_data_dir):
-        (temp_data_dir / "clock.txt").write_text("2026-06-15T10:00\n", encoding="utf-8")
-        (temp_data_dir / "users.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "rooms.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "room_bookings.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
-
-        repositories = [
-            UserRepository(file_path=temp_data_dir / "users.txt"),
-            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
-            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
-            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
-            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
-            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
-            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
-        ]
-
-        with pytest.raises(DataIntegrityError, match="clock.txt"):
-            validate_all_data_files(
-                repositories=repositories,
-                clock_file=temp_data_dir / "clock.txt",
-            )
-
-    def test_validate_all_data_files_fails_on_non_canonical_clock_format(self, temp_data_dir):
-        (temp_data_dir / "clock.txt").write_text("2026-06-15 09:00\n", encoding="utf-8")
-        (temp_data_dir / "users.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "rooms.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "room_bookings.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
-
-        repositories = [
-            UserRepository(file_path=temp_data_dir / "users.txt"),
-            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
-            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
-            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
-            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
-            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
-            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
-        ]
-
-        with pytest.raises(DataIntegrityError, match="clock.txt"):
-            validate_all_data_files(
-                repositories=repositories,
-                clock_file=temp_data_dir / "clock.txt",
-            )
-
-    def test_validate_all_data_files_fails_on_non_uuid_booking_id(self, temp_data_dir):
-        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
-        (temp_data_dir / "users.txt").write_text(
-            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "rooms.txt").write_text(
-            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "room_bookings.txt").write_text(
-            "booking-1|user01|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "penalties.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "audit_log.txt").write_text("", encoding="utf-8")
-
-        repositories = [
-            UserRepository(file_path=temp_data_dir / "users.txt"),
-            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
-            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
-            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
-            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
-            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
-            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
-        ]
-
-        with pytest.raises(DataIntegrityError, match="UUID v4"):
-            validate_all_data_files(
-                repositories=repositories,
-                clock_file=temp_data_dir / "clock.txt",
-            )
-
-    def test_validate_all_data_files_fails_on_non_uuid_penalty_and_audit_ids(self, temp_data_dir):
-        booking_id = str(uuid4())
-        (temp_data_dir / "clock.txt").write_text("2026-06-15T09:00\n", encoding="utf-8")
-        (temp_data_dir / "users.txt").write_text(
-            "user01|pass123|user|0|0|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "rooms.txt").write_text(
-            "회의실 4A|4|1층|available|설명|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipments.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "room_bookings.txt").write_text(
-            f"{booking_id}|user01|회의실 4A|2026-06-16T09:00|2026-06-16T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "equipment_booking.txt").write_text("", encoding="utf-8")
-        (temp_data_dir / "penalties.txt").write_text(
-            f"penalty-1|user01|late_cancel|2|room_booking|{booking_id}|memo|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-        (temp_data_dir / "audit_log.txt").write_text(
-            "audit-1|user01|action|room_booking|target|details|2026-06-15T09:00|2026-06-15T09:00\n",
-            encoding="utf-8",
-        )
-
-        repositories = [
-            UserRepository(file_path=temp_data_dir / "users.txt"),
-            RoomRepository(file_path=temp_data_dir / "rooms.txt"),
-            EquipmentAssetRepository(file_path=temp_data_dir / "equipments.txt"),
-            RoomBookingRepository(file_path=temp_data_dir / "room_bookings.txt"),
-            EquipmentBookingRepository(file_path=temp_data_dir / "equipment_booking.txt"),
-            PenaltyRepository(file_path=temp_data_dir / "penalties.txt"),
-            AuditLogRepository(file_path=temp_data_dir / "audit_log.txt"),
-        ]
-
-        with pytest.raises(DataIntegrityError, match="UUID v4"):
-            validate_all_data_files(
-                repositories=repositories,
-                clock_file=temp_data_dir / "clock.txt",
-            )

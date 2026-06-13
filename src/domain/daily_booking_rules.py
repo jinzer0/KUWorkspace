@@ -52,3 +52,24 @@ def build_daily_booking_period(start_date, end_date):
         time(hour=FIXED_BOOKING_END_HOUR, minute=FIXED_BOOKING_END_MINUTE),
     )
     return start_time, end_time
+
+
+def validate_maintenance_dates(start_date, end_date, now):
+    valid, error, duration_days = validate_daily_booking_dates(start_date, end_date, now)
+    if not valid:
+        return False, error, duration_days
+    if start_date == end_date:
+        return False, "점검 시작일과 종료일은 같을 수 없습니다.", 0
+    return True, "", duration_days
+
+
+def build_maintenance_period(start_date, end_date):
+    start_time = datetime.combine(
+        start_date,
+        time(hour=FIXED_BOOKING_END_HOUR, minute=FIXED_BOOKING_END_MINUTE),
+    )
+    end_time = datetime.combine(
+        end_date,
+        time(hour=FIXED_BOOKING_START_HOUR, minute=FIXED_BOOKING_START_MINUTE),
+    )
+    return start_time, end_time

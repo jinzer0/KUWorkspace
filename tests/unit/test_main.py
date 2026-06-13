@@ -3,14 +3,15 @@ from types import SimpleNamespace
 import pytest
 import main as main_module
 from main import prompt_initial_clock
+from src.clock_bootstrap import load_persisted_clock
 from src.domain.models import UserRole
+from src.storage.integrity import DataIntegrityError
 
 
 def test_prompt_initial_clock_retries_on_invalid_date(monkeypatch, capsys):
     inputs = iter(["2026/06/15", "09:00", "2026-06-15", "09:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
@@ -23,7 +24,6 @@ def test_prompt_initial_clock_accepts_dot_separated_date(monkeypatch):
     inputs = iter(["2026.06.15", "09:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
@@ -35,7 +35,6 @@ def test_prompt_initial_clock_accepts_space_separated_date(monkeypatch):
     inputs = iter(["2026 06 15", "18:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
@@ -47,7 +46,6 @@ def test_prompt_initial_clock_accepts_hhmm_slot(monkeypatch):
     inputs = iter(["2026-06-15", "0900"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
@@ -59,20 +57,18 @@ def test_prompt_initial_clock_retries_on_invalid_slot(monkeypatch, capsys):
     inputs = iter(["2026-06-15", "10:00", "2026-06-15", "18:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
 
     assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
-    assert "시간은 09 또는 18만 가능합니다." in capsys.readouterr().out
+    assert "09 또는 18" in capsys.readouterr().out
 
 
 def test_prompt_initial_clock_retries_on_outer_whitespace(monkeypatch, capsys):
     inputs = iter([" 2026-06-15", "0900", "2026-06-15", "0900"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
@@ -86,7 +82,6 @@ def test_prompt_initial_clock_retries_when_earlier_than_latest_data(monkeypatch,
     inputs = iter(["2026-06-15", "09:00", "2026-06-15", "18:00"])
 
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: latest)
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     clock = prompt_initial_clock()
@@ -198,18 +193,11 @@ def test_main_uses_persisted_clock_without_prompt(monkeypatch):
 
 
 def test_main_prompts_when_clock_file_is_sentinel(tmp_path, monkeypatch):
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    sentinel_file = data_dir / "clock.txt"
-    sentinel_file.write_text("0000-00T00:00", encoding="utf-8")
+    sentinel_file = tmp_path / "clock.txt"
+    sentinel_file.write_text("0000-00-00T00:00", encoding="utf-8")
 
-    monkeypatch.setattr("src.config.DATA_DIR", data_dir)
     monkeypatch.setattr("src.config.CLOCK_FILE", sentinel_file)
-    monkeypatch.setattr(
-        "src.config.DATA_FILES",
-        [data_dir / "users.txt", data_dir / "rooms.txt", data_dir / "equipments.txt", data_dir / "room_bookings.txt", data_dir / "equipment_booking.txt", data_dir / "penalties.txt", data_dir / "audit_log.txt", sentinel_file],
-    )
-    monkeypatch.setattr("main.load_persisted_clock", lambda: None)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", sentinel_file)
 
     inputs = iter(["2026-06-15", "09:00"])
     monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
@@ -219,6 +207,48 @@ def test_main_prompts_when_clock_file_is_sentinel(tmp_path, monkeypatch):
 
     assert clock.now() == datetime(2026, 6, 15, 9, 0, 0)
     assert sentinel_file.read_text(encoding="utf-8").strip() == "2026-06-15T09:00"
+
+
+def test_prompt_initial_clock_invalid_slot_does_not_persist_before_retry(tmp_path, monkeypatch):
+    sentinel_file = tmp_path / "clock.txt"
+    sentinel_file.write_text("0000-00-00T00:00", encoding="utf-8")
+    inputs = ["2026-06-15", "12:00", "2026-06-15", "18:00"]
+    index = {"value": 0}
+
+    monkeypatch.setattr("src.config.CLOCK_FILE", sentinel_file)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", sentinel_file)
+    monkeypatch.setattr("main.get_latest_data_timestamp", lambda: None)
+
+    def fake_input(_prompt=""):
+        if index["value"] == 2:
+            assert sentinel_file.read_text(encoding="utf-8").strip() == "0000-00-00T00:00"
+        value = inputs[index["value"]]
+        index["value"] += 1
+        return value
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    clock = prompt_initial_clock()
+
+    assert clock.now() == datetime(2026, 6, 15, 18, 0, 0)
+    assert sentinel_file.read_text(encoding="utf-8").strip() == "2026-06-15T18:00"
+
+
+def test_load_persisted_clock_rejects_non_operating_slot(tmp_path, monkeypatch):
+    clock_file = tmp_path / "clock.txt"
+    clock_file.write_text("2026-06-15T12:00", encoding="utf-8")
+
+    monkeypatch.setattr("src.config.DATA_DIR", tmp_path)
+    monkeypatch.setattr("src.config.CLOCK_FILE", clock_file)
+    monkeypatch.setattr("src.config.DATA_FILES", [clock_file])
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_DIR", tmp_path)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", clock_file)
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_FILES", [clock_file])
+
+    with pytest.raises(DataIntegrityError, match="09:00 또는 18:00"):
+        load_persisted_clock()
+
+    assert clock_file.read_text(encoding="utf-8").strip() == "2026-06-15T12:00"
 
 
 def test_main_routes_admin_to_admin_menu(monkeypatch):
@@ -293,7 +323,7 @@ def test_main_exits_on_corrupted_data_file(tmp_path, monkeypatch, capsys):
     equipment_booking.touch()
     penalties.touch()
     audit.touch()
-    clock.write_text("0000-00T00:00", encoding="utf-8")
+    clock.write_text("0000-00-00T00:00", encoding="utf-8")
 
     monkeypatch.setattr("src.config.DATA_DIR", data_dir)
     monkeypatch.setattr("src.config.USERS_FILE", users)
@@ -306,6 +336,19 @@ def test_main_exits_on_corrupted_data_file(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("src.config.CLOCK_FILE", clock)
     monkeypatch.setattr(
         "src.config.DATA_FILES",
+        [users, rooms, equips, room_bookings, equipment_booking, penalties, audit, clock],
+    )
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_DIR", data_dir)
+    monkeypatch.setattr("src.clock_bootstrap.config.USERS_FILE", users)
+    monkeypatch.setattr("src.clock_bootstrap.config.ROOMS_FILE", rooms)
+    monkeypatch.setattr("src.clock_bootstrap.config.EQUIPMENTS_FILE", equips)
+    monkeypatch.setattr("src.clock_bootstrap.config.ROOM_BOOKINGS_FILE", room_bookings)
+    monkeypatch.setattr("src.clock_bootstrap.config.EQUIPMENT_BOOKING_FILE", equipment_booking)
+    monkeypatch.setattr("src.clock_bootstrap.config.PENALTIES_FILE", penalties)
+    monkeypatch.setattr("src.clock_bootstrap.config.AUDIT_LOG_FILE", audit)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", clock)
+    monkeypatch.setattr(
+        "src.clock_bootstrap.config.DATA_FILES",
         [users, rooms, equips, room_bookings, equipment_booking, penalties, audit, clock],
     )
     monkeypatch.setattr("src.storage.repositories.USERS_FILE", users)
@@ -340,13 +383,13 @@ def test_main_exits_on_malformed_persisted_datetime(tmp_path, monkeypatch, capsy
     rooms.touch()
     equips.touch()
     room_bookings.write_text(
-        "bad-booking|user01|회의실 4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
+        "bad-booking|user01|회의실4A|not-a-date|2026-06-15T18:00|reserved|\\-|\\-|\\-|\\-|\\-|2026-06-15T09:00|2026-06-15T09:00\n",
         encoding="utf-8",
     )
     equipment_booking.touch()
     penalties.touch()
     audit.touch()
-    clock.write_text("0000-00T00:00", encoding="utf-8")
+    clock.write_text("0000-00-00T00:00", encoding="utf-8")
 
     monkeypatch.setattr("src.config.DATA_DIR", data_dir)
     monkeypatch.setattr("src.config.USERS_FILE", users)
@@ -359,6 +402,19 @@ def test_main_exits_on_malformed_persisted_datetime(tmp_path, monkeypatch, capsy
     monkeypatch.setattr("src.config.CLOCK_FILE", clock)
     monkeypatch.setattr(
         "src.config.DATA_FILES",
+        [users, rooms, equips, room_bookings, equipment_booking, penalties, audit, clock],
+    )
+    monkeypatch.setattr("src.clock_bootstrap.config.DATA_DIR", data_dir)
+    monkeypatch.setattr("src.clock_bootstrap.config.USERS_FILE", users)
+    monkeypatch.setattr("src.clock_bootstrap.config.ROOMS_FILE", rooms)
+    monkeypatch.setattr("src.clock_bootstrap.config.EQUIPMENTS_FILE", equips)
+    monkeypatch.setattr("src.clock_bootstrap.config.ROOM_BOOKINGS_FILE", room_bookings)
+    monkeypatch.setattr("src.clock_bootstrap.config.EQUIPMENT_BOOKING_FILE", equipment_booking)
+    monkeypatch.setattr("src.clock_bootstrap.config.PENALTIES_FILE", penalties)
+    monkeypatch.setattr("src.clock_bootstrap.config.AUDIT_LOG_FILE", audit)
+    monkeypatch.setattr("src.clock_bootstrap.config.CLOCK_FILE", clock)
+    monkeypatch.setattr(
+        "src.clock_bootstrap.config.DATA_FILES",
         [users, rooms, equips, room_bookings, equipment_booking, penalties, audit, clock],
     )
     monkeypatch.setattr("src.storage.repositories.USERS_FILE", users)

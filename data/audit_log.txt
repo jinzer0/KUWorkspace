@@ -1,3 +1,4 @@
-f3b2767f-5155-492d-a946-66336f9f4eaf|aaaa|create_room_booking_daily|room_booking|7fb150d7-72a6-4264-9f90-311e5858e835|회의실: 회의실 8A, 인원: 8명, 기간: 2026-04-11 09:0|2026-04-01T09:00|\-
-72a15b69-c6cb-40c2-9a34-0e8c6d105080|aaaa|cancel_room_booking|room_booking|7fb150d7-72a6-4264-9f90-311e5858e835|사용자 취소|2026-04-01T09:00|\-
-87c7834f-f7e1-443a-9946-00ad89f1fb02|aaaa|create_room_booking_daily|room_booking|ba5c5a68-88ff-4dec-8175-b82b0906a898|회의실: 회의실 4A, 인원: 4명, 기간: 2026-06-10 09:0|2026-04-01T09:00|\-
+76d00441-7b4e-482d-ab0f-97259af973d8|aaaa|create_room_booking_daily|room_booking|e650bc6a-5035-4abb-8f5b-8fb9ecff21ed|회의실: 회의실 4A, 인원: 4명,|2026-04-07T18:00|2026-04-07T18:00
+bbacb532-1ebe-496d-ac19-b7977b8c54ef|aaaa|modify_room_booking_daily|room_booking|e650bc6a-5035-4abb-8f5b-8fb9ecff21ed|변경: 2026-05-08 09:00|2026-04-07T18:00|2026-04-07T18:00
+e55e9c70-e51e-47e2-a804-e453b7c06c5b|OwnerA|create_equipment_booking_daily|equipment_booking|e0877e88-31c2-44d6-b00c-5320d49d2949|장비: 노트북A, 기간: 2024-0|2024-06-15T09:00|2024-06-15T09:00
+1dbd0d64-339c-4eb8-8fb5-7fc15e00689f|RequestA|create_equipment_booking_daily|equipment_booking|a6147825-bacf-4c0a-baa3-50b8bd28bc01|장비: 케이블, 기간: 2024-06|2024-06-15T09:00|2024-06-15T09:00
