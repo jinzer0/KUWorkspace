@@ -23,6 +23,7 @@ from src.domain.models import (
     EquipmentAsset,
     RoomBooking,
     EquipmentBooking,
+    WaitingListEntry,
     RoomMaintenanceSchedule,
     Penalty,
     AuditLog,
@@ -205,53 +206,8 @@ class BaseRepository:
         return False
 
 
-def serialize_waitlist_projection(room_bookings, equipment_bookings):
-    rows = []
-    for booking in room_bookings:
-        rows.append((
-            "room",
-            booking.room_id,
-            booking.start_time,
-            booking.end_time,
-            booking.created_at,
-            booking.id,
-            booking.user_id,
-        ))
-    for booking in equipment_bookings:
-        rows.append((
-            "equipment",
-            booking.equipment_id,
-            booking.start_time,
-            booking.end_time,
-            booking.created_at,
-            booking.id,
-            booking.user_id,
-        ))
-    rows.sort()
-    return "".join("|".join(row) + "\n" for row in rows)
-
-
 def stage_waitlist_projection(room_booking_repo, equipment_booking_repo):
-    from src.domain.models import RoomBookingStatus, EquipmentBookingStatus
-
-    pending_rooms = [
-        booking
-        for booking in room_booking_repo.get_all()
-        if booking.status == RoomBookingStatus.PENDING
-    ]
-    pending_equipment = [
-        booking
-        for booking in equipment_booking_repo.get_all()
-        if booking.status == EquipmentBookingStatus.PENDING
-    ]
-    content = serialize_waitlist_projection(pending_rooms, pending_equipment)
-    uow = get_current_uow()
-    if uow:
-        uow.stage_text(WAITLIST_FILE, content)
-    else:
-        require_write_lock()
-        WAITLIST_FILE.write_text(content, encoding="utf-8")
-    return content
+    return ""
 
 
 class UserRepository(BaseRepository):
@@ -340,7 +296,6 @@ class RoomBookingRepository(BaseRepository):
         from src.domain.models import RoomBookingStatus
 
         quota_statuses = {
-            RoomBookingStatus.PENDING,
             RoomBookingStatus.RESERVED,
             RoomBookingStatus.CHECKIN_REQUESTED,
             RoomBookingStatus.CHECKED_IN,
@@ -433,7 +388,6 @@ class EquipmentBookingRepository(BaseRepository):
         from src.domain.models import EquipmentBookingStatus
 
         quota_statuses = {
-            EquipmentBookingStatus.PENDING,
             EquipmentBookingStatus.RESERVED,
             EquipmentBookingStatus.PICKUP_REQUESTED,
             EquipmentBookingStatus.CHECKED_OUT,
@@ -504,6 +458,63 @@ class EquipmentBookingRepository(BaseRepository):
         )
 
 
+class WaitingListRepository(BaseRepository):
+    def __init__(self, file_path=None):
+        super().__init__(
+            file_path=file_path or WAITLIST_FILE,
+            model_class=WaitingListEntry,
+            from_json=WaitingListEntry.from_record,
+            to_json=lambda entry: entry.to_record(),
+        )
+
+    def _sort_entries(self, entries):
+        return sorted(entries, key=lambda entry: (entry.created_at, entry.id))
+
+    def get_all(self):
+        return self._sort_entries(super().get_all())
+
+    def save_all(self, records):
+        super().save_all(self._sort_entries(records))
+
+    def get_by_username(self, username):
+        return [entry for entry in self.get_all() if entry.username == username]
+
+    def get_by_related(self, related_type, related_id):
+        return [
+            entry
+            for entry in self.get_all()
+            if entry.related_type == related_type and entry.related_id == related_id
+        ]
+
+    def has_duplicate(self, username, related_type, related_id):
+        return any(
+            entry.username == username
+            and entry.related_type == related_type
+            and entry.related_id == related_id
+            for entry in self.get_all()
+        )
+
+    def count_by_username_and_related_type(self, username, related_type):
+        return sum(
+            1
+            for entry in self.get_all()
+            if entry.username == username and entry.related_type == related_type
+        )
+
+    def get_ordered_by_related(self, related_type, related_id):
+        return self._sort_entries(self.get_by_related(related_type, related_id))
+
+    def delete_many(self, entry_ids):
+        entry_ids = set(entry_ids)
+        if not entry_ids:
+            return 0
+        records = [entry for entry in self.get_all() if entry.id not in entry_ids]
+        removed = len(self.get_all()) - len(records)
+        if removed:
+            self.save_all(records)
+        return removed
+
+
 class RoomMaintenanceRepository(BaseRepository):
     """회의실 점검 일정 Repository"""
 
@@ -528,6 +539,8 @@ class RoomMaintenanceRepository(BaseRepository):
     def get_conflicting(self, room_id, start_time, end_time, exclude_id=None):
         conflicts = []
         for schedule in self.get_by_room(room_id):
+            if schedule.status not in {"scheduled", "active"}:
+                continue
             if exclude_id and schedule.id == exclude_id:
                 continue
             if self._overlaps(schedule, start_time, end_time):
@@ -537,17 +550,54 @@ class RoomMaintenanceRepository(BaseRepository):
     def get_expired(self, current_time):
         current_iso = current_time.isoformat() if hasattr(current_time, "isoformat") else current_time
         return sorted(
-            [schedule for schedule in self.get_all() if schedule.end_time <= current_iso],
+            [
+                schedule
+                for schedule in self.get_all()
+                if schedule.status in {"scheduled", "active"}
+                and schedule.end_time <= current_iso
+            ],
             key=lambda schedule: (schedule.end_time, schedule.id),
+        )
+
+    def get_ready_to_activate(self, current_time):
+        current_iso = current_time.isoformat() if hasattr(current_time, "isoformat") else current_time
+        return sorted(
+            [
+                schedule
+                for schedule in self.get_all()
+                if schedule.status == "scheduled"
+                and schedule.start_time <= current_iso < schedule.end_time
+            ],
+            key=lambda schedule: (schedule.start_time, schedule.id),
         )
 
     def delete_expired(self, current_time):
         expired = self.get_expired(current_time)
         if not expired:
             return []
+        timestamp = current_time.isoformat() if hasattr(current_time, "isoformat") else current_time
         expired_ids = {schedule.id for schedule in expired}
-        self.save_all([schedule for schedule in self.get_all() if schedule.id not in expired_ids])
-        return expired
+        updated_records = []
+        completed = []
+        for schedule in self.get_all():
+            if schedule.id in expired_ids:
+                completed_schedule = RoomMaintenanceSchedule(
+                    id=schedule.id,
+                    room_id=schedule.room_id,
+                    start_time=schedule.start_time,
+                    end_time=schedule.end_time,
+                    reason=schedule.reason,
+                    status="completed",
+                    cancelled_at=schedule.cancelled_at,
+                    created_at=schedule.created_at,
+                    updated_at=timestamp,
+                )
+                updated_records.append(completed_schedule)
+                completed.append(completed_schedule)
+            else:
+                updated_records.append(schedule)
+        self.save_all(updated_records)
+        return completed
 
 class PenaltyRepository:
     """패널티 Repository (append-only, UnitOfWork 지원)"""

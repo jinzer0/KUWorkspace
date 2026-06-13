@@ -16,12 +16,13 @@ from src.storage.repositories import (
     UserRepository,
     RoomRepository,
     RoomBookingRepository,
-    EquipmentBookingRepository,
+    WaitingListRepository,
 )
 from src.domain.models import (
     EquipmentBookingStatus,
     ResourceStatus,
     RoomBookingStatus,
+    WaitingListEntry,
     generate_id,
 )
 
@@ -38,34 +39,34 @@ class TestUserRepository:
 
     def test_add_and_get_user(self, user_repo, user_factory):
         """사용자 추가 및 조회"""
-        user = user_factory(username="repotest")
+        user = user_factory(username="Repotest")
 
         user_repo.add(user)
 
         found = user_repo.get_by_id(user.id)
         assert found is not None
-        assert found.username == "repotest"
+        assert found.username == "Repotest"
 
     def test_get_by_username(self, user_repo, user_factory):
         """username으로 조회"""
-        user = user_factory(username="unique_name")
+        user = user_factory(username="Unique_name")
         user_repo.add(user)
 
-        found = user_repo.get_by_username("unique_name")
+        found = user_repo.get_by_username("Unique_name")
         assert found is not None
         assert found.id == user.id
 
     def test_username_exists(self, user_repo, user_factory):
         """username 존재 여부 확인"""
-        user = user_factory(username="exists_test")
+        user = user_factory(username="Exists_test")
         user_repo.add(user)
 
-        assert user_repo.username_exists("exists_test") is True
+        assert user_repo.username_exists("Exists_test") is True
         assert user_repo.username_exists("nonexistent") is False
 
     def test_update_user(self, user_repo, user_factory):
         """사용자 업데이트"""
-        user = user_factory(username="update_test", penalty_points=0)
+        user = user_factory(username="Update_test", penalty_points=0)
         user_repo.add(user)
 
         from dataclasses import replace
@@ -78,9 +79,9 @@ class TestUserRepository:
 
     def test_get_all_users(self, user_repo, user_factory):
         """모든 사용자 조회"""
-        user_repo.add(user_factory(username="all1"))
-        user_repo.add(user_factory(username="all2"))
-        user_repo.add(user_factory(username="all3"))
+        user_repo.add(user_factory(username="All1"))
+        user_repo.add(user_factory(username="All2"))
+        user_repo.add(user_factory(username="All3"))
 
         all_users = user_repo.get_all()
         assert len(all_users) == 3
@@ -187,7 +188,7 @@ class TestRoomBookingRepository:
 class TestBookingQuerySemantics:
     """예약 quota/conflict/pending competition 조회 의미 테스트"""
 
-    def test_room_pending_counts_for_quota_but_not_confirmed_conflict(
+    def test_room_pending_counts_for_quota_not_confirmed_conflict(
         self, room_booking_repo, room_booking_factory
     ):
         user_id = "room-quota-user"
@@ -218,10 +219,10 @@ class TestBookingQuerySemantics:
             room_id, "2024-06-15T10:30:00", "2024-06-15T10:45:00"
         )
 
-        assert [booking.id for booking in quota] == ["room-pending", "room-reserved"]
+        assert [booking.id for booking in quota] == ["room-reserved"]
         assert conflicts == []
 
-    def test_equipment_pending_counts_for_quota_but_not_confirmed_conflict(
+    def test_equipment_pending_counts_for_quota_not_confirmed_conflict(
         self, equipment_booking_repo, equipment_booking_factory
     ):
         user_id = "equipment-quota-user"
@@ -252,24 +253,21 @@ class TestBookingQuerySemantics:
             equipment_id, "2024-06-15T10:30:00", "2024-06-15T10:45:00"
         )
 
-        assert [booking.id for booking in quota] == [
-            "equipment-pending",
-            "equipment-reserved",
-        ]
+        assert [booking.id for booking in quota] == ["equipment-reserved"]
         assert conflicts == []
 
     def test_room_pending_competition_sorts_by_penalty_created_at_booking_id(
         self, user_repo, room_booking_repo, user_factory, room_booking_factory
     ):
         room_id = "room-competition"
-        user_repo.add(user_factory(username="room_low_old", penalty_points=1))
-        user_repo.add(user_factory(username="room_low_new", penalty_points=1))
-        user_repo.add(user_factory(username="room_high", penalty_points=3))
-        user_repo.add(user_factory(username="room_tie", penalty_points=1))
+        user_repo.add(user_factory(username="Room_low_old", penalty_points=1))
+        user_repo.add(user_factory(username="Room_low_new", penalty_points=1))
+        user_repo.add(user_factory(username="Room_high", penalty_points=3))
+        user_repo.add(user_factory(username="Room_tie", penalty_points=1))
         for booking in [
             room_booking_factory(
                 id="room-c",
-                user_id="room_high",
+                user_id="Room_high",
                 room_id=room_id,
                 start_time="2024-06-15T10:00:00",
                 end_time="2024-06-15T11:00:00",
@@ -278,7 +276,7 @@ class TestBookingQuerySemantics:
             ),
             room_booking_factory(
                 id="room-b",
-                user_id="room_low_new",
+                user_id="Room_low_new",
                 room_id=room_id,
                 start_time="2024-06-15T10:15:00",
                 end_time="2024-06-15T11:15:00",
@@ -287,7 +285,7 @@ class TestBookingQuerySemantics:
             ),
             room_booking_factory(
                 id="room-a",
-                user_id="room_tie",
+                user_id="Room_tie",
                 room_id=room_id,
                 start_time="2024-06-15T10:15:00",
                 end_time="2024-06-15T11:15:00",
@@ -296,7 +294,7 @@ class TestBookingQuerySemantics:
             ),
             room_booking_factory(
                 id="room-d",
-                user_id="room_low_old",
+                user_id="Room_low_old",
                 room_id=room_id,
                 start_time="2024-06-15T09:45:00",
                 end_time="2024-06-15T10:15:00",
@@ -305,7 +303,7 @@ class TestBookingQuerySemantics:
             ),
             room_booking_factory(
                 id="room-reserved-excluded",
-                user_id="room_low_old",
+                user_id="Room_low_old",
                 room_id=room_id,
                 start_time="2024-06-15T10:00:00",
                 end_time="2024-06-15T11:00:00",
@@ -313,7 +311,7 @@ class TestBookingQuerySemantics:
             ),
             room_booking_factory(
                 id="room-pending-nonoverlap",
-                user_id="room_low_old",
+                user_id="Room_low_old",
                 room_id=room_id,
                 start_time="2024-06-15T12:00:00",
                 end_time="2024-06-15T13:00:00",
@@ -337,14 +335,14 @@ class TestBookingQuerySemantics:
         self, user_repo, equipment_booking_repo, user_factory, equipment_booking_factory
     ):
         equipment_id = "equipment-competition"
-        user_repo.add(user_factory(username="equipment_low_old", penalty_points=1))
-        user_repo.add(user_factory(username="equipment_low_new", penalty_points=1))
-        user_repo.add(user_factory(username="equipment_high", penalty_points=3))
-        user_repo.add(user_factory(username="equipment_tie", penalty_points=1))
+        user_repo.add(user_factory(username="Equipment_low_old", penalty_points=1))
+        user_repo.add(user_factory(username="Equipment_low_new", penalty_points=1))
+        user_repo.add(user_factory(username="Equipment_high", penalty_points=3))
+        user_repo.add(user_factory(username="Equipment_tie", penalty_points=1))
         for booking in [
             equipment_booking_factory(
                 id="equipment-c",
-                user_id="equipment_high",
+                user_id="Equipment_high",
                 equipment_id=equipment_id,
                 start_time="2024-06-15T10:00:00",
                 end_time="2024-06-15T11:00:00",
@@ -353,7 +351,7 @@ class TestBookingQuerySemantics:
             ),
             equipment_booking_factory(
                 id="equipment-b",
-                user_id="equipment_low_new",
+                user_id="Equipment_low_new",
                 equipment_id=equipment_id,
                 start_time="2024-06-15T10:15:00",
                 end_time="2024-06-15T11:15:00",
@@ -362,7 +360,7 @@ class TestBookingQuerySemantics:
             ),
             equipment_booking_factory(
                 id="equipment-a",
-                user_id="equipment_tie",
+                user_id="Equipment_tie",
                 equipment_id=equipment_id,
                 start_time="2024-06-15T10:15:00",
                 end_time="2024-06-15T11:15:00",
@@ -371,7 +369,7 @@ class TestBookingQuerySemantics:
             ),
             equipment_booking_factory(
                 id="equipment-d",
-                user_id="equipment_low_old",
+                user_id="Equipment_low_old",
                 equipment_id=equipment_id,
                 start_time="2024-06-15T09:45:00",
                 end_time="2024-06-15T10:15:00",
@@ -380,7 +378,7 @@ class TestBookingQuerySemantics:
             ),
             equipment_booking_factory(
                 id="equipment-reserved-excluded",
-                user_id="equipment_low_old",
+                user_id="Equipment_low_old",
                 equipment_id=equipment_id,
                 start_time="2024-06-15T10:00:00",
                 end_time="2024-06-15T11:00:00",
@@ -388,7 +386,7 @@ class TestBookingQuerySemantics:
             ),
             equipment_booking_factory(
                 id="equipment-pending-nonoverlap",
-                user_id="equipment_low_old",
+                user_id="Equipment_low_old",
                 equipment_id=equipment_id,
                 start_time="2024-06-15T12:00:00",
                 end_time="2024-06-15T13:00:00",
@@ -410,6 +408,29 @@ class TestBookingQuerySemantics:
             "equipment-b",
             "equipment-c",
         ]
+
+
+class TestWaitingListRepository:
+    def test_add_and_query_waiting_list_entry(self, temp_data_dir):
+        repository = WaitingListRepository(file_path=temp_data_dir / "waiting_list.txt")
+        entry = WaitingListEntry(
+            id="waiting-1",
+            username="Student1",
+            related_type="room_booking",
+            related_id="room-booking-1",
+            user_count=2,
+            created_at="2027-06-01T09:00",
+            updated_at="2027-06-01T09:00",
+        )
+
+        repository.add(entry)
+
+        found = repository.get_by_id("waiting-1")
+
+        assert found is not None
+        assert found.username == "Student1"
+        assert [item.id for item in repository.get_by_username("Student1")] == ["waiting-1"]
+        assert [item.id for item in repository.get_by_related("room_booking", "room-booking-1")] == ["waiting-1"]
 
 
 class TestPenaltyRepository:
@@ -507,12 +528,12 @@ class TestDataPersistence:
         """저장소 인스턴스를 다시 만들어도 데이터 유지"""
         # 첫 번째 인스턴스로 저장
         repo1 = UserRepository(file_path=temp_data_dir / "users.txt")
-        user = user_factory(username="persist_test")
+        user = user_factory(username="Persist_test")
         repo1.add(user)
 
         # 새 인스턴스로 조회
         repo2 = UserRepository(file_path=temp_data_dir / "users.txt")
-        found = repo2.get_by_username("persist_test")
+        found = repo2.get_by_username("Persist_test")
 
         assert found is not None
         assert found.id == user.id

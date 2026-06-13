@@ -203,7 +203,7 @@ class TestConcurrentSignup:
         """
         result_queue = multiprocessing.Queue()
         data_dir_str = str(temp_data_dir)
-        username = "concurrent_signup"
+        username = "Concurrentsignup1"
 
         processes = []
         for i in range(3):  # 3개 프로세스가 동시에 시도
@@ -443,10 +443,11 @@ class TestConcurrentEquipmentBooking:
         errors = [r for r in results if r[0] == "error"]
 
         assert (
-            len(successes) == 2
-        ), f"Expected 2 successes, got {len(successes)}: {results}"
-        assert len(errors) == 0, f"Expected 0 errors, got {len(errors)}: {results}"
-        assert sorted(r[2] for r in successes) == ["pending", "reserved"]
+            len(successes) == 1
+        ), f"Expected 1 success, got {len(successes)}: {results}"
+        assert len(errors) == 1, f"Expected 1 error, got {len(errors)}: {results}"
+        assert successes[0][2] == "reserved"
+        assert "이미 예약" in errors[0][1]
 
 
 class TestAtomicWriteSafety:
