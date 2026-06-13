@@ -31,7 +31,7 @@ def worker_create_booking(
     """
     워커 프로세스: 예약 생성 시도
 
-    결과를 큐에 넣음: ("success", booking_id) 또는 ("error", error_message)
+    결과를 큐에 넣음: ("success", booking_id, status) 또는 ("error", error_message)
     """
     import sys
     from pathlib import Path
@@ -54,7 +54,6 @@ def worker_create_booking(
                 UserRepository,
                 RoomRepository,
                 RoomBookingRepository,
-                EquipmentBookingRepository,
                 AuditLogRepository,
             )
 
@@ -63,9 +62,6 @@ def worker_create_booking(
             room_repo = RoomRepository(file_path=data_path / "rooms.txt")
             booking_repo = RoomBookingRepository(
                 file_path=data_path / "room_bookings.txt"
-            )
-            equipment_booking_repo = EquipmentBookingRepository(
-                file_path=data_path / "equipment_booking.txt"
             )
             audit_repo = AuditLogRepository(file_path=data_path / "audit_log.txt")
 
@@ -78,7 +74,6 @@ def worker_create_booking(
             room_service = RoomService(
                 room_repo=room_repo,
                 booking_repo=booking_repo,
-                equipment_booking_repo=equipment_booking_repo,
                 user_repo=user_repo,
                 audit_repo=audit_repo,
             )
@@ -87,7 +82,7 @@ def worker_create_booking(
             end = datetime.fromisoformat(end_time)
 
             booking = room_service.create_booking(user, room_id, start, end)
-            result_queue.put(("success", booking.id))
+            result_queue.put(("success", booking.id, booking.status.value))
 
         except Exception as e:
             result_queue.put(("error", str(e)))
@@ -144,7 +139,7 @@ class TestConcurrentBooking:
         # 데이터 준비
         user1 = user_factory(username="concurrent1")
         user2 = user_factory(username="concurrent2")
-        room = room_factory(name="회의실 9B")
+        room = room_factory(name="회의실9B")
 
         with global_lock():
             user_repo.add(user1)
@@ -189,13 +184,13 @@ class TestConcurrentBooking:
         while not result_queue.empty():
             results.append(result_queue.get())
 
-        # 검증: 정확히 하나만 성공
+        # 검증: 하나는 확정, 하나는 우선권 대기 상태로 생성
         successes = [r for r in results if r[0] == "success"]
         errors = [r for r in results if r[0] == "error"]
 
-        assert len(successes) == 1, f"Expected 1 success, got {len(successes)}"
-        assert len(errors) == 1, f"Expected 1 error, got {len(errors)}"
-        assert "이미 예약이 있습니다" in errors[0][1]
+        assert len(successes) == 2, f"Expected 2 successes, got {len(successes)}: {results}"
+        assert len(errors) == 0, f"Expected 0 errors, got {len(errors)}: {results}"
+        assert sorted(r[2] for r in successes) == ["pending", "reserved"]
 
 
 class TestConcurrentSignup:
@@ -208,7 +203,7 @@ class TestConcurrentSignup:
         """
         result_queue = multiprocessing.Queue()
         data_dir_str = str(temp_data_dir)
-        username = "concurrent_signup"
+        username = "Concurrentsignup1"
 
         processes = []
         for i in range(3):  # 3개 프로세스가 동시에 시도
@@ -251,7 +246,7 @@ class TestConcurrentMultipleRooms:
         """
         # 여러 사용자와 회의실
         users = [user_factory(username=f"multi_user_{i}") for i in range(3)]
-        rooms = [room_factory(name=f"회의실 {i}B") for i in range(3)]
+        rooms = [room_factory(name=f"회의실{i}B") for i in range(3)]
 
         with global_lock():
             for u in users:
@@ -377,7 +372,7 @@ def worker_create_equipment_booking(
             end = datetime.fromisoformat(end_time)
 
             booking = equipment_service.create_booking(user, equipment_id, start, end)
-            result_queue.put(("success", booking.id))
+            result_queue.put(("success", booking.id, booking.status.value))
 
         except Exception as e:
             result_queue.put(("error", str(e)))
@@ -451,7 +446,8 @@ class TestConcurrentEquipmentBooking:
             len(successes) == 1
         ), f"Expected 1 success, got {len(successes)}: {results}"
         assert len(errors) == 1, f"Expected 1 error, got {len(errors)}: {results}"
-        assert "이미 예약이 있습니다" in errors[0][1]
+        assert successes[0][2] == "reserved"
+        assert "이미 예약" in errors[0][1]
 
 
 class TestAtomicWriteSafety:

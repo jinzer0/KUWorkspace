@@ -14,11 +14,11 @@ class BaseMenu(ABC):
         self.running = True
 
     @abstractmethod
-    def get_title(self):
+    def get_title(self) -> str:
         """메뉴 제목"""
 
     @abstractmethod
-    def get_options(self):
+    def get_options(self) -> list[tuple[int, str]]:
         """
         메뉴 옵션 목록
 
@@ -27,7 +27,7 @@ class BaseMenu(ABC):
         """
 
     @abstractmethod
-    def handle_choice(self, choice):
+    def handle_choice(self, choice: int) -> bool:
         """
         선택 처리
 
@@ -145,9 +145,45 @@ def confirm(prompt):
         print("  y 또는 n을 입력해주세요.")
 
 
+def review_action(title="작업 검토", action_label="저장/처리"):
+    print(f"\n[{title}]")
+    print(f"  1. {action_label}")
+    print("  2. 다시 입력")
+    print("  0. 취소")
+    while True:
+        choice = input("선택: ").strip()
+        if choice == "1":
+            return "confirm"
+        if choice == "2":
+            return "retry"
+        if choice == "0":
+            return "cancel"
+        print("  1, 2, 0 중에서 선택해주세요.")
+
+
+def input_start_gate(title="입력"):
+    print(f"\n[{title}]")
+    print("  1. 입력 시작")
+    print("  0. 돌아가기")
+    while True:
+        choice = input("선택: ").strip()
+        if choice == "1":
+            return True
+        if choice == "0":
+            return False
+        print("  1 또는 0을 입력해주세요.")
+
+
 def pause():
-    """계속하려면 Enter 입력"""
-    input("\n계속하려면 Enter를 누르세요...")
+    """0으로 돌아가기"""
+    print("\n0. 돌아가기")
+    while True:
+        choice = input("선택: ").strip()
+        if choice == "0":
+            return
+        if not choice:
+            continue
+        print("  0을 입력해주세요.")
 
 
 def select_from_list(items, prompt="선택", allow_cancel=True):

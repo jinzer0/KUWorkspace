@@ -2,7 +2,6 @@
 
 import pytest
 from datetime import datetime, timedelta
-from uuid import uuid4
 
 from src.domain.room_service import RoomBookingError
 from src.domain.penalty_service import PenaltyError
@@ -23,8 +22,8 @@ class TestAdminPenaltyManagement:
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("damage_user", "pass")
-            admin = auth_service.signup("damage_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("DamageUser", "pass1")
+            admin = auth_service.signup("DamageAdmin", "pass1", role=UserRole.ADMIN)
             room = create_test_room()
 
             booking = room_service.create_booking(
@@ -37,8 +36,7 @@ class TestAdminPenaltyManagement:
             room_service.check_in(admin, booking.id)
 
         with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
-            room_service.request_checkout(user, booking.id)
-            room_service.approve_checkout_request(admin, booking.id)
+            room_service.check_out(admin, booking.id)
 
             penalty = penalty_service.apply_damage(
                 admin=admin,
@@ -54,8 +52,8 @@ class TestAdminPenaltyManagement:
             assert auth_service.get_user(user.id).penalty_points == 3
 
     def test_admin_damage_penalty_range_validation(self, auth_service, penalty_service):
-        user = auth_service.signup("range_user", "pass")
-        admin = auth_service.signup("range_admin", "pass", role=UserRole.ADMIN)
+        user = auth_service.signup("RangeUser", "pass1")
+        admin = auth_service.signup("RangeAdmin", "pass1", role=UserRole.ADMIN)
 
         with pytest.raises(PenaltyError):
             penalty_service.apply_damage(
@@ -85,9 +83,9 @@ class TestAdminStatusChange:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("maint_user", "pass")
-            user2 = auth_service.signup("maint_user_2", "pass")
-            admin = auth_service.signup("maint_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("MaintUser", "pass1")
+            user2 = auth_service.signup("MaintUser2", "pass1")
+            admin = auth_service.signup("MaintAdmin", "pass1", role=UserRole.ADMIN)
             room = create_test_room()
 
             room_service.create_booking(
@@ -117,8 +115,8 @@ class TestAdminStatusChange:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("disabled_user", "pass")
-            admin = auth_service.signup("disabled_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("DisabledUser", "pass1")
+            admin = auth_service.signup("DisabledAdmin", "pass1", role=UserRole.ADMIN)
             equipment = create_test_equipment()
 
             equipment_service.create_booking(
@@ -144,8 +142,8 @@ class TestAdminBookingCancellation:
         fixed_time = datetime(2024, 6, 15, 10, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("cancel_target", "pass")
-            admin = auth_service.signup("cancel_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("CancelTarget", "pass1")
+            admin = auth_service.signup("CancelAdmin", "pass1", role=UserRole.ADMIN)
             room = create_test_room()
 
             booking = room_service.create_booking(
@@ -164,8 +162,8 @@ class TestAdminBookingCancellation:
         fixed_time = datetime(2024, 6, 15, 9, 0, 0)
 
         with mock_now(fixed_time):
-            user = auth_service.signup("checkin_cancel", "pass")
-            admin = auth_service.signup("checkin_admin", "pass", role=UserRole.ADMIN)
+            user = auth_service.signup("CheckinCancel", "pass1")
+            admin = auth_service.signup("CheckinAdmin", "pass1", role=UserRole.ADMIN)
             room = create_test_room()
 
             booking = room_service.create_booking(
@@ -190,24 +188,23 @@ class TestAdminPolicyExecution:
         auth_service,
         policy_service,
         create_test_room,
-        create_test_user,
         room_booking_repo,
         fake_clock,
     ):
-        fixed_time = datetime(2024, 6, 15, 18, 0, 0)
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
         fake_clock(fixed_time)
-        user = create_test_user(username="late_cancel_user")
-        admin = create_test_user(username="clock_admin", role=UserRole.ADMIN)
+        user = auth_service.signup("LateCancelUser", "pass1")
+        admin = auth_service.signup("ClockAdmin", "pass1", role=UserRole.ADMIN)
         room = create_test_room()
 
         from src.domain.models import RoomBooking
 
         booking = RoomBooking(
-            id=str(uuid4()),
+            id="late-cancel-booking",
             user_id=user.id,
             room_id=room.id,
-            start_time=fixed_time.replace(hour=9).isoformat(),
-            end_time=fixed_time.isoformat(),
+            start_time=fixed_time.isoformat(),
+            end_time=fixed_time.replace(hour=18).isoformat(),
             status=RoomBookingStatus.RESERVED,
         )
         with global_lock():
@@ -222,8 +219,8 @@ class TestAdminPolicyExecution:
 
 class TestAdminPenaltyHistory:
     def test_admin_views_user_penalty_history(self, auth_service, penalty_service):
-        user = auth_service.signup("history_user", "pass")
-        admin = auth_service.signup("history_admin", "pass", role=UserRole.ADMIN)
+        user = auth_service.signup("HistoryUser", "pass1")
+        admin = auth_service.signup("HistoryAdmin", "pass1", role=UserRole.ADMIN)
 
         penalty_service.apply_late_cancel(user, "room_booking", "b1")
         penalty_service.apply_damage(

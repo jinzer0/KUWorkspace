@@ -6,8 +6,8 @@
 """
 
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # 프로젝트 루트를 Python 경로에 추가
 project_root = Path(__file__).parent.parent
@@ -21,12 +21,13 @@ from src.config import (
     EQUIPMENTS_FILE,
     ROOM_BOOKINGS_FILE,
     EQUIPMENT_BOOKING_FILE,
+    ROOM_MAINTENANCE_FILE,
+    WAITLIST_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
     CLOCK_FILE,
     CLOCK_SENTINEL,
 )
-from src.clock_bootstrap import read_clock_marker
 from src.domain.models import (
     User,
     Room,
@@ -56,43 +57,34 @@ CURRENT_DATA_FILES = [
     EQUIPMENTS_FILE,
     ROOM_BOOKINGS_FILE,
     EQUIPMENT_BOOKING_FILE,
+    ROOM_MAINTENANCE_FILE,
+    WAITLIST_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
-    CLOCK_FILE,
 ]
 
 
-def reset_clock_file():
-    ensure_data_dir()
-    CLOCK_FILE.write_text(CLOCK_SENTINEL, encoding="utf-8")
+def read_clock_marker():
+    if not CLOCK_FILE.exists():
+        return CLOCK_SENTINEL
+    return CLOCK_FILE.read_text(encoding="utf-8").strip() or CLOCK_SENTINEL
 
 
 def get_seed_timestamp():
     marker = read_clock_marker()
     if marker == CLOCK_SENTINEL:
-        return marker
-
+        return CLOCK_SENTINEL
     try:
-        return datetime.fromisoformat(marker).replace(second=0, microsecond=0).isoformat(
-            timespec="minutes"
-        )
-    except ValueError as error:
+        return datetime.fromisoformat(marker).isoformat(timespec="minutes")
+    except ValueError as exc:
         raise DataIntegrityError(
-            f"시드 타임스탬프 형식이 올바르지 않습니다: {CLOCK_FILE} ({marker})"
-        ) from error
+            f"시드 타임스탬프 형식이 올바르지 않습니다: {CLOCK_FILE}"
+        ) from exc
 
 
 def create_admin():
     """관리자 계정 생성"""
-    seed_timestamp = get_seed_timestamp()
-    return User(
-        id="admin",
-        username="admin",
-        password="admin123",
-        role=UserRole.ADMIN,
-        created_at=seed_timestamp,
-        updated_at=seed_timestamp,
-    )
+    return User(id="admin", username="admin", password="admin123", role=UserRole.ADMIN)
 
 
 def reset_data_files():
@@ -104,17 +96,16 @@ def reset_data_files():
 
 def create_rooms():
     """회의실 9개 생성"""
-    seed_timestamp = get_seed_timestamp()
     rooms_data = [
-        ("회의실 4A", 4, "1층", "4인 회의실"),
-        ("회의실 4B", 4, "1층", "4인 회의실"),
-        ("회의실 4C", 4, "1층", "4인 회의실"),
-        ("회의실 6A", 6, "2층", "6인 회의실"),
-        ("회의실 6B", 6, "2층", "6인 회의실"),
-        ("회의실 6C", 6, "2층", "6인 회의실"),
-        ("회의실 8A", 8, "3층", "8인 회의실"),
-        ("회의실 8B", 8, "3층", "8인 회의실"),
-        ("회의실 8C", 8, "3층", "8인 회의실"),
+        ("회의실4A", 4, "1층", "4인 회의실"),
+        ("회의실4B", 4, "1층", "4인 회의실"),
+        ("회의실4C", 4, "1층", "4인 회의실"),
+        ("회의실6A", 6, "2층", "6인 회의실"),
+        ("회의실6B", 6, "2층", "6인 회의실"),
+        ("회의실6C", 6, "2층", "6인 회의실"),
+        ("회의실8A", 8, "3층", "8인 회의실"),
+        ("회의실8B", 8, "3층", "8인 회의실"),
+        ("회의실8C", 8, "3층", "8인 회의실"),
     ]
 
     return [
@@ -125,8 +116,6 @@ def create_rooms():
             location=location,
             description=description,
             status=ResourceStatus.AVAILABLE,
-            created_at=seed_timestamp,
-            updated_at=seed_timestamp,
         )
         for name, capacity, location, description in rooms_data
     ]
@@ -134,7 +123,6 @@ def create_rooms():
 
 def create_equipment():
     """장비 12개 생성"""
-    seed_timestamp = get_seed_timestamp()
     equipment_data = [
         ("프로젝터", "projector", "PJ-001"),
         ("프로젝터", "projector", "PJ-002"),
@@ -152,13 +140,12 @@ def create_equipment():
 
     return [
         EquipmentAsset(
+            id=serial,
             name=name,
             asset_type=asset_type,
             serial_number=serial,
             status=ResourceStatus.AVAILABLE,
             description=name,
-            created_at=seed_timestamp,
-            updated_at=seed_timestamp,
         )
         for name, asset_type, serial in equipment_data
     ]
@@ -173,8 +160,6 @@ def seed(reset=False):
         print("  기존 데이터 파일을 현재 포맷으로 초기화했습니다.")
     else:
         ensure_data_dir()
-
-    reset_clock_file()
 
     # 기존 데이터 확인
     user_repo = UserRepository()

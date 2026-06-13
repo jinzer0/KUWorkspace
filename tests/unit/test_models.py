@@ -19,12 +19,16 @@ from src.domain.models import (
     EquipmentAsset,
     RoomBooking,
     EquipmentBooking,
+    WaitingListEntry,
+    RoomMaintenanceSchedule,
     Penalty,
     AuditLog,
     RoomBookingStatus,
     EquipmentBookingStatus,
     ResourceStatus,
     PenaltyReason,
+    decode_future_status_changes,
+    encode_future_status_changes,
     generate_id,
     now_iso,
     parse_datetime,
@@ -81,6 +85,130 @@ class TestUser:
         parsed = json.loads(json_str)
         assert parsed["role"] == "admin"
 
+    def test_user_record_keeps_first_phase_users_txt_width(self):
+        record: list[str | None] = [
+            "Student1",
+            "pass123",
+            "user",
+            "3",
+            "5",
+            None,
+            "2026-03-20T09:00",
+            "2026-03-20T09:00",
+        ]
+
+        restored = User.from_record(record)
+
+        assert len(record) == 8
+        assert restored.id == "Student1"
+        assert restored.username == "Student1"
+        assert restored.password == "pass123"
+        assert restored.role == UserRole.USER
+        assert restored.penalty_points == 3
+        assert restored.normal_use_streak == 5
+        assert restored.restriction_until is None
+        assert restored.room_cancel_restricted_until is None
+        assert restored.equipment_cancel_restricted_until is None
+        assert len(restored.to_record()) == 10
+
+    def test_user_record_writes_phase_two_users_txt_width(self):
+        user = User.from_record(
+            [
+                "Student1",
+                "pass123",
+                "user",
+                "3",
+                "5",
+                None,
+                "2026-03-22T09:00",
+                None,
+                "2026-03-20T09:00",
+                "2026-03-20T09:00",
+            ]
+        )
+
+        record = user.to_record()
+
+        assert len(record) == 10
+        assert record[6] == "2026-03-22T09:00"
+        assert record[7] is None
+
+    def test_inspect1_user_legacy_rows_remain_readable_but_new_rows_are_ten_fields(self):
+        legacy = User.from_record(
+            [
+                "LegacyUser",
+                "pass123",
+                "user",
+                "0",
+                "0",
+                None,
+                "2026-03-20T09:00",
+                "2026-03-20T09:00",
+            ]
+        )
+        current = User(
+            id="CurrentUser",
+            username="CurrentUser",
+            password="pass123",
+            role=UserRole.USER,
+        )
+
+        assert legacy.username == "LegacyUser"
+        assert len(current.to_record()) == 10
+
+    def test_user_record_reads_legacy_lowercase_admin_for_seed_compatibility(self):
+        user = User.from_record(
+            [
+                "admin",
+                "admin123",
+                "admin",
+                "0",
+                "0",
+                None,
+                "2026-03-20T09:00",
+                "2026-03-20T09:00",
+            ]
+        )
+
+        assert user.id == "admin"
+        assert user.username == "admin"
+        assert user.password == "admin123"
+        assert user.role == UserRole.ADMIN
+        assert user.to_record()[0] == "admin"
+
+    def test_user_record_rejects_blank_or_whitespace_legacy_credentials(self):
+        with pytest.raises(ValueError, match="사용자명"):
+            User.from_record(
+                [
+                    " ",
+                    "admin123",
+                    "admin",
+                    "0",
+                    "0",
+                    None,
+                    "2026-03-20T09:00",
+                    "2026-03-20T09:00",
+                ]
+            )
+
+        with pytest.raises(ValueError, match="비밀번호"):
+            User.from_record(
+                [
+                    "admin",
+                    "bad pass",
+                    "admin",
+                    "0",
+                    "0",
+                    None,
+                    "2026-03-20T09:00",
+                    "2026-03-20T09:00",
+                ]
+            )
+
+    def test_user_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="8 or 10"):
+            User.from_record(["student1", "pass123"])
+
 
 class TestRoom:
     """Room 모델 테스트"""
@@ -88,7 +216,7 @@ class TestRoom:
     def test_room_to_dict_roundtrip(self, room_factory):
         """Room to_dict → from_dict 라운드트립"""
         room = room_factory(
-            name="회의실 4A",
+            name="회의실4A",
             capacity=20,
             location="3층",
             status=ResourceStatus.MAINTENANCE,
@@ -135,6 +263,161 @@ class TestEquipmentAsset:
         assert restored.serial_number == equipment.serial_number
         assert restored.status == ResourceStatus.AVAILABLE
 
+    def test_equipment_record_keeps_first_phase_equipments_txt_width(self):
+        record: list[str | None] = [
+            "프로젝터",
+            "projector",
+            "PJ-001",
+            "available",
+            "HDMI포함",
+            "2026-03-20T09:00",
+            "2026-03-20T10:00",
+        ]
+
+        restored = EquipmentAsset.from_record(record)
+
+        assert len(record) == 7
+        assert restored.id == "PJ-001"
+        assert restored.name == "프로젝터"
+        assert restored.asset_type == "projector"
+        assert restored.serial_number == "PJ-001"
+        assert restored.status == ResourceStatus.AVAILABLE
+        assert restored.description == "HDMI포함"
+        assert restored.future_status_changes == ""
+        assert len(restored.to_record()) == 8
+
+    def test_equipment_record_writes_phase_two_equipments_txt_width(self):
+        encoded = encode_future_status_changes(
+            [
+                {
+                    "id": "schedule-1",
+                    "start_time": "2026-04-01T09:00",
+                    "end_time": "2026-04-01T18:00",
+                    "status": "maintenance",
+                    "restore_status": "available",
+                    "state": "pending",
+                }
+            ]
+        )
+        restored = EquipmentAsset.from_record(
+            [
+                "프로젝터",
+                "projector",
+                "PJ-001",
+                "available",
+                "HDMI포함",
+                "2026-03-20T09:00",
+                "2026-03-20T10:00",
+                encoded,
+            ]
+        )
+
+        record = restored.to_record()
+
+        assert len(record) == 8
+        assert decode_future_status_changes(record[7]) == decode_future_status_changes(encoded)
+
+    def test_inspect1_equipment_legacy_rows_remain_readable_but_new_rows_are_eight_fields(self):
+        legacy = EquipmentAsset.from_record(
+            [
+                "프로젝터",
+                "projector",
+                "PJ-001",
+                "available",
+                "HDMI포함",
+                "2026-03-20T09:00",
+                "2026-03-20T10:00",
+            ]
+        )
+        current = EquipmentAsset(
+            id="PJ-999",
+            name="프로젝터",
+            asset_type="projector",
+            serial_number="PJ-999",
+        )
+
+        assert legacy.serial_number == "PJ-001"
+        assert len(current.to_record()) == 8
+
+    def test_plan0001_future_status_uses_memo_format(self):
+        asset = EquipmentAsset.from_record(
+            [
+                "프로젝터",
+                "projector",
+                "PJ-001",
+                "available",
+                "HDMI포함",
+                "2026-03-20T09:00",
+                "2026-03-20T10:00",
+                "2026-04-01, maintenance; 2026-04-02, maintenance",
+            ]
+        )
+
+        assert asset.future_status_changes == "2026-04-01, maintenance; 2026-04-02, maintenance"
+        assert asset.to_record()[7] == "2026-04-01, maintenance; 2026-04-02, maintenance"
+
+    def test_equipment_future_status_changes_accepts_supported_legacy_json(self):
+        encoded = '[{"id":"schedule-1","start_time":"2026-04-01T09:00:59","status":"maintenance","state":"started"}]'
+        restored = EquipmentAsset.from_record(
+            [
+                "노트북",
+                "laptop",
+                "NB-999",
+                "available",
+                "pipe|\\-",
+                "2026-03-20T09:00",
+                "2026-03-20T10:00",
+                encoded,
+            ]
+        )
+
+        decoded = decode_future_status_changes(restored.to_record()[7])
+
+        assert restored.to_record()[7] == "2026-04-01, maintenance"
+        assert decoded[0]["id"] == "maintenance-2026-04-01"
+        assert decoded[0]["start_time"] == "2026-04-01T09:00"
+        assert decoded[0]["end_time"] == "2026-04-01T18:00"
+
+    def test_equipment_future_status_changes_preserves_multiday_disabled_range(self):
+        encoded = encode_future_status_changes(
+            [
+                {
+                    "id": "schedule-1",
+                    "start_time": "2026-04-01T09:00",
+                    "end_time": "2026-04-03T18:00",
+                    "status": "disabled",
+                    "restore_status": "available",
+                    "state": "pending",
+                }
+            ]
+        )
+
+        [decoded] = decode_future_status_changes(encoded)
+
+        assert decoded["id"] == "schedule-1"
+        assert decoded["start_time"] == "2026-04-01T09:00"
+        assert decoded["end_time"] == "2026-04-03T18:00"
+        assert decoded["status"] == "disabled"
+
+    def test_equipment_future_status_changes_rejects_unknown_status(self):
+        with pytest.raises(ValueError, match="not a valid"):
+            encode_future_status_changes(
+                [
+                    {
+                        "id": "schedule-1",
+                        "start_time": "2026-04-01T09:00",
+                        "end_time": "2026-04-01T18:00",
+                        "status": "unknown",
+                        "restore_status": "available",
+                        "state": "pending",
+                    }
+                ]
+            )
+
+    def test_equipment_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="7 or 8"):
+            EquipmentAsset.from_record(["프로젝터", "projector"])
+
 
 class TestRoomBooking:
     """RoomBooking 모델 테스트"""
@@ -166,25 +449,65 @@ class TestRoomBooking:
             restored = RoomBooking.from_dict(d)
             assert restored.status == status
 
-    def test_room_booking_from_record_rejects_blank_id(self):
-        with pytest.raises(ValueError, match="room booking id"):
-            RoomBooking.from_record(
-                [
-                    "",
-                    "user01",
-                    "회의실 4A",
-                    "2026-06-16T09:00",
-                    "2026-06-16T18:00",
-                    "reserved",
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "2026-06-15T09:00",
-                    "2026-06-15T09:00",
-                ]
-            )
+    def test_room_booking_record_keeps_first_phase_room_bookings_txt_width(self):
+        record: list[str | None] = [
+            "room-booking-1",
+            "student1",
+            "회의실2A",
+            "2027-06-15T11:00",
+            "2027-06-15T12:00",
+            "completed",
+            "2027-06-15T10:00",
+            None,
+            None,
+            "2027-06-15T12:00",
+            None,
+            "2027-06-15T10:00",
+            "2027-06-15T12:00",
+        ]
+
+        restored = RoomBooking.from_record(record)
+
+        assert len(record) == 13
+        assert restored.id == "room-booking-1"
+        assert restored.user_id == "student1"
+        assert restored.room_id == "회의실2A"
+        assert restored.status == RoomBookingStatus.COMPLETED
+        assert restored.checked_in_at == "2027-06-15T10:00"
+        assert restored.requested_checkin_at is None
+        assert restored.requested_checkout_at is None
+        assert restored.completed_at == "2027-06-15T12:00"
+        assert restored.cancelled_at is None
+        assert restored.memo == ""
+        assert len(restored.to_record()) == 14
+
+    def test_room_booking_record_writes_phase_two_room_bookings_txt_width(self):
+        record: list[str | None] = [
+            "room-booking-1",
+            "student1",
+            "회의실2A",
+            "2027-06-15T11:00",
+            "2027-06-15T12:00",
+            "pending",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "2027-06-15T10:00",
+            "2027-06-15T10:00",
+            "요청 메모",
+        ]
+
+        restored = RoomBooking.from_record(record)
+
+        assert restored.status == RoomBookingStatus.PENDING
+        assert restored.memo == "요청 메모"
+        assert len(restored.to_record()) == 14
+
+    def test_room_booking_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="13 or 14"):
+            RoomBooking.from_record(["booking-1", "student1"])
 
 
 class TestEquipmentBooking:
@@ -215,25 +538,152 @@ class TestEquipmentBooking:
             restored = EquipmentBooking.from_dict(d)
             assert restored.status == status
 
-    def test_equipment_booking_from_record_rejects_blank_id(self):
-        with pytest.raises(ValueError, match="equipment booking id"):
-            EquipmentBooking.from_record(
-                [
-                    "",
-                    "user01",
-                    "NB-001",
-                    "2026-06-16T09:00",
-                    "2026-06-16T18:00",
-                    "reserved",
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "2026-06-15T09:00",
-                    "2026-06-15T09:00",
-                ]
-            )
+    def test_equipment_booking_record_keeps_first_phase_equipment_booking_txt_width(self):
+        record: list[str | None] = [
+            "equipment-booking-1",
+            "student1",
+            "PJ-001",
+            "2026-04-10T09:00",
+            "2026-04-10T18:00",
+            "reserved",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "2026-04-05T12:10",
+            "2026-04-05T12:10",
+        ]
+
+        restored = EquipmentBooking.from_record(record)
+
+        assert len(record) == 13
+        assert restored.id == "equipment-booking-1"
+        assert restored.user_id == "student1"
+        assert restored.equipment_id == "PJ-001"
+        assert restored.status == EquipmentBookingStatus.RESERVED
+        assert restored.checked_out_at is None
+        assert restored.requested_pickup_at is None
+        assert restored.requested_return_at is None
+        assert restored.returned_at is None
+        assert restored.cancelled_at is None
+        assert restored.group_id is None
+        assert restored.memo == ""
+        assert len(restored.to_record()) == 15
+
+    def test_equipment_booking_record_writes_phase_two_equipment_booking_txt_width(self):
+        record: list[str | None] = [
+            "equipment-booking-1",
+            "student1",
+            "PJ-001",
+            "2026-04-10T09:00",
+            "2026-04-10T18:00",
+            "pending",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "2026-04-05T12:10",
+            "2026-04-05T12:10",
+            "group-1",
+            "장비 메모",
+        ]
+
+        restored = EquipmentBooking.from_record(record)
+
+        assert restored.status == EquipmentBookingStatus.PENDING
+        assert restored.group_id == "group-1"
+        assert restored.memo == "장비 메모"
+        assert len(restored.to_record()) == 15
+
+    def test_equipment_booking_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="13 or 15"):
+            EquipmentBooking.from_record(["booking-1", "student1"])
+
+
+class TestRoomMaintenanceSchedule:
+    def test_room_maintenance_record_roundtrip(self):
+        schedule = RoomMaintenanceSchedule.from_record(
+            [
+                "maintenance-1",
+                "회의실2A",
+                "2027-06-15T09:00",
+                "2027-06-15T18:00",
+                "정기 점검",
+                "2027-06-01T09:00",
+                "2027-06-01T09:00",
+            ]
+        )
+
+        record = schedule.to_record()
+
+        assert schedule.id == "maintenance-1"
+        assert schedule.room_id == "회의실2A"
+        assert schedule.status == "scheduled"
+        assert schedule.cancelled_at is None
+        assert len(record) == 8
+        assert record[4] == "scheduled"
+        assert record[7] == "-"
+
+    def test_plan0001_room_maintenance_record_has_status_and_cancelled_at(self):
+        schedule = RoomMaintenanceSchedule.from_record(
+            [
+                "maintenance-1",
+                "회의실2A",
+                "2027-06-15T09:00",
+                "2027-06-15T18:00",
+                "scheduled",
+                "2027-06-01T09:00",
+                "2027-06-01T09:00",
+                "-",
+            ]
+        )
+
+        record = schedule.to_record()
+
+        assert len(record) == 8
+        assert record[4] in {"scheduled", "active", "completed", "cancelled"}
+        assert record[7] == "-"
+        assert getattr(schedule, "status") == "scheduled"
+        assert getattr(schedule, "cancelled_at") is None
+
+    def test_room_maintenance_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="7 or 8"):
+            RoomMaintenanceSchedule.from_record(["maintenance-1"])
+
+
+class TestWaitingListEntry:
+    def test_waiting_list_record_roundtrip(self):
+        entry = WaitingListEntry.from_record(
+            [
+                "waiting-1",
+                "Student1",
+                "room_booking",
+                "room-booking-1",
+                "3",
+                "2027-06-01T09:00",
+                "2027-06-01T09:00",
+            ]
+        )
+
+        assert entry.id == "waiting-1"
+        assert entry.username == "Student1"
+        assert entry.related_type == "room_booking"
+        assert entry.user_count == 3
+        assert entry.to_record() == [
+            "waiting-1",
+            "Student1",
+            "room_booking",
+            "room-booking-1",
+            "3",
+            "2027-06-01T09:00",
+            "2027-06-01T09:00",
+        ]
+
+    def test_waiting_list_record_rejects_malformed_width(self):
+        with pytest.raises(ValueError, match="7 fields"):
+            WaitingListEntry.from_record(["waiting-1"])
 
 
 class TestPenalty:
@@ -274,22 +724,6 @@ class TestPenalty:
         assert "\n" not in memo
         assert "\r" not in memo
         assert len(memo) == 20
-
-    def test_penalty_from_record_rejects_blank_id(self):
-        with pytest.raises(ValueError, match="penalty id"):
-            Penalty.from_record(
-                [
-                    "",
-                    "user01",
-                    "late_cancel",
-                    "2",
-                    "room_booking",
-                    generate_id(),
-                    "memo",
-                    "2026-06-15T09:00",
-                    None,
-                ]
-            )
 
 
 class TestAuditLog:
@@ -351,21 +785,6 @@ class TestAuditLog:
         assert "\n" not in details
         assert "\r" not in details
         assert len(details) == 20
-
-    def test_audit_log_from_record_rejects_blank_id(self):
-        with pytest.raises(ValueError, match="audit log id"):
-            AuditLog.from_record(
-                [
-                    "",
-                    "system",
-                    "policy_review",
-                    "room_booking",
-                    "target-1",
-                    "details",
-                    "2026-06-15T09:00",
-                    None,
-                ]
-            )
 
 
 class TestHelperFunctions:

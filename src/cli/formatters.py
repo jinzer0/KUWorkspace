@@ -3,13 +3,80 @@ CLI 출력 포맷터 유틸리티
 """
 
 import sys
+import unicodedata
+from collections.abc import Sequence
 from datetime import datetime
 
 
 CLEAR_SCREEN_SEQUENCE = "\033[2J\033[H"
 
 
-def format_datetime(dt_str, fmt="%Y-%m-%d %H:%M"):
+def _char_display_width(char: str) -> int:
+    codepoint = ord(char)
+    if unicodedata.combining(char):
+        return 0
+    if char == "\u200d" or 0xFE00 <= codepoint <= 0xFE0F:
+        return 0
+    if 0xE0100 <= codepoint <= 0xE01EF:
+        return 0
+    if unicodedata.east_asian_width(char) in {"F", "W"}:
+        return 2
+    return 1
+
+
+def _display_width(value: object) -> int:
+    return sum(_char_display_width(char) for char in str(value))
+
+
+def _pad_display(text: str, width: int) -> str:
+    return text + " " * max(width - _display_width(text), 0)
+
+
+def _truncate_display(text: str, width: int) -> str:
+    if _display_width(text) <= width:
+        return text
+    if width <= 0:
+        return ""
+    if width <= 3:
+        return "." * width
+
+    target = width - 3
+    result: list[str] = []
+    current_width = 0
+    for char in text:
+        char_width = _char_display_width(char)
+        if current_width + char_width > target:
+            break
+        result.append(char)
+        current_width += char_width
+    return "".join(result) + "..."
+
+
+def _legacy_padded_display_width(text: str, width: int) -> int:
+    return _display_width(text) + max(width - len(text), 0)
+
+
+def _normalize_col_widths(
+    headers: Sequence[object],
+    rows: Sequence[Sequence[object | None]],
+    col_widths: Sequence[int],
+) -> list[int]:
+    normalized = list(col_widths)
+    for i, width in enumerate(normalized):
+        if i < len(headers):
+            header = str(headers[i])
+            normalized[i] = max(normalized[i], _legacy_padded_display_width(header, width))
+        for row in rows:
+            if i < len(row):
+                cell = str(row[i]) if row[i] is not None else "-"
+                if len(cell) <= width - 2:
+                    normalized[i] = max(
+                        normalized[i], _legacy_padded_display_width(cell, width)
+                    )
+    return normalized
+
+
+def format_datetime(dt_str: str | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
     """ISO datetime 문자열을 읽기 쉬운 형식으로 변환"""
     if dt_str is None:
         return "-"
@@ -20,7 +87,11 @@ def format_datetime(dt_str, fmt="%Y-%m-%d %H:%M"):
         return dt_str
 
 
-def format_table(headers, rows, col_widths=None):
+def format_table(
+    headers: Sequence[object],
+    rows: Sequence[Sequence[object | None]],
+    col_widths: Sequence[int] | None = None,
+) -> str:
     """
     고정폭 텍스트 테이블 생성
 
@@ -35,45 +106,44 @@ def format_table(headers, rows, col_widths=None):
     if not headers:
         return ""
 
-    # 열 너비 계산
     if col_widths is None:
-        col_widths = []
+        resolved_widths: list[int] = []
         for i, header in enumerate(headers):
-            max_width = len(str(header))
+            max_width = _display_width(header)
             for row in rows:
                 if i < len(row):
-                    max_width = max(max_width, len(str(row[i])))
-            col_widths.append(min(max_width + 2, 40))  # 최대 40자
+                    cell = str(row[i]) if row[i] is not None else "-"
+                    max_width = max(max_width, _display_width(cell))
+            resolved_widths.append(min(max_width + 2, 40))
+    else:
+        resolved_widths = _normalize_col_widths(headers, rows, col_widths)
 
-    # 헤더 행
     header_line = ""
     for i, header in enumerate(headers):
-        header_line += str(header).ljust(col_widths[i])
+        header_line += _pad_display(str(header), resolved_widths[i])
 
-    # 구분선
-    separator = "-" * sum(col_widths)
+    separator = "-" * sum(resolved_widths)
 
-    # 데이터 행
-    data_lines = []
+    data_lines: list[str] = []
     for row in rows:
         line = ""
         for i, col in enumerate(row):
-            if i < len(col_widths):
+            if i < len(resolved_widths):
                 cell = str(col) if col is not None else "-"
-                # 긴 텍스트 자르기
-                if len(cell) > col_widths[i] - 2:
-                    cell = cell[: col_widths[i] - 5] + "..."
-                line += cell.ljust(col_widths[i])
+                if _display_width(cell) > resolved_widths[i] - 2:
+                    cell = _truncate_display(cell, resolved_widths[i] - 2)
+                line += _pad_display(cell, resolved_widths[i])
         data_lines.append(line)
 
     result = [header_line, separator] + data_lines
     return "\n".join(result)
 
 
-def format_status_badge(status):
+def format_status_badge(status: str) -> str:
     """상태값을 한글 배지로 변환"""
     status_map = {
         # 회의실 예약 상태
+        "pending": "[예약 대기중]",
         "reserved": "[예약됨]",
         "checkin_requested": "[체크인요청]",
         "checked_in": "[입실]",
@@ -97,7 +167,7 @@ def format_status_badge(status):
     return status_map.get(status, f"[{status}]")
 
 
-def format_penalty_status(points, is_banned, is_restricted):
+def format_penalty_status(points: int, is_banned: bool, is_restricted: bool) -> str:
     """패널티 상태 요약"""
     if is_banned:
         return f"⛔ 이용 금지 (누적 {points}점)"
@@ -108,16 +178,16 @@ def format_penalty_status(points, is_banned, is_restricted):
     return "✅ 양호"
 
 
-def clear_screen():
+def clear_screen() -> None:
     is_tty = getattr(sys.stdout, "isatty", None)
     if not callable(is_tty) or not is_tty():
         return
 
-    sys.stdout.write(CLEAR_SCREEN_SEQUENCE)
-    sys.stdout.flush()
+    _ = sys.stdout.write(CLEAR_SCREEN_SEQUENCE)
+    _ = sys.stdout.flush()
 
 
-def print_header(title):
+def print_header(title: str) -> None:
     """섹션 헤더 출력"""
     clear_screen()
     print()
@@ -126,33 +196,33 @@ def print_header(title):
     print("=" * 50)
 
 
-def print_subheader(title):
+def print_subheader(title: str) -> None:
     """서브 섹션 헤더 출력"""
     print()
     print(f"--- {title} ---")
 
 
-def print_success(message):
+def print_success(message: str) -> None:
     """성공 메시지 출력"""
     print(f"✓ {message}")
 
 
-def print_error(message):
+def print_error(message: str) -> None:
     """에러 메시지 출력"""
     print(f"✗ {message}")
 
 
-def print_warning(message):
+def print_warning(message: str) -> None:
     """경고 메시지 출력"""
     print(f"⚠ {message}")
 
 
-def print_info(message):
+def print_info(message: str) -> None:
     """정보 메시지 출력"""
     print(f"ℹ {message}")
 
 
-def format_booking_time_range(start, end):
+def format_booking_time_range(start: str, end: str) -> str:
     """예약 시간 범위 포맷"""
     start_dt = datetime.fromisoformat(start)
     end_dt = datetime.fromisoformat(end)

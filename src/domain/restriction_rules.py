@@ -7,6 +7,8 @@ from src.config import (
     PENALTY_BAN_THRESHOLD,
     MAX_ACTIVE_ROOM_BOOKINGS,
     MAX_ACTIVE_EQUIPMENT_BOOKINGS,
+    MAX_RESTRICTED_ROOM_BOOKINGS,
+    MAX_RESTRICTED_EQUIPMENT_BOOKINGS,
 )
 from src.runtime_clock import get_current_time
 
@@ -24,20 +26,20 @@ def evaluate_user_restriction(user, current_time=None):
         MAX_ACTIVE_ROOM_BOOKINGS + MAX_ACTIVE_EQUIPMENT_BOOKINGS
     )
 
-    if restriction_until:
+    if restriction_until and points >= PENALTY_RESTRICTION_THRESHOLD:
         restriction_end = datetime.fromisoformat(restriction_until)
-        if restriction_end <= current_time:
+        if restriction_end > current_time:
+            if points >= PENALTY_BAN_THRESHOLD:
+                is_banned = True
+                max_active_bookings = 0
+            else:
+                is_restricted = True
+                max_active_bookings = (
+                    MAX_RESTRICTED_ROOM_BOOKINGS
+                    + MAX_RESTRICTED_EQUIPMENT_BOOKINGS
+                )
+        else:
             restriction_until = None
-
-    if points >= PENALTY_BAN_THRESHOLD and restriction_until is not None:
-        is_banned = True
-    elif PENALTY_RESTRICTION_THRESHOLD <= points < PENALTY_BAN_THRESHOLD and restriction_until is not None:
-        is_restricted = True
-
-    if is_banned:
-        max_active_bookings = 0
-    elif is_restricted:
-        max_active_bookings = 1
 
     return {
         "points": points,
