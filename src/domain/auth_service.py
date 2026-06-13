@@ -5,8 +5,10 @@
 from src.domain.models import User, UserRole
 from src.domain.auth_rules import (
     normalize_credential,
-    validate_username,
+    validate_login_password,
+    validate_login_username,
     validate_password,
+    validate_username,
 )
 from src.storage.repositories import UserRepository
 from src.storage.file_lock import global_lock
@@ -49,11 +51,9 @@ class AuthService:
             raise AuthError(error)
 
         with global_lock():
-            # 중복 확인
             if self.user_repo.username_exists(username):
                 raise AuthError(f"이미 존재하는 사용자명입니다: {username}")
 
-            # 사용자 생성
             user = User(
                 id=username, username=username, password=password, role=role
             )
@@ -78,11 +78,11 @@ class AuthService:
         username = normalize_credential(username)
         password = normalize_credential(password)
 
-        valid, error = validate_username(username)
+        valid, error = validate_login_username(username)
         if not valid:
             raise AuthError(error)
 
-        valid, error = validate_password(password)
+        valid, error = validate_login_password(password)
         if not valid:
             raise AuthError(error)
 

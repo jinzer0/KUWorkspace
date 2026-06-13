@@ -5,7 +5,7 @@
 from src.domain.auth_service import AuthService, AuthError
 from src.domain.policy_service import PolicyService
 from src.domain.penalty_service import PenaltyError
-from src.cli.menu import confirm, pause
+from src.cli.menu import confirm, input_start_gate, pause, review_action
 from src.cli.formatters import print_header, print_success, print_error
 from src.cli.clock_menu import ClockMenu
 from src.cli.validators import validate_username, validate_password
@@ -68,6 +68,9 @@ class GuestMenu:
         """로그인 처리"""
         print_header("로그인")
 
+        if not input_start_gate("로그인 정보 입력"):
+            return None
+
         username = input("사용자명: ").strip()
         if not username:
             print_error("사용자명을 입력해주세요.")
@@ -102,40 +105,51 @@ class GuestMenu:
         print_header("회원가입")
 
         while True:
-            username = input("사용자명 (3-20자, 영문/숫자/_): ").strip()
-            if not username:
-                print_error("사용자명을 입력해주세요.")
-                continue
+            if not input_start_gate("회원가입 입력"):
+                return
 
-            valid, error = validate_username(username)
-            if not valid:
-                print_error(error)
-                continue
-            break
+            while True:
+                username = input("사용자명 (3-20자, 첫 글자 대문자, 영문/숫자/_): ").strip()
+                if not username:
+                    print_error("사용자명을 입력해주세요.")
+                    continue
 
-        while True:
-            password = input("비밀번호 (4자 이상): ").strip()
-            if not password:
-                print_error("비밀번호를 입력해주세요.")
-                continue
+                valid, error = validate_username(username)
+                if not valid:
+                    print_error(error)
+                    continue
+                break
 
-            valid, error = validate_password(password)
-            if not valid:
-                print_error(error)
-                continue
+            while True:
+                password = input("비밀번호 (4-50자, 영문자/숫자 포함): ").strip()
+                if not password:
+                    print_error("비밀번호를 입력해주세요.")
+                    continue
 
-            password_confirm = input("비밀번호 확인: ").strip()
-            if password != password_confirm:
-                print_error("비밀번호가 일치하지 않습니다.")
-                continue
-            break
+                valid, error = validate_password(password)
+                if not valid:
+                    print_error(error)
+                    continue
 
-        try:
-            user = self.auth_service.signup(username, password)
-            print_success(f"회원가입이 완료되었습니다. (사용자명: {user.username})")
-            print("  로그인 후 서비스를 이용해주세요.")
-            pause()
-
-        except AuthError as e:
-            print_error(str(e))
-            pause()
+                password_confirm = input("비밀번호 확인: ").strip()
+                if password != password_confirm:
+                    print_error("비밀번호가 일치하지 않습니다.")
+                    continue
+                print(f"  사용자명: {username}")
+                decision = review_action("회원가입 검토", "저장")
+                if decision == "confirm":
+                    try:
+                        user = self.auth_service.signup(username, password)
+                        print_success(f"회원가입이 완료되었습니다. (사용자명: {user.username})")
+                        print("  로그인 후 서비스를 이용해주세요.")
+                        pause()
+                    except AuthError as e:
+                        print_error(str(e))
+                        pause()
+                    return
+                if decision == "cancel":
+                    print_error("회원가입을 취소했습니다.")
+                    pause()
+                    return
+                if decision == "retry":
+                    break
