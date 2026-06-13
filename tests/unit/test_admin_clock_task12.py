@@ -33,8 +33,10 @@ def test_admin_creates_and_cancels_room_maintenance_through_service(
         room = create_test_room()
         menu = _admin_menu(admin, auth_service, room_service, equipment_service, penalty_service, policy_service)
         monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda items, prompt: items[0][0])
-        monkeypatch.setattr("src.cli.admin_menu.get_daily_date_range_input", lambda *_args: (date(2024, 6, 16), date(2024, 6, 16)))
+        monkeypatch.setattr("src.cli.admin_menu.get_daily_date_range_input", lambda *_args: (date(2024, 6, 16), date(2024, 6, 17)))
         monkeypatch.setattr("builtins.input", lambda _prompt="": "정기점검")
+        monkeypatch.setattr("src.cli.admin_menu.input_start_gate", lambda _title: True)
+        monkeypatch.setattr("src.cli.admin_menu.review_action", lambda *_args, **_kwargs: "confirm")
         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
         monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
@@ -43,10 +45,13 @@ def test_admin_creates_and_cancels_room_maintenance_through_service(
         schedules = room_maintenance_repo.get_all()
         assert len(schedules) == 1
         assert schedules[0].room_id == room.id
+        assert schedules[0].start_time == "2024-06-16T18:00"
+        assert schedules[0].end_time == "2024-06-17T09:00"
 
-        monkeypatch.setattr("src.cli.admin_menu.confirm", lambda _message: True)
         menu._cancel_room_maintenance()
-        assert room_maintenance_repo.get_all() == []
+        [cancelled] = room_maintenance_repo.get_all()
+        assert cancelled.status == "cancelled"
+        assert cancelled.cancelled_at != "-"
 
 
 def test_admin_schedules_and_cancels_equipment_future_status_through_service(
@@ -65,10 +70,12 @@ def test_admin_schedules_and_cancels_equipment_future_status_through_service(
         admin = create_test_user(role=UserRole.ADMIN)
         equipment = create_test_equipment()
         menu = _admin_menu(admin, auth_service, room_service, equipment_service, penalty_service, policy_service)
-        inputs = iter(["1"])
+        inputs = iter(["2"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
         monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda items, prompt: items[0][0])
         monkeypatch.setattr("src.cli.admin_menu.get_daily_date_range_input", lambda *_args: (date(2024, 6, 16), date(2024, 6, 16)))
+        monkeypatch.setattr("src.cli.admin_menu.input_start_gate", lambda _title: True)
+        monkeypatch.setattr("src.cli.admin_menu.review_action", lambda *_args, **_kwargs: "confirm")
         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
         monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
@@ -79,11 +86,41 @@ def test_admin_schedules_and_cancels_equipment_future_status_through_service(
         assert len(items) == 1
         assert items[0]["status"] == ResourceStatus.MAINTENANCE.value
 
-        monkeypatch.setattr("src.cli.admin_menu.confirm", lambda _message: True)
         menu._cancel_equipment_future_status()
         updated = equipment_repo.get_by_id(equipment.id)
-        [cancelled] = decode_future_status_changes(updated.future_status_changes)
-        assert cancelled["state"] == "cancelled"
+        assert decode_future_status_changes(updated.future_status_changes) == []
+
+
+def test_inspect1_equipment_future_status_reachable_from_resource_status_flow(
+    monkeypatch,
+    auth_service,
+    room_service,
+    equipment_service,
+    penalty_service,
+    policy_service,
+    create_test_user,
+    create_test_equipment,
+):
+    admin = create_test_user(role=UserRole.ADMIN)
+    create_test_equipment(name="노트북A")
+    menu = _admin_menu(admin, auth_service, room_service, equipment_service, penalty_service, policy_service)
+    calls = []
+    inputs = iter(["2", "3", "0"])
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
+    monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
+    monkeypatch.setattr(menu, "_schedule_equipment_future_status", lambda: calls.append("schedule"))
+    monkeypatch.setattr(menu, "_cancel_equipment_future_status", lambda: calls.append("cancel"))
+    monkeypatch.setattr(
+        "src.cli.admin_menu.select_from_list",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("date-selection flow should dispatch before selecting equipment")),
+    )
+
+    menu._change_equipment_status()
+    menu._change_equipment_status()
+
+    assert calls == ["schedule", "cancel"]
 
 
 def test_clock_advance_prints_task11_maintenance_summary(monkeypatch, capsys):
@@ -118,6 +155,7 @@ def test_clock_advance_prints_task11_maintenance_summary(monkeypatch, capsys):
             }
 
     menu = ClockMenu(StubPolicyService(), actor_id="admin")
+    monkeypatch.setattr("src.cli.clock_menu.review_action", lambda *_args, **_kwargs: "confirm")
     monkeypatch.setattr("src.cli.clock_menu.pause", lambda: None)
     menu._advance()
     output = capsys.readouterr().out

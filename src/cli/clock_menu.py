@@ -1,4 +1,4 @@
-from src.cli.menu import pause
+from src.cli.menu import pause, review_action
 from src.cli.formatters import (
     print_header,
     print_error,
@@ -80,7 +80,8 @@ class ClockMenu:
         if not maintenance:
             return
         summary_items = [
-            ("만료된 회의실 점검", maintenance.get("room_maintenance_expired", [])),
+            ("활성화된 회의실 점검", maintenance.get("room_maintenance_active", [])),
+            ("완료된 회의실 점검", maintenance.get("room_maintenance_expired", [])),
             ("장비 미래 상태 적용", maintenance.get("equipment_future_status_changes", [])),
             ("회의실 대기 확정", maintenance.get("room_pending_promoted", [])),
             ("회의실 대기 취소", maintenance.get("room_pending_cancelled", [])),
@@ -115,6 +116,21 @@ class ClockMenu:
                 pause()
                 return
             force = True
+
+        print_header("시점 이동 검토")
+        print(f"  현재 운영 시점: {format_datetime(preview['current_time'].isoformat())}")
+        print(f"  다음 시점: {format_datetime(preview['next_time'].isoformat())}")
+        if preview["events"]:
+            print("  예상 이벤트:")
+            for event in preview["events"]:
+                print(f"  - {event}")
+        decision = review_action("운영 시점 이동 검토", "처리")
+        if decision == "retry":
+            return self._advance()
+        if decision == "cancel":
+            print_info("시점 이동을 취소했습니다.")
+            pause()
+            return
 
         result = self.policy_service.advance_time(actor_id=self.actor_id, force=force)
         print_header("시점 이동 결과")
