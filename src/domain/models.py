@@ -1,5 +1,14 @@
 """
 도메인 모델 정의 (Dataclasses + Enums)
+
+[2차 변경 — 6.5.2 장비 사용자 파트]
+ ① EquipmentBookingStatus.PENDING 추가 (우선권 대기)
+ ② PenaltyReason.FREQUENT_CANCEL 추가 (악의적 반복 취소)
+ ③ EquipmentBooking 에 group_id, memo 필드 추가 (묶음 예약 / 메모)
+    - to_record / from_record 를 15필드로 확장, 1차(13필드) 레코드 하위호환
+ ④ User 에 room_cancel_restricted_until / equipment_cancel_restricted_until 추가
+    - users.txt 형식 변경 (8필드 → 10필드), 8필드 구형 하위호환
+    - ※ users.txt 담당 팀원과 협의 필요
 """
 
 from dataclasses import dataclass, field, asdict
@@ -51,6 +60,7 @@ class EquipmentBookingStatus(str, Enum):
     RETURNED = "returned"
     CANCELLED = "cancelled"
     ADMIN_CANCELLED = "admin_cancelled"
+    PENDING = "pending"  # [2차 신규] 우선권 대기
 
 
 class PenaltyReason(str, Enum):
@@ -60,6 +70,7 @@ class PenaltyReason(str, Enum):
     LATE_RETURN = "late_return"
     DAMAGE = "damage"
     CONTAMINATION = "contamination"
+    FREQUENT_CANCEL = "frequent_cancel"  # [2차 신규] 악의적 반복 취소
     OTHER = "other"
 
 
@@ -113,6 +124,9 @@ class User:
     penalty_points: int = 0
     normal_use_streak: int = 0
     restriction_until: Optional[str] = None  # ISO datetime or None
+    # [2차 신규] 반복 취소로 인한 신규 예약 제한 종료 시각
+    room_cancel_restricted_until: Optional[str] = None
+    equipment_cancel_restricted_until: Optional[str] = None
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
@@ -139,6 +153,9 @@ class User:
         return cls.from_dict(json.loads(json_str))
 
     def to_record(self) -> List[Optional[str]]:
+        # [2차] username|password|role|penalty_points|normal_use_streak|
+        #       restriction_until|room_cancel_restricted_until|
+        #       equipment_cancel_restricted_until|created_at|updated_at  (10필드)
         return [
             self.username,
             self.password,
@@ -146,19 +163,29 @@ class User:
             str(self.penalty_points),
             str(self.normal_use_streak),
             normalize_datetime_string(self.restriction_until),
+            normalize_datetime_string(self.room_cancel_restricted_until),
+            normalize_datetime_string(self.equipment_cancel_restricted_until),
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
         ]
 
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "User":
-        if len(record) == 8:
-            user_id = record[0] or ""
+        # 신규(10필드) / 구형(8필드, 취소 제한 없음) 모두 하위호환
+        room_cancel = None
+        equip_cancel = None
+        if len(record) >= 10:
+            (
+                username, password, role, points, streak, restriction_until,
+                room_cancel, equip_cancel, created_at, updated_at,
+            ) = record[:10]
+            user_id = username or ""
+        elif len(record) == 8:
             username, password, role, points, streak, restriction_until, created_at, updated_at = record
-            if not user_id:
-                user_id = username or ""
+            user_id = username or ""
         else:
-            user_id, username, password, role, points, streak, restriction_until, created_at, updated_at = record
+            # 구형 9필드 (id 포함) 호환
+            user_id, username, password, role, points, streak, restriction_until, created_at, updated_at = record[:9]
         user_key = username or user_id or ""
         return cls(
             id=user_id or user_key,
@@ -168,6 +195,8 @@ class User:
             penalty_points=int(points or "0"),
             normal_use_streak=int(streak or "0"),
             restriction_until=normalize_datetime_string(restriction_until),
+            room_cancel_restricted_until=normalize_datetime_string(room_cancel),
+            equipment_cancel_restricted_until=normalize_datetime_string(equip_cancel),
             created_at=normalize_datetime_string(created_at) or now_iso(),
             updated_at=normalize_datetime_string(updated_at) or now_iso(),
         )
@@ -240,7 +269,7 @@ class Room:
 @dataclass
 class EquipmentAsset:
     """장비 자산 (개별 자산 단위 관리)
-    
+
     장비의 고유 식별자로 serial_number를 사용한다.
     id 프로퍼티는 serial_number를 반환하며, 기존 코드와의 호환성을 유지한다.
     """
@@ -411,6 +440,9 @@ class EquipmentBooking:
     cancelled_at: Optional[str] = None
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
+    # [2차 신규] 묶음 예약 식별자 / 메모
+    group_id: str = "-"
+    memo: str = "-"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -445,10 +477,15 @@ class EquipmentBooking:
             normalize_datetime_string(self.cancelled_at),
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
+            self.group_id if self.group_id else "-",                       # [2차 신규]
+            normalize_persisted_text(self.memo, 50) if self.memo else "-",  # [2차 신규]
         ]
 
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "EquipmentBooking":
+        # 1차(13필드) 레코드도 읽을 수 있도록 group_id, memo 기본값 보충
+        if len(record) == 13:
+            record = list(record) + ["-", "-"]
         (
             booking_id,
             user_id,
@@ -463,6 +500,8 @@ class EquipmentBooking:
             cancelled_at,
             created_at,
             updated_at,
+            group_id,
+            memo,
         ) = record
         return cls(
             id=booking_id or generate_id(),
@@ -478,6 +517,8 @@ class EquipmentBooking:
             cancelled_at=normalize_datetime_string(cancelled_at),
             created_at=normalize_datetime_string(created_at) or now_iso(),
             updated_at=normalize_datetime_string(updated_at) or now_iso(),
+            group_id=group_id if group_id else "-",
+            memo=memo if memo else "-",
         )
 
 
