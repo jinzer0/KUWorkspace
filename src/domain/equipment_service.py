@@ -455,11 +455,6 @@ class EquipmentService:
                 if equipment is None:
                     raise EquipmentBookingError("존재하지 않는 장비입니다.")
 
-                if equipment.status != ResourceStatus.AVAILABLE:
-                    raise EquipmentBookingError(
-                        f"장비가 현재 {equipment.status.value} 상태입니다."
-                    )
-
                 valid, error, _ = validate_daily_booking_dates(
                     start_date, end_date, self.clock.now()
                 )
@@ -468,6 +463,11 @@ class EquipmentService:
 
                 start_time, end_time = build_daily_booking_period(start_date, end_date)
                 self._ensure_no_future_unavailable_overlap(equipment, start_time, end_time)
+
+                if equipment.status != ResourceStatus.AVAILABLE:
+                    raise EquipmentBookingError(
+                        f"장비가 현재 {equipment.status.value} 상태입니다."
+                    )
 
                 active_bookings = self._collapse_group_rows(
                     self.booking_repo.get_quota_active_by_user(user.id)
