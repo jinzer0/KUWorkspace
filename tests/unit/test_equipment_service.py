@@ -268,6 +268,11 @@ class TestEquipmentFutureStatusScheduling:
                 date(2024, 6, 16),
                 date(2024, 6, 16),
             )
+            with global_lock():
+                for booking in equipment_booking_repo.get_all():
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
             before_ids = {booking.id for booking in equipment_booking_repo.get_all()}
 
             with pytest.raises(EquipmentBookingError, match="이미 예약"):
@@ -298,7 +303,7 @@ class TestEquipmentFutureStatusScheduling:
             waiter, equipment.id, date(2024, 6, 16), date(2024, 6, 16)
         )
 
-        assert first.status == EquipmentBookingStatus.RESERVED
+        assert first.status == EquipmentBookingStatus.PENDING
         assert second.status == EquipmentBookingStatus.PENDING
 
     def test_create_booking_cannot_bypass_limit_with_large_max_active(
@@ -740,6 +745,11 @@ class TestCheckoutReturn:
                 end_time=fixed_time.replace(hour=18),
             )
             group_id = bookings[0].group_id
+            with global_lock():
+                for booking in bookings:
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
 
             updated = equipment_service.request_pickup(user, bookings[1].id)
             persisted = equipment_booking_repo.get_by_group_id(group_id)
@@ -1064,6 +1074,11 @@ class TestCheckoutReturn:
                 end_time=fixed_time.replace(hour=18),
             )
             group_id = bookings[0].group_id
+            with global_lock():
+                for booking in bookings:
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
             equipment_service.request_pickup(user, bookings[0].id)
             equipment_service.checkout(admin, bookings[0].id)
 
@@ -1446,6 +1461,10 @@ class TestEquipmentBookingMemo:
                 end_date=date(2024, 6, 16),
                 memo="기존메모",
             )
+            with global_lock():
+                equipment_booking_repo.update(
+                    replace(booking, status=EquipmentBookingStatus.RESERVED)
+                )
             with pytest.raises(ValueError, match="줄바꿈"):
                 equipment_service.modify_daily_booking(
                     user=user,
@@ -1526,7 +1545,7 @@ class TestEquipmentGroupBooking:
         statuses = {booking.equipment_id: booking.status for booking in bookings}
         assert statuses == {
             conflicting.id: EquipmentBookingStatus.PENDING,
-            available.id: EquipmentBookingStatus.RESERVED,
+            available.id: EquipmentBookingStatus.PENDING,
         }
         assert len({booking.group_id for booking in bookings}) == 1
 
@@ -1635,7 +1654,7 @@ class TestEquipmentGroupBooking:
                 max_active=3,
             )
 
-        assert booking.status == EquipmentBookingStatus.RESERVED
+        assert booking.status == EquipmentBookingStatus.PENDING
         assert len(equipment_booking_repo.get_by_user(user.id)) == 4
 
     def test_group_booking_counts_as_one_active_equipment_quota_for_time_booking(
@@ -1695,6 +1714,13 @@ class TestEquipmentGroupBooking:
                 end_time=fixed_time + timedelta(days=2),
                 memo="그룹예약",
             )
+            with global_lock():
+                bookings = [
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
+                    for booking in bookings
+                ]
 
             group_id = bookings[0].group_id
             assert group_id
@@ -1743,6 +1769,13 @@ class TestEquipmentGroupBooking:
                 start_time=fixed_time + timedelta(days=1),
                 end_time=fixed_time + timedelta(days=2),
             )
+            with global_lock():
+                bookings = [
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
+                    for booking in bookings
+                ]
             group_id = bookings[0].group_id
             checked_out_member = replace(
                 bookings[1], status=EquipmentBookingStatus.CHECKED_OUT
@@ -1787,6 +1820,11 @@ class TestEquipmentGroupBooking:
                 end_time=fixed_time + timedelta(days=4),
             )
             group_id = bookings[0].group_id
+            with global_lock():
+                for booking in bookings:
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
 
             original_update = equipment_booking_repo.update
             update_count = {"value": 0}
@@ -1834,6 +1872,13 @@ class TestEquipmentGroupBooking:
                 end_time=fixed_time + timedelta(days=4),
                 memo="기존메모",
             )
+            with global_lock():
+                bookings = [
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
+                    for booking in bookings
+                ]
             group_id = bookings[0].group_id
 
             updated = equipment_service.modify_daily_booking(
@@ -1875,6 +1920,13 @@ class TestEquipmentGroupBooking:
                 start_time=fixed_time + timedelta(days=3),
                 end_time=fixed_time + timedelta(days=4),
             )
+            with global_lock():
+                bookings = [
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
+                    for booking in bookings
+                ]
             group_id = bookings[0].group_id
 
             updated = equipment_service.admin_modify_daily_booking(
@@ -1927,6 +1979,13 @@ class TestEquipmentGroupBooking:
                 start_time=fixed_time + timedelta(days=10),
                 end_time=fixed_time + timedelta(days=11),
             )
+            with global_lock():
+                bookings = [
+                    equipment_booking_repo.update(
+                        replace(booking, status=EquipmentBookingStatus.RESERVED)
+                    )
+                    for booking in bookings
+                ]
 
             equipment_service.cancel_booking(user, bookings[0].id)
 
