@@ -72,7 +72,7 @@ class UserMenu:
 
     def _run_policy_checks(self):
         try:
-            self.policy_service.run_all_checks()
+            self.policy_service.run_all_checks(resolve_pending=False)
             return True
         except PenaltyError as e:
             print_error(str(e))

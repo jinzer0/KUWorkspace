@@ -93,16 +93,16 @@ class PolicyService:
             clock=self.clock,
         )
 
-    def run_all_checks(self, current_time=None):
+    def run_all_checks(self, current_time=None, resolve_pending=True):
         if current_time is None:
             current_time = self.clock.now()
 
         with global_lock():
             validate_all_data_files()
             with UnitOfWork():
-                return self._run_checks_locked(current_time)
+                return self._run_checks_locked(current_time, resolve_pending=resolve_pending)
 
-    def _run_checks_locked(self, current_time):
+    def _run_checks_locked(self, current_time, resolve_pending=True):
         results = {
             "penalty_reset_users": [],
             "restriction_expired_users": [],
@@ -120,13 +120,14 @@ class PolicyService:
         results["room_maintenance_expired"] = completed_maintenance
         results["equipment_future_status_changes"] = self._apply_equipment_future_status_changes(current_time)
 
-        room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
-        results["room_pending_promoted"] = room_promoted
-        results["room_pending_cancelled"] = room_cancelled
+        if resolve_pending:
+            room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
+            results["room_pending_promoted"] = room_promoted
+            results["room_pending_cancelled"] = room_cancelled
 
-        equipment_promoted, equipment_cancelled = self._resolve_equipment_pending_bookings(current_time)
-        results["equipment_pending_promoted"] = equipment_promoted
-        results["equipment_pending_cancelled"] = equipment_cancelled
+            equipment_promoted, equipment_cancelled = self._resolve_equipment_pending_bookings(current_time)
+            results["equipment_pending_promoted"] = equipment_promoted
+            results["equipment_pending_cancelled"] = equipment_cancelled
 
         reset_users = self._check_penalty_resets(current_time)
         results["penalty_reset_users"] = [u.id for u in reset_users]

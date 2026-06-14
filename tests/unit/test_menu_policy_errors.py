@@ -16,7 +16,7 @@ class TestGuestMenuPolicyChecks:
         monkeypatch.setattr(
             menu.policy_service,
             "run_all_checks",
-            lambda: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
+            lambda **_kwargs: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
         )
         monkeypatch.setattr("src.cli.guest_menu.pause", lambda: None)
         messages = []
@@ -79,7 +79,7 @@ class TestAdminMenuPolicyChecks:
         monkeypatch.setattr(
             menu.policy_service,
             "run_all_checks",
-            lambda: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
+            lambda **_kwargs: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
         )
         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: print("0. 돌아가기"))
         messages = []

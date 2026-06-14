@@ -454,7 +454,7 @@ class AdminMenu:
 
     def _run_policy_checks(self):
         try:
-            self.policy_service.run_all_checks()
+            self.policy_service.run_all_checks(resolve_pending=False)
             return True
         except (PenaltyError, AdminRequiredError, AuthError) as e:
             print_error(str(e))
@@ -1604,11 +1604,19 @@ class AdminMenu:
         # 묶음 예약: group_id 기준으로 대표 예약 1개만 목록에 표시
         seen_groups = set()
         items = []
+
+        def equipment_sort_key(booking):
+            equipment = self.equipment_service.get_equipment(booking.equipment_id)
+            return equipment.serial_number if equipment else ""
+
+        def equipment_label(booking):
+            equipment = self.equipment_service.get_equipment(booking.equipment_id)
+            if equipment is None:
+                return "-"
+            return f"{equipment.name}({equipment.serial_number})"
+
         # 시리얼번호 오름차순 정렬
-        pending_sorted = sorted(pending, key=lambda b: (
-            self.equipment_service.get_equipment(b.equipment_id).serial_number
-            if self.equipment_service.get_equipment(b.equipment_id) else ""
-        ))
+        pending_sorted = sorted(pending, key=equipment_sort_key)
         for booking in pending_sorted:
             key = booking.group_id if booking.group_id else booking.id
             if key in seen_groups:
@@ -1623,11 +1631,7 @@ class AdminMenu:
                 group_members = [
                     b for b in pending_sorted if b.group_id == booking.group_id
                 ]
-                equip_names = ", ".join(
-                    f"{self.equipment_service.get_equipment(b.equipment_id).name}({self.equipment_service.get_equipment(b.equipment_id).serial_number})"
-                    if self.equipment_service.get_equipment(b.equipment_id) else "-"
-                    for b in group_members
-                )
+                equip_names = ", ".join(equipment_label(b) for b in group_members)
                 label = f"{equip_names} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
             else:
                 label = f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
@@ -1670,11 +1674,20 @@ class AdminMenu:
             pause()
             return
 
+        def equipment_sort_key(booking):
+            equipment = self.equipment_service.get_equipment(booking.equipment_id)
+            return equipment.serial_number if equipment else ""
+
+        def equipment_label(booking):
+            equipment = self.equipment_service.get_equipment(booking.equipment_id)
+            if equipment is None:
+                return "-"
+            return f"{equipment.name}({equipment.serial_number})"
+
         # 반납일(end_time) 기준 오름차순 정렬, 묶음 내부는 시리얼번호 오름차순
         requested_sorted = sorted(requested, key=lambda b: (
             b.end_time,
-            self.equipment_service.get_equipment(b.equipment_id).serial_number
-            if self.equipment_service.get_equipment(b.equipment_id) else ""
+            equipment_sort_key(b),
         ))
 
         seen_groups = set()
@@ -1691,16 +1704,9 @@ class AdminMenu:
             if booking.group_id:
                 group_members = sorted(
                     [b for b in requested_sorted if b.group_id == booking.group_id],
-                    key=lambda b: (
-                        self.equipment_service.get_equipment(b.equipment_id).serial_number
-                        if self.equipment_service.get_equipment(b.equipment_id) else ""
-                    )
+                    key=equipment_sort_key,
                 )
-                equip_names = ", ".join(
-                    f"{self.equipment_service.get_equipment(b.equipment_id).name}({self.equipment_service.get_equipment(b.equipment_id).serial_number})"
-                    if self.equipment_service.get_equipment(b.equipment_id) else "-"
-                    for b in group_members
-                )
+                equip_names = ", ".join(equipment_label(b) for b in group_members)
                 label = f"{equip_names} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
             else:
                 label = f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
@@ -1803,11 +1809,20 @@ class AdminMenu:
             pause()
             return
 
+        def equipment_sort_key(booking):
+            equipment = self.equipment_service.get_equipment(booking.equipment_id)
+            return equipment.serial_number if equipment else ""
+
+        def equipment_label(booking):
+            equipment = self.equipment_service.get_equipment(booking.equipment_id)
+            if equipment is None:
+                return "-"
+            return f"{equipment.name}({equipment.serial_number})"
+
         # 종료일 내림차순, 묶음 내부 시리얼번호 오름차순
         modifiable_sorted = sorted(modifiable, key=lambda b: (
             b.end_time,
-            self.equipment_service.get_equipment(b.equipment_id).serial_number
-            if self.equipment_service.get_equipment(b.equipment_id) else ""
+            equipment_sort_key(b),
         ), reverse=True)
 
         seen_groups = set()
@@ -1824,16 +1839,9 @@ class AdminMenu:
             if booking.group_id:
                 group_members = sorted(
                     [b for b in modifiable_sorted if b.group_id == booking.group_id],
-                    key=lambda b: (
-                        self.equipment_service.get_equipment(b.equipment_id).serial_number
-                        if self.equipment_service.get_equipment(b.equipment_id) else ""
-                    )
+                    key=equipment_sort_key,
                 )
-                equip_names = ", ".join(
-                    f"{self.equipment_service.get_equipment(b.equipment_id).name}({self.equipment_service.get_equipment(b.equipment_id).serial_number})"
-                    if self.equipment_service.get_equipment(b.equipment_id) else "-"
-                    for b in group_members
-                )
+                equip_names = ", ".join(equipment_label(b) for b in group_members)
                 label = f"{equip_names} / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
             else:
                 label = f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
