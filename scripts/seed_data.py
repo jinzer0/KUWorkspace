@@ -6,6 +6,7 @@
 """
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # 프로젝트 루트를 Python 경로에 추가
@@ -20,8 +21,12 @@ from src.config import (
     EQUIPMENTS_FILE,
     ROOM_BOOKINGS_FILE,
     EQUIPMENT_BOOKING_FILE,
+    ROOM_MAINTENANCE_FILE,
+    WAITLIST_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
+    CLOCK_FILE,
+    CLOCK_SENTINEL,
 )
 from src.domain.models import (
     User,
@@ -37,6 +42,7 @@ from src.storage.repositories import (
     UnitOfWork,
 )
 from src.storage.file_lock import global_lock
+from src.storage.integrity import DataIntegrityError
 
 
 LEGACY_DATA_FILES = [
@@ -51,9 +57,29 @@ CURRENT_DATA_FILES = [
     EQUIPMENTS_FILE,
     ROOM_BOOKINGS_FILE,
     EQUIPMENT_BOOKING_FILE,
+    ROOM_MAINTENANCE_FILE,
+    WAITLIST_FILE,
     PENALTIES_FILE,
     AUDIT_LOG_FILE,
 ]
+
+
+def read_clock_marker():
+    if not CLOCK_FILE.exists():
+        return CLOCK_SENTINEL
+    return CLOCK_FILE.read_text(encoding="utf-8").strip() or CLOCK_SENTINEL
+
+
+def get_seed_timestamp():
+    marker = read_clock_marker()
+    if marker == CLOCK_SENTINEL:
+        return CLOCK_SENTINEL
+    try:
+        return datetime.fromisoformat(marker).isoformat(timespec="minutes")
+    except ValueError as exc:
+        raise DataIntegrityError(
+            f"시드 타임스탬프 형식이 올바르지 않습니다: {CLOCK_FILE}"
+        ) from exc
 
 
 def create_admin():
@@ -71,15 +97,15 @@ def reset_data_files():
 def create_rooms():
     """회의실 9개 생성"""
     rooms_data = [
-        ("회의실 4A", 4, "1층", "4인 회의실"),
-        ("회의실 4B", 4, "1층", "4인 회의실"),
-        ("회의실 4C", 4, "1층", "4인 회의실"),
-        ("회의실 6A", 6, "2층", "6인 회의실"),
-        ("회의실 6B", 6, "2층", "6인 회의실"),
-        ("회의실 6C", 6, "2층", "6인 회의실"),
-        ("회의실 8A", 8, "3층", "8인 회의실"),
-        ("회의실 8B", 8, "3층", "8인 회의실"),
-        ("회의실 8C", 8, "3층", "8인 회의실"),
+        ("회의실4A", 4, "1층", "4인 회의실"),
+        ("회의실4B", 4, "1층", "4인 회의실"),
+        ("회의실4C", 4, "1층", "4인 회의실"),
+        ("회의실6A", 6, "2층", "6인 회의실"),
+        ("회의실6B", 6, "2층", "6인 회의실"),
+        ("회의실6C", 6, "2층", "6인 회의실"),
+        ("회의실8A", 8, "3층", "8인 회의실"),
+        ("회의실8B", 8, "3층", "8인 회의실"),
+        ("회의실8C", 8, "3층", "8인 회의실"),
     ]
 
     return [

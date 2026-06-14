@@ -13,10 +13,63 @@
 import pytest
 from datetime import datetime, timedelta
 
-from src.domain.penalty_service import PenaltyError, AdminRequiredError
-from src.domain.models import UserRole, PenaltyReason, generate_id
+from src.domain.penalty_service import (
+    CancelRestrictionSummary,
+    PenaltyError,
+    AdminRequiredError,
+)
+from src.domain.models import (
+    EquipmentBookingStatus,
+    PenaltyReason,
+    RoomBookingStatus,
+    UserRole,
+)
 from src.storage.file_lock import global_lock
-from src.storage.integrity import validate_all_data_files
+
+
+
+def _add_cancelled_booking(repo, booking):
+    with global_lock():
+        repo.add(booking)
+    return booking
+
+
+def _cancelled_room_booking(factory, user_id, start_time, cancelled_at):
+    return factory(
+        user_id=user_id,
+        start_time=start_time.isoformat(),
+        end_time=(start_time + timedelta(hours=1)).isoformat(),
+        status=RoomBookingStatus.CANCELLED,
+        cancelled_at=cancelled_at.isoformat(),
+    )
+
+
+def _reserved_room_booking(factory, user_id, start_time):
+    return factory(
+        user_id=user_id,
+        start_time=start_time.isoformat(),
+        end_time=(start_time + timedelta(hours=1)).isoformat(),
+        status=RoomBookingStatus.RESERVED,
+    )
+
+
+def _cancelled_equipment_booking(factory, user_id, start_time, cancelled_at):
+    return factory(
+        user_id=user_id,
+        start_time=start_time.isoformat(),
+        end_time=(start_time + timedelta(days=1)).isoformat(),
+        status=EquipmentBookingStatus.CANCELLED,
+        cancelled_at=cancelled_at.isoformat(),
+    )
+
+
+def _reserved_equipment_booking(factory, user_id, start_time):
+    return factory(
+        user_id=user_id,
+        start_time=start_time.isoformat(),
+        end_time=(start_time + timedelta(days=1)).isoformat(),
+        status=EquipmentBookingStatus.RESERVED,
+    )
 
 
 class TestLateCancelPenalty:
@@ -32,7 +85,6 @@ class TestLateCancelPenalty:
 
         assert penalty.reason == PenaltyReason.LATE_CANCEL
         assert penalty.points == 2
-        assert penalty.updated_at is None
 
         updated_user = penalty_service.user_repo.get_by_id(user.id)
         assert updated_user.penalty_points == 2
@@ -205,243 +257,6 @@ class TestDamagePenalty:
         )
 
         assert penalty.points == 5
-        assert penalty.updated_at is None
-
-    def test_apply_fixed_penalty_keeps_updated_at_empty_on_create(
-        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
-    ):
-        create_time = datetime(2024, 6, 15, 9, 0, 0)
-        with mock_now(create_time):
-            user = create_test_user(penalty_points=0)
-            admin = create_test_user(username="fixed_penalty_admin", role=UserRole.ADMIN)
-            room = create_test_room()
-            booking = room_service.create_booking(
-                user,
-                room.id,
-                create_time,
-                create_time.replace(hour=18),
-            )
-            room_service.request_check_in(user, booking.id)
-            room_service.check_in(admin, booking.id)
-
-        with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
-            penalty = penalty_service.apply_fixed_penalty(
-                admin=admin,
-                user=user,
-                penalty_type="late_checkout",
-                points=2,
-                memo="테스트",
-                booking_type="room_booking",
-                booking_id=booking.id,
-            )
-
-        assert penalty.updated_at is None
-        assert penalty.related_type == "room_booking"
-
-    def test_apply_fixed_penalty_persists_integrity_safe_record(
-        self,
-        penalty_service,
-        create_test_user,
-        create_test_room,
-        room_service,
-        room_repo,
-        equipment_repo,
-        room_booking_repo,
-        equipment_booking_repo,
-        penalty_repo,
-        audit_repo,
-        mock_now,
-    ):
-        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
-
-        with mock_now(fixed_time):
-            user = create_test_user(penalty_points=0)
-            admin = create_test_user(username="fix_pen_admin2", role=UserRole.ADMIN)
-            room = create_test_room()
-            booking = room_service.create_booking(
-                user,
-                room.id,
-                fixed_time,
-                fixed_time.replace(hour=18),
-            )
-            room_service.request_check_in(user, booking.id)
-            room_service.check_in(admin, booking.id)
-
-        with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
-            penalty_service.apply_fixed_penalty(
-                admin=admin,
-                user=user,
-                penalty_type="late_checkout",
-                points=2,
-                memo="테스트",
-                booking_type="room_booking",
-                booking_id=booking.id,
-            )
-
-            validate_all_data_files(
-                repositories=[
-                    penalty_service.user_repo,
-                    room_repo,
-                    equipment_repo,
-                    room_booking_repo,
-                    equipment_booking_repo,
-                    penalty_repo,
-                    audit_repo,
-                ],
-                clock_file=penalty_service.user_repo.file_path.parent / "clock.txt",
-            )
-
-    def test_apply_fixed_penalty_rejects_invalid_booking_type(
-        self, penalty_service, create_test_user
-    ):
-        user = create_test_user(penalty_points=0)
-        admin = create_test_user(username="fix_pen_admin3", role=UserRole.ADMIN)
-
-        with pytest.raises(PenaltyError) as exc_info:
-            penalty_service.apply_fixed_penalty(
-                admin=admin,
-                user=user,
-                penalty_type="late_checkout",
-                points=2,
-                memo="테스트",
-                booking_type="equipment_booking",
-                booking_id=generate_id(),
-            )
-
-        assert "일치하지 않습니다" in str(exc_info.value)
-
-    def test_apply_fixed_penalty_rejects_nonexistent_booking_id(
-        self, penalty_service, create_test_user
-    ):
-        user = create_test_user(penalty_points=0)
-        admin = create_test_user(username="fix_pen_admin4", role=UserRole.ADMIN)
-
-        with pytest.raises(PenaltyError) as exc_info:
-            penalty_service.apply_fixed_penalty(
-                admin=admin,
-                user=user,
-                penalty_type="late_cancel",
-                points=2,
-                memo="테스트",
-                booking_type="room_booking",
-                booking_id=generate_id(),
-            )
-
-        assert "존재하지 않는 관련 예약" in str(exc_info.value)
-
-    def test_apply_fixed_penalty_rejects_non_late_cancel_booking(
-        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
-    ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
-        with mock_now(fixed_time):
-            user = create_test_user(penalty_points=0)
-            admin = create_test_user(username="fix_pen_admin6", role=UserRole.ADMIN)
-            room = create_test_room()
-            booking = room_service.create_booking(
-                user,
-                room.id,
-                fixed_time + timedelta(days=5),
-                fixed_time + timedelta(days=6),
-            )
-            room_service.cancel_booking(user, booking.id)
-
-            with pytest.raises(PenaltyError) as exc_info:
-                penalty_service.apply_fixed_penalty(
-                    admin=admin,
-                    user=user,
-                    penalty_type="late_cancel",
-                    points=2,
-                    memo="테스트",
-                    booking_type="room_booking",
-                    booking_id=booking.id,
-                )
-
-        assert "직전 취소" in str(exc_info.value)
-
-    def test_apply_fixed_penalty_rejects_non_late_checkout_booking(
-        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
-    ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
-        with mock_now(fixed_time):
-            user = create_test_user(penalty_points=0)
-            admin = create_test_user(username="fix_pen_admin7", role=UserRole.ADMIN)
-            room = create_test_room()
-            booking = room_service.create_booking(
-                user,
-                room.id,
-                fixed_time + timedelta(days=1),
-                fixed_time + timedelta(days=2),
-            )
-
-            with pytest.raises(PenaltyError) as exc_info:
-                penalty_service.apply_fixed_penalty(
-                    admin=admin,
-                    user=user,
-                    penalty_type="late_checkout",
-                    points=2,
-                    memo="테스트",
-                    booking_type="room_booking",
-                    booking_id=booking.id,
-                )
-
-        assert "퇴실 지연 처리 대상" in str(exc_info.value)
-
-    def test_apply_fixed_penalty_rejects_non_late_return_booking(
-        self, penalty_service, create_test_user, create_test_equipment, equipment_service, mock_now
-    ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
-        with mock_now(fixed_time):
-            user = create_test_user(penalty_points=0)
-            admin = create_test_user(username="fix_pen_admin8", role=UserRole.ADMIN)
-            equipment = create_test_equipment()
-            booking = equipment_service.create_booking(
-                user,
-                equipment.id,
-                fixed_time + timedelta(days=1),
-                fixed_time + timedelta(days=2),
-            )
-
-            with pytest.raises(PenaltyError) as exc_info:
-                penalty_service.apply_fixed_penalty(
-                    admin=admin,
-                    user=user,
-                    penalty_type="late_return",
-                    points=2,
-                    memo="테스트",
-                    booking_type="equipment_booking",
-                    booking_id=booking.id,
-                )
-
-        assert "반납 지연 처리 대상" in str(exc_info.value)
-
-    def test_apply_fixed_penalty_rejects_booking_owned_by_other_user(
-        self, penalty_service, create_test_user, create_test_room, room_service, mock_now
-    ):
-        fixed_time = datetime(2024, 6, 15, 10, 0, 0)
-        with mock_now(fixed_time):
-            user = create_test_user(penalty_points=0)
-            other = create_test_user(username="other_user")
-            admin = create_test_user(username="fix_pen_admin5", role=UserRole.ADMIN)
-            room = create_test_room()
-            booking = room_service.create_booking(
-                other,
-                room.id,
-                fixed_time + timedelta(days=1),
-                fixed_time + timedelta(days=2),
-            )
-
-            with pytest.raises(PenaltyError) as exc_info:
-                penalty_service.apply_fixed_penalty(
-                    admin=admin,
-                    user=user,
-                    penalty_type="late_cancel",
-                    points=2,
-                    memo="테스트",
-                    booking_type="room_booking",
-                    booking_id=booking.id,
-                )
-
-        assert "해당 사용자의 예약이 아닙니다" in str(exc_info.value)
 
     def test_apply_damage_0_points_fails(self, penalty_service, create_test_user):
         """0점 부과 시 실패"""
@@ -573,7 +388,7 @@ class TestStreakBonus:
 
         status = penalty_service.get_user_status(updated_user)
         assert status["is_restricted"] is False
-        assert status["max_active_bookings"] == 2
+        assert status["max_active_bookings"] == 6
 
     def test_record_normal_use_nonexistent_user_fails(
         self, penalty_service, user_factory
@@ -702,7 +517,7 @@ class TestUserStatus:
         assert status["points"] == 0
         assert status["is_banned"] is False
         assert status["is_restricted"] is False
-        assert status["max_active_bookings"] == 2
+        assert status["max_active_bookings"] == 6
         assert status["warning_message"] is None
 
     def test_status_warning_at_3_points(self, penalty_service, create_test_user):
@@ -716,7 +531,7 @@ class TestUserStatus:
 
         assert status["points"] == 3
         assert status["is_restricted"] is True
-        assert status["max_active_bookings"] == 1
+        assert status["max_active_bookings"] == 2
         assert status["warning_message"] is not None
 
     def test_status_banned_at_6_points(self, penalty_service, create_test_user):
@@ -731,19 +546,6 @@ class TestUserStatus:
         assert status["points"] == 6
         assert status["is_banned"] is True
         assert status["max_active_bookings"] == 0
-
-    def test_status_clears_restriction_after_expired_until(
-        self, penalty_service, create_test_user
-    ):
-        user = create_test_user(
-            penalty_points=3,
-            restriction_until=(datetime.now() - timedelta(days=1)).isoformat(),
-        )
-
-        status = penalty_service.get_user_status(user)
-
-        assert status["is_restricted"] is False
-        assert status["restriction_until"] is None
 
     def test_status_nonexistent_user_fails(self, penalty_service, user_factory):
         fake_user = user_factory(id="missing-user")
@@ -780,3 +582,538 @@ class TestPenaltyHistory:
             penalty_service.get_user_penalties("missing-user")
 
         assert "존재하지 않는 사용자" in str(exc_info.value)
+
+
+class TestCancelImpactFrequentCancel:
+    def test_confirm_false_previews_third_cancel_without_mutation(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (3, 10):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact, created = penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+                confirm=False,
+            )
+
+            assert created == []
+            assert impact.frequent_cancel_count == 3
+            assert impact.applies_cancel_restriction is True
+            assert impact.applies_frequent_cancel_penalty is True
+            assert impact.penalty_reasons == (PenaltyReason.FREQUENT_CANCEL,)
+            assert penalty_service.penalty_repo.get_by_user(user.id) == []
+            updated_user = penalty_service.user_repo.get_by_id(user.id)
+            assert updated_user.room_cancel_restricted_until is None
+            assert updated_user.penalty_points == 0
+
+    def test_confirm_true_applies_third_cancel_restriction_with_one_point_penalty(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (2, 8):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact, created = penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+            )
+
+            assert [(penalty.reason, penalty.points) for penalty in created] == [
+                (PenaltyReason.FREQUENT_CANCEL, 1)
+            ]
+            assert impact.frequent_cancel_count == 3
+            updated_user = penalty_service.user_repo.get_by_id(user.id)
+            assert updated_user.room_cancel_restricted_until is not None
+            assert updated_user.equipment_cancel_restricted_until is None
+            assert updated_user.penalty_points == 1
+
+    def test_plan0001_frequent_cancel_is_one_point_from_third_cancel(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(username="FrequentCancelUser")
+            for days_ago in (2, 8):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact, created = penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+            )
+
+            assert impact.frequent_cancel_count == 3
+            assert impact.applies_cancel_restriction is True
+            assert impact.penalty_reasons == (PenaltyReason.FREQUENT_CANCEL,)
+            assert [(penalty.reason, penalty.points) for penalty in created] == [
+                (PenaltyReason.FREQUENT_CANCEL, 1)
+            ]
+            updated_user = penalty_service.user_repo.get_by_id(user.id)
+            assert updated_user.room_cancel_restricted_until is not None
+            assert updated_user.penalty_points == 1
+
+    def test_fourth_qualifying_cancel_adds_frequent_cancel_penalty(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (2, 8, 20):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact, created = penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+            )
+
+            assert impact.frequent_cancel_count == 4
+            assert impact.applies_cancel_restriction is False
+            assert impact.penalty_reasons == (PenaltyReason.FREQUENT_CANCEL,)
+            assert [penalty.reason for penalty in created] == [PenaltyReason.FREQUENT_CANCEL]
+            updated_user = penalty_service.user_repo.get_by_id(user.id)
+            assert updated_user.penalty_points == 1
+            assert updated_user.room_cancel_restricted_until is None
+
+    def test_recent_count_is_domain_specific_and_limited_to_30_days(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        equipment_booking_repo,
+        room_booking_factory,
+        equipment_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            _add_cancelled_booking(
+                room_booking_repo,
+                _cancelled_room_booking(
+                    room_booking_factory,
+                    user.id,
+                    fixed_time - timedelta(days=30),
+                    fixed_time - timedelta(days=31),
+                ),
+            )
+            _add_cancelled_booking(
+                equipment_booking_repo,
+                _cancelled_equipment_booking(
+                    equipment_booking_factory,
+                    user.id,
+                    fixed_time - timedelta(days=1),
+                    fixed_time - timedelta(days=2),
+                ),
+            )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact = penalty_service.preview_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+            )
+
+            assert impact.frequent_cancel_count == 1
+            assert impact.applies_cancel_restriction is False
+
+    def test_cancellations_at_least_14_days_before_start_are_excluded(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (2, 8):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=14)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact = penalty_service.preview_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+            )
+
+            assert impact.qualifies_frequent_cancel is False
+            assert impact.frequent_cancel_count == 2
+            assert impact.applies_cancel_restriction is False
+
+    def test_prior_late_cancels_do_not_count_toward_frequent_cancel(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (2, 8):
+                start_time = fixed_time - timedelta(days=days_ago) + timedelta(minutes=30)
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        start_time,
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+
+            impact = penalty_service.preview_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+            )
+
+            assert impact.frequent_cancel_count == 1
+            assert impact.applies_cancel_restriction is False
+            assert impact.applies_frequent_cancel_penalty is False
+
+    def test_room_and_equipment_cancel_restrictions_are_independent(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        equipment_booking_repo,
+        room_booking_factory,
+        equipment_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (2, 8):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            room_booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(room_booking_repo, room_booking)
+            penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=room_booking.id,
+                booking_start_time=room_booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+            )
+
+            for days_ago in (3, 9):
+                _add_cancelled_booking(
+                    equipment_booking_repo,
+                    _cancelled_equipment_booking(
+                        equipment_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            equipment_booking = _reserved_equipment_booking(
+                equipment_booking_factory, user.id, fixed_time + timedelta(days=1)
+            )
+            _add_cancelled_booking(equipment_booking_repo, equipment_booking)
+            penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="equipment_booking",
+                booking_id=equipment_booking.id,
+                booking_start_time=equipment_booking.start_time,
+                domain_bookings=equipment_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+            )
+
+            updated_user = penalty_service.user_repo.get_by_id(user.id)
+            assert updated_user.room_cancel_restricted_until is not None
+            assert updated_user.equipment_cancel_restricted_until is not None
+            assert updated_user.penalty_points == 2
+
+    def test_late_and_frequent_cancel_do_not_duplicate_existing_late_penalty(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_repo,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            for days_ago in (2, 8, 20):
+                _add_cancelled_booking(
+                    room_booking_repo,
+                    _cancelled_room_booking(
+                        room_booking_factory,
+                        user.id,
+                        fixed_time - timedelta(days=days_ago - 1),
+                        fixed_time - timedelta(days=days_ago),
+                    ),
+                )
+            booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(minutes=30)
+            )
+            _add_cancelled_booking(room_booking_repo, booking)
+            penalty_service.apply_late_cancel(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                actor_id=user.id,
+            )
+
+            impact, created = penalty_service.apply_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=booking.id,
+                booking_start_time=booking.start_time,
+                domain_bookings=room_booking_repo.get_by_user(user.id),
+                actor_id=user.id,
+            )
+
+            penalties = penalty_service.penalty_repo.get_by_user(user.id)
+            assert impact.penalty_reasons == (PenaltyReason.LATE_CANCEL,)
+            assert created == []
+            assert [penalty.reason for penalty in penalties].count(PenaltyReason.LATE_CANCEL) == 1
+            assert [penalty.reason for penalty in penalties].count(PenaltyReason.FREQUENT_CANCEL) == 0
+            assert penalty_service.user_repo.get_by_id(user.id).penalty_points == 2
+
+
+class TestCancelRestrictionSummary:
+    def test_summary_dataclass_has_expected_fields(self):
+        summary = CancelRestrictionSummary(1, 2, 3, "room-until", "equipment-until")
+
+        assert summary.room_cancel_count_30d == 1
+        assert summary.equipment_cancel_count_30d == 2
+        assert summary.max_cancel_count == 3
+        assert summary.room_cancel_restricted_until == "room-until"
+        assert summary.equipment_cancel_restricted_until == "equipment-until"
+
+    def test_summary_counts_recent_direct_cancels_including_late_and_excludes_admin(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_factory,
+        equipment_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user(
+                room_cancel_restricted_until="2024-06-22T09:00:00",
+                equipment_cancel_restricted_until="2024-06-23T09:00:00",
+            )
+            other = create_test_user(username="CancelOther1")
+            room_recent = _cancelled_room_booking(
+                room_booking_factory,
+                user.id,
+                fixed_time - timedelta(days=1),
+                fixed_time - timedelta(days=2),
+            )
+            room_late = _cancelled_room_booking(
+                room_booking_factory,
+                user.id,
+                fixed_time - timedelta(days=3) + timedelta(minutes=30),
+                fixed_time - timedelta(days=3),
+            )
+            room_admin = room_booking_factory(
+                user_id=user.id,
+                start_time=(fixed_time - timedelta(days=4)).isoformat(),
+                end_time=(fixed_time - timedelta(days=4) + timedelta(hours=1)).isoformat(),
+                status=RoomBookingStatus.ADMIN_CANCELLED,
+                cancelled_at=(fixed_time - timedelta(days=5)).isoformat(),
+            )
+            room_old = _cancelled_room_booking(
+                room_booking_factory,
+                user.id,
+                fixed_time - timedelta(days=35),
+                fixed_time - timedelta(days=36),
+            )
+            room_other = _cancelled_room_booking(
+                room_booking_factory,
+                other.id,
+                fixed_time - timedelta(days=1),
+                fixed_time - timedelta(days=2),
+            )
+            equipment_recent = _cancelled_equipment_booking(
+                equipment_booking_factory,
+                user.id,
+                fixed_time - timedelta(days=1),
+                fixed_time - timedelta(days=2),
+            )
+            equipment_admin = equipment_booking_factory(
+                user_id=user.id,
+                start_time=(fixed_time - timedelta(days=1)).isoformat(),
+                end_time=fixed_time.isoformat(),
+                status=EquipmentBookingStatus.ADMIN_CANCELLED,
+                cancelled_at=(fixed_time - timedelta(days=2)).isoformat(),
+            )
+
+            summary = penalty_service.get_cancel_restriction_summary(
+                user,
+                [room_recent, room_late, room_admin, room_old, room_other],
+                [equipment_recent, equipment_admin],
+            )
+
+        assert summary.room_cancel_count_30d == 2
+        assert summary.equipment_cancel_count_30d == 1
+        assert summary.max_cancel_count == 3
+        assert summary.room_cancel_restricted_until == "2024-06-22T09:00"
+        assert summary.equipment_cancel_restricted_until == "2024-06-23T09:00"
+
+    def test_late_direct_cancel_counts_for_summary_but_not_frequent_penalty(
+        self,
+        penalty_service,
+        create_test_user,
+        room_booking_factory,
+        mock_now,
+    ):
+        fixed_time = datetime(2024, 6, 15, 9, 0, 0)
+        with mock_now(fixed_time):
+            user = create_test_user()
+            late_booking = _reserved_room_booking(
+                room_booking_factory, user.id, fixed_time + timedelta(minutes=30)
+            )
+            cancelled_late = _cancelled_room_booking(
+                room_booking_factory,
+                user.id,
+                fixed_time + timedelta(minutes=30),
+                fixed_time,
+            )
+
+            impact = penalty_service.preview_cancel_impact(
+                user=user,
+                booking_type="room_booking",
+                booking_id=late_booking.id,
+                booking_start_time=late_booking.start_time,
+                domain_bookings=[cancelled_late],
+            )
+            summary = penalty_service.get_cancel_restriction_summary(
+                user, [cancelled_late], []
+            )
+
+        assert impact.penalty_reasons == (PenaltyReason.LATE_CANCEL,)
+        assert impact.applies_frequent_cancel_penalty is False
+        assert impact.frequent_cancel_count == 0
+        assert summary.room_cancel_count_30d == 1

@@ -16,5 +16,6 @@ env/
 docs/문의및신고.md
 final_plan.md
 .omx/
-
-.idea/
+docs/memo/
+.omo/
+docs/draft/
