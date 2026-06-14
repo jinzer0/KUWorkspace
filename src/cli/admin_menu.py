@@ -560,7 +560,7 @@ class AdminMenu:
             print("\n  0. 로그아웃")
             print("-" * 50)
 
-            choice = input("선택: ").strip()
+            choice = input("선택: ")
 
             if choice == "1":
                 self._show_all_room_bookings()
@@ -575,7 +575,7 @@ class AdminMenu:
             elif choice == "6":
                 self._admin_cancel_room_booking()
             elif choice == "7":
-                self._manage_room_resources()
+                self._run_room_edit_menu()
             elif choice == "8":
                 self._show_all_equipment_bookings()
             elif choice == "9":
@@ -639,192 +639,394 @@ class AdminMenu:
         """회의실 목록 조회 및 상태 변경"""
         self._change_room_status()
 
-    def _manage_room_resources(self):
-        print_header("회의실 수정 (관리자)")
+    def _run_room_edit_menu(self):
+        """회의실 수정 (관리자) - 메뉴 7 하위 메뉴 (기획서 6.6.1.7)"""
+        print_header("회의실 수정 메뉴 (관리자)")
+        print()
         print("  1. 회의실 추가")
         print("  2. 회의실 삭제")
-        print("  3. 회의실 수용인원/위치 수정")
+        print("  3. 회의실 수정")
         print("  0. 취소")
-        choice = input("선택: ").strip()
-        if choice == "1":
-            self._add_room_resource()
-        elif choice == "2":
-            self._delete_room_resource()
-        elif choice == "3":
-            self._edit_room_resource()
-        elif choice == "0":
-            return
-        else:
-            print_error("잘못된 선택입니다.")
-            pause()
-
-    def _add_room_resource(self):
         while True:
-            if not input_start_gate("회의실 추가 입력"):
-                return
-            name = input("회의실 이름: ").strip()
-            capacity_text = input("수용 인원: ").strip()
-            location = input("위치: ").strip()
-            self._print_review_rows([("회의실 이름", name), ("수용 인원", capacity_text), ("위치", location)])
-            decision = review_action("회의실 추가 검토", "저장")
-            if decision == "confirm":
+            choice = input("선택 : ")
+            if choice in ("0", "1", "2", "3"):
                 break
-            if decision == "cancel":
-                print_info("회의실 추가를 취소했습니다.")
-                pause()
+            print_error("0, 1, 2, 3 중에서 입력해주세요.")
+            print("다시 입력해 주세요.")
+        if choice == "0":
+            return
+        if choice == "1":
+            self._add_room()
+        elif choice == "2":
+            self._delete_room()
+        elif choice == "3":
+            self._modify_room()
+        # 작업 완료/철회(confirm n) 후 하위 메뉴를 반복하지 않고 관리자 메뉴로 복귀
+
+    def _add_room(self):
+        """회의실 추가 (기획서 6.6.1.7.1)"""
+        print_header("회의실 수정 메뉴 (추가)")
+        while True:
+            print()
+            name_input = input("회의실 이름 : ")
+            capacity_input = input("수용 인원 : ")
+            floor_input = input("위치 : ")
+
+            # 회의실 이름 -> 수용 인원 -> 위치 순서로 가장 먼저 발견된 오류 1개만 안내
+            error = None
+            if name_input == "":
+                error = "회의실 이름을 입력해주세요."
+            elif not re.fullmatch(r"[0-9][A-Z]", name_input):
+                error = "회의실 이름 형식이 올바르지 않습니다. 예) 8C"
+            elif capacity_input == "":
+                error = "수용 인원을 입력해주세요."
+            elif not re.fullmatch(r"[0-9]+", capacity_input):
+                error = "수용 인원은 숫자만 입력해주세요"
+            elif not (4 <= int(capacity_input) <= 8):
+                error = "수용 인원은 4명 이상 8명 이하로 입력해주세요."
+            elif floor_input == "":
+                error = "위치를 입력해주세요."
+            elif not re.fullmatch(r"[0-9]", floor_input):
+                error = "위치는 층 번호 숫자 1자리만 입력해주세요."
+            elif not (1 <= int(floor_input) <= 9):
+                error = "위치는 1층 이상 9층 이하로 입력해주세요."
+            if error:
+                print()
+                print_error(error)
+                print("다시 입력해 주세요.")
+                continue
+
+            capacity = int(capacity_input)
+            floor = int(floor_input)
+
+            print()
+            if not confirm("정말 추가하시겠습니까?"):
                 return
+
+            try:
+                self.room_service.create_room(
+                    admin=self.user,
+                    room_name_input=name_input,
+                    capacity=capacity,
+                    floor=floor,
+                )
+            except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print()
+                print_error(str(e))
+                print("다시 입력해 주세요.")
+                continue
+
+            print_success("회의실이 추가됐습니다.")
+            pause()
+            return
+
+    def _get_room_edit_listing(self):
+        """삭제/수정 메뉴용 회의실 목록과 상태/현황/예약일 정보를 결합해 반환한다.
+
+        반환: (rooms 정렬목록, overview_by_name) / 오류 시 (None, None)
+        """
         try:
-            room = self.room_service.add_room_resource(
-                self.user, name, capacity_text, location
-            )
-            print_success(f"회의실이 추가되었습니다: {room.name}")
+            overview = self.room_service.get_room_operational_overview(self.user)
         except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
             print_error(str(e))
-        pause()
+            pause()
+            return None, None
+        rooms = sorted(self.room_service.get_all_rooms(), key=lambda room: room.name)
+        overview_by_name = {item.room_name: item for item in overview}
+        return rooms, overview_by_name
 
-    def _select_room_resource(self, prompt):
-        rooms = self.room_service.get_all_rooms()
+    def _read_room_number(self, room_count):
+        """회의실 선택 번호 입력 검증 (기획서 6.6.1.7.2 / 6.6.1.7.3)
+
+        반환: ("return", None) 복귀 / ("retry", None) 오류 후 재입력 / ("ok", index0) 선택
+        """
+        raw = input("선택(번호) : ")
+        if raw == "":
+            print_error("회의실 번호를 입력해주세요")
+            return "retry", None
+        if not re.fullmatch(r"[0-9]+", raw):
+            print_error("회의실 번호는 숫자만 입력해주세요")
+            return "retry", None
+        number = int(raw)
+        if number == 0:
+            return "return", None
+        if not (1 <= number <= room_count):
+            print_error("존재하지 않는 회의실 번호입니다.")
+            return "retry", None
+        return "ok", number - 1
+
+    def _delete_room(self):
+        """회의실 삭제 (기획서 6.6.1.7.2)"""
+        print_header("회의실 수정 메뉴 (삭제)")
+        rooms, overview_by_name = self._get_room_edit_listing()
+        if rooms is None:
+            return
         if not rooms:
             print_info("등록된 회의실이 없습니다.")
             pause()
-            return None
-        return select_from_list(
-            [
-                (room.id, f"{room.name} ({room.capacity}명, {room.location}) {format_status_badge(room.status.value)}")
-                for room in rooms
-            ],
-            prompt,
-        )
+            return
 
-    def _delete_room_resource(self):
-        while True:
-            room_id = self._select_room_resource("삭제할 회의실 선택")
-            if not room_id:
-                return
-            self._print_review_rows([("회의실 ID", room_id[:8])])
-            decision = review_action("회의실 삭제 검토", "처리")
-            if decision == "confirm":
-                break
-            if decision == "cancel":
-                print_info("회의실 삭제를 취소했습니다.")
-                pause()
-                return
-        try:
-            room = self.room_service.delete_room_resource(self.user, room_id)
-            print_success(f"회의실이 삭제되었습니다: {room.name}")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
-        pause()
+        print(f"\n{'번호':<6}{'이름':<14}{'상태':<10}{'현황':<10}예약일")
+        print("-" * 60)
+        for index, room in enumerate(rooms, 1):
+            overview = overview_by_name.get(room.name)
+            operational = overview.operational_status if overview else "예약없음"
+            status_kr = self._status_display_for_change_menu(room, operational)
+            reservation = (overview.reservation_summary if overview else "X").splitlines() or ["X"]
+            print(f"{index:<6}{room.name:<14}{status_kr:<10}{operational:<10}{reservation[0]}")
+            for line in reservation[1:]:
+                print(f"{'':<40}{line}")
+        print("\n0. 돌아가기")
 
-    def _edit_room_resource(self):
         while True:
-            if not input_start_gate("회의실 수정 입력"):
+            outcome, index = self._read_room_number(len(rooms))
+            if outcome == "return":
                 return
-            room_id = self._select_room_resource("수정할 회의실 선택")
-            if not room_id:
+            if outcome == "retry":
+                print("다시 입력해 주세요.")
+                continue
+
+            selected_room = rooms[index]
+            overview = overview_by_name.get(selected_room.name)
+            operational = overview.operational_status if overview else "예약없음"
+
+            # 설계 6.6.1.7.2 예외 문구 순서: 점검중 -> 정기점검 -> 사용불가 -> 사용중 -> 예약있음
+            error_message = None
+            if selected_room.status == ResourceStatus.MAINTENANCE:
+                error_message = "점검중인 회의실은 삭제할 수 없습니다."
+            elif self.room_service.get_active_or_scheduled_room_maintenance(selected_room.id):
+                error_message = "정기 점검 예약이 있어 삭제할 수 없습니다."
+            elif selected_room.status == ResourceStatus.DISABLED:
+                error_message = "사용불가 상태인 회의실은 삭제할 수 없습니다."
+            elif operational == "사용중":
+                error_message = "사용중인 회의실은 삭제할 수 없습니다."
+            elif operational == "예약있음":
+                error_message = "예약이 있는 회의실은 삭제할 수 없습니다"
+            if error_message:
+                print_error(error_message)
+                print("다시 선택해 주세요.")
+                continue
+
+            print()
+            if not confirm("정말 삭제하시겠습니까?"):
                 return
-            capacity_text = input("새 수용 인원: ").strip()
-            location = input("새 위치: ").strip()
-            self._print_review_rows([("회의실 ID", room_id[:8]), ("새 수용 인원", capacity_text), ("새 위치", location)])
-            decision = review_action("회의실 수정 검토", "저장")
-            if decision == "confirm":
-                break
-            if decision == "cancel":
-                print_info("회의실 수정을 취소했습니다.")
-                pause()
-                return
-        try:
-            room = self.room_service.edit_room_resource(
-                self.user, room_id, capacity_text, location
+
+            try:
+                self.room_service.delete_room(admin=self.user, room_id=selected_room.id)
+            except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print()
+                print_error(str(e))
+                print("다시 선택해 주세요.")
+                continue
+
+            print_success("회의실이 삭제됐습니다.")
+            pause()
+            return
+
+    def _modify_room(self):
+        """회의실 수정 (기획서 6.6.1.7.3) - 수용 인원/위치 변경"""
+        print_header("회의실 수정 메뉴 (수정)")
+        rooms, overview_by_name = self._get_room_edit_listing()
+        if rooms is None:
+            return
+        if not rooms:
+            print_info("등록된 회의실이 없습니다.")
+            pause()
+            return
+
+        print(f"\n{'번호':<6}{'이름':<14}{'수용인원':<8}{'위치':<8}{'상태':<10}{'현황':<10}예약일")
+        print("-" * 72)
+        for index, room in enumerate(rooms, 1):
+            overview = overview_by_name.get(room.name)
+            operational = overview.operational_status if overview else "예약없음"
+            status_kr = self._status_display_for_change_menu(room, operational)
+            reservation = (overview.reservation_summary if overview else "X").splitlines() or ["X"]
+            print(
+                f"{index:<6}{room.name:<14}{str(room.capacity) + '명':<8}{room.location:<8}"
+                f"{status_kr:<10}{operational:<10}{reservation[0]}"
             )
-            print_success(f"회의실이 수정되었습니다: {room.name}")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
-        pause()
+            for line in reservation[1:]:
+                print(f"{'':<56}{line}")
+        print("\n0. 돌아가기")
+
+        while True:
+            outcome, index = self._read_room_number(len(rooms))
+            if outcome == "return":
+                return
+            if outcome == "retry":
+                print("다시 입력해 주세요.")
+                continue
+
+            selected_room = rooms[index]
+            overview = overview_by_name.get(selected_room.name)
+            operational = overview.operational_status if overview else "예약없음"
+
+            if selected_room.status != ResourceStatus.AVAILABLE:
+                print_error("해당 회의실은 수정할 수 없습니다. (회의실 상태 조건 미충족)")
+                print("다시 선택해 주세요.")
+                continue
+            if operational != "예약없음":
+                print_error("해당 회의실은 수정할 수 없습니다. (회의실 예약 있음)")
+                print("다시 선택해 주세요.")
+                continue
+
+            new_capacity = None
+            new_floor = None
+            while True:
+                print()
+                capacity_input = input("새 수용 인원 : ")
+                floor_input = input("새 위치 : ")
+                # 수용 인원/위치 규칙은 회의실 추가(_add_room)와 동일
+                error = None
+                if capacity_input == "":
+                    error = "수용 인원을 입력해주세요."
+                elif not re.fullmatch(r"[0-9]+", capacity_input):
+                    error = "수용 인원은 숫자만 입력해주세요"
+                elif not (4 <= int(capacity_input) <= 8):
+                    error = "수용 인원은 4명 이상 8명 이하로 입력해주세요."
+                elif floor_input == "":
+                    error = "위치를 입력해주세요."
+                elif not re.fullmatch(r"[0-9]", floor_input):
+                    error = "위치는 층 번호 숫자 1자리만 입력해주세요."
+                elif not (1 <= int(floor_input) <= 9):
+                    error = "위치는 1층 이상 9층 이하로 입력해주세요."
+                if error:
+                    print()
+                    print_error(error)
+                    print("다시 입력해 주세요.")
+                    continue
+                new_capacity = int(capacity_input)
+                new_floor = int(floor_input)
+                break
+
+            print()
+            if not confirm("정말 수정하시겠습니까?"):
+                return
+
+            try:
+                self.room_service.update_room_info(
+                    admin=self.user,
+                    room_id=selected_room.id,
+                    capacity=new_capacity,
+                    floor=new_floor,
+                )
+            except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print()
+                print_error(str(e))
+                print("다시 선택해 주세요.")
+                continue
+
+            print_success("회의실이 수정됐습니다.")
+            pause()
+            return
+            return
+
+    def _status_display_for_change_menu(self, room, operational):
+        """상태변경 목록(6.6.1.2)용 상태 표시값.
+
+        점검중(maintenance) / 사용불가(disabled 또는 당일 점유=사용중) / 사용가능(그 외)
+        """
+        if room.status == ResourceStatus.MAINTENANCE:
+            return "점검중"
+        if room.status == ResourceStatus.DISABLED or operational == "사용중":
+            return "사용불가"
+        return "사용가능"
 
     def _change_room_status(self):
-        """회의실 상태 변경"""
+        """회의실 목록 조회 및 상태 변경 (기획서 6.6.1.2)"""
         print_header("회의실 목록 조회 및 상태 변경")
-
-        rooms = self.room_service.get_all_rooms()
+        rooms, overview_by_name = self._get_room_edit_listing()
+        if rooms is None:
+            return
         if not rooms:
             print_info("등록된 회의실이 없습니다.")
             pause()
             return
 
-        items = [
-            (r.id, f"{r.name} {format_status_badge(r.status.value)}") for r in rooms
-        ]
-        room_id = select_from_list(items, "회의실 선택")
-        if not room_id:
-            return
-
-        print("\n선택한 회의실 작업:")
-        print("  1. 상태 변경")
-        print("  2. 정기 점검")
-        print("  0. 취소")
-        action_choice = input("\n선택: ").strip()
-        if action_choice == "2":
-            active_schedules = [
-                schedule
-                for schedule in self.room_service.maintenance_repo.get_all()
-                if schedule.room_id == room_id and schedule.status in {"scheduled", "active"}
-            ]
-            if active_schedules:
-                self._cancel_room_maintenance(room_id)
+        print(f"\n{'번호':<6}{'이름':<14}{'수용인원':<8}{'위치':<8}{'상태':<10}정기점검")
+        print("-" * 64)
+        for index, room in enumerate(rooms, 1):
+            overview = overview_by_name.get(room.name)
+            operational = overview.operational_status if overview else "예약없음"
+            status_kr = self._status_display_for_change_menu(room, operational)
+            # 정기점검 컬럼: 'X' 또는 'YYYY-MM-DD - YYYY-MM-DD'
+            schedules = self.room_service.get_active_or_scheduled_room_maintenance(room.id)
+            if schedules:
+                nearest = sorted(schedules, key=lambda s: (s.start_time, s.id))[0]
+                maintenance = f"{nearest.start_time[:10]} - {nearest.end_time[:10]}"
             else:
-                self._create_room_maintenance(room_id)
-            return
-        if action_choice == "0":
-            return
-        if action_choice != "1":
-            print_error("잘못된 선택입니다.")
-            pause()
-            return
-
-        print("\n변경할 상태:")
-        print("  1. 사용가능 (available)")
-        print("  2. 점검중 (maintenance)")
-        print("  3. 사용불가 (disabled)")
-
-        choice = input("\n선택: ").strip()
-        status_map = {
-            "1": ResourceStatus.AVAILABLE,
-            "2": ResourceStatus.MAINTENANCE,
-            "3": ResourceStatus.DISABLED,
-        }
-
-        if choice not in status_map:
-            print_error("잘못된 선택입니다.")
-            pause()
-            return
-
-        new_status = status_map[choice]
-
-        if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
-            print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
-        self._print_review_rows([("회의실 ID", room_id[:8]), ("새 상태", new_status.value)])
-        decision = review_action("회의실 상태 변경 검토", "처리")
-        if decision == "retry":
-            return self._change_room_status()
-        if decision == "cancel":
-            print_info("회의실 상태 변경을 취소했습니다.")
-            pause()
-            return
-
-        try:
-            room, cancelled = self.room_service.update_room_status(
-                admin=self.user, room_id=room_id, new_status=new_status
+                maintenance = "X"
+            print(
+                f"{index:<6}{room.name:<14}{str(room.capacity) + '명':<8}{room.location:<8}"
+                f"{status_kr:<10}{maintenance}"
             )
-            print_success(
-                f"상태가 변경되었습니다: {format_status_badge(new_status.value)}"
-            )
-            if cancelled:
-                print_info(f"자동 취소된 예약: {len(cancelled)}건")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
+        print("\n0 : 취소")
 
-        pause()
+        while True:
+            outcome, idx = self._read_room_number(len(rooms))
+            if outcome == "return":
+                return
+            if outcome == "retry":
+                print("다시 입력해 주세요.")
+                continue
+            break
+        selected_room = rooms[idx]
+
+        # 상태 변경 / 정기 점검 선택 (정기점검에서 기존 점검 취소를 거절하면 재선택)
+        while True:
+            print("\n1. 상태 변경")
+            print("2. 정기 점검")
+            print("0. 취소")
+            while True:
+                action = input("선택 : ").strip()
+                if action in ("0", "1", "2"):
+                    break
+                print_error("0, 1, 2 중에서 입력해주세요.")
+                print("다시 입력해 주세요.")
+            if action == "0":
+                return
+            if action == "2":
+                if self._schedule_room_maintenance(selected_room) == "back":
+                    continue
+                return
+
+            # action == "1": 상태 변경 (기획서 6.6.1.2.1)
+            print("\n변경할 상태:")
+            print("  1. 사용가능 (available)")
+            print("  2. 점검중 (maintenance)")
+            print("  3. 사용불가 (disabled)")
+            choice = input("\n선택: ").strip()
+            status_map = {
+                "1": ResourceStatus.AVAILABLE,
+                "2": ResourceStatus.MAINTENANCE,
+                "3": ResourceStatus.DISABLED,
+            }
+            if choice not in status_map:
+                print_error("잘못된 선택입니다.")
+                pause()
+                return
+
+            new_status = status_map[choice]
+            if new_status in (ResourceStatus.MAINTENANCE, ResourceStatus.DISABLED):
+                print_warning("점검중/사용불가로 변경 시 미래 예약이 자동 취소됩니다.")
+
+            print()
+            if not confirm("계속하시겠습니까?"):
+                return
+
+            try:
+                room, cancelled = self.room_service.update_room_status(
+                    admin=self.user, room_id=selected_room.id, new_status=new_status
+                )
+                print_success(
+                    f"상태가 변경되었습니다: {format_status_badge(new_status.value)}"
+                )
+                if cancelled:
+                    print_info(f"자동 취소된 예약: {len(cancelled)}건")
+            except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print_error(str(e))
+            pause()
+            return
 
     def _show_all_room_bookings(self):
         """전체 회의실 예약 조회"""
@@ -1976,100 +2178,98 @@ class AdminMenu:
             else:
                 print_error("y 또는 n을 입력해주세요.")
 
-    def _create_room_maintenance(self, selected_room_id=None):
-        print_header("회의실 점검 일정 생성")
-        rooms = self.room_service.get_all_rooms()
-        if not rooms:
-            print_info("등록된 회의실이 없습니다.")
-            pause()
-            return
-        while True:
-            if not input_start_gate("회의실 점검 일정 입력"):
-                return
-            room_id = selected_room_id
-            if room_id is None:
-                room_id = select_from_list(
-                    [(room.id, f"{room.name} ({room.location})") for room in rooms],
-                    "점검 회의실 선택",
+    def _schedule_room_maintenance(self, selected_room):
+        """정기 점검 (관리자, 기획서 6.6.1.2.2 / 설계 1.7.1)
+
+        반환: "back" -> 기존 점검 취소를 거절(상태변경/정기점검 재선택), 그 외 None.
+        """
+        existing = self.room_service.get_active_or_scheduled_room_maintenance(selected_room.id)
+        if existing:
+            has_active = any(schedule.status == "active" for schedule in existing)
+            if has_active:
+                prompt = "진행중인 정기 점검 예약이 있습니다. 취소하시겠습니까?"
+            else:
+                prompt = "기존 정기 점검 예약이 있습니다. 취소하시겠습니까?"
+            if not confirm(prompt):
+                return "back"
+            try:
+                cancelled = self.room_service.cancel_room_maintenance(
+                    admin=self.user, room_id=selected_room.id
                 )
-            if not room_id:
-                return
-            self._print_daily_booking_guide()
-            start_date, end_date = get_daily_date_range_input("점검 시작 날짜", "점검 종료 날짜")
-            if start_date is None or end_date is None:
-                return
-            reason = input("점검 사유 (선택, 20자 이하): ").strip()
-            valid, error = validate_reason(reason)
-            if not valid:
-                print_error(error)
+            except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print_error(str(e))
                 pause()
                 return
-            self._print_review_rows([("회의실 ID", room_id[:8]), ("기간", f"{start_date} ~ {end_date}"), ("사유", reason or "-")])
-            decision = review_action("회의실 점검 일정 생성 검토", "저장")
-            if decision == "confirm":
-                break
-            if decision == "cancel":
-                print_info("회의실 점검 일정 생성을 취소했습니다.")
-                pause()
-                return
-        try:
-            from src.domain.daily_booking_rules import build_maintenance_period
-
-            start_time, end_time = build_maintenance_period(start_date, end_date)
-            schedule = self.room_service.create_maintenance_schedule(
-                self.user, room_id, start_time, end_time, reason
+            print_success(
+                f"기존 정기 점검 예약이 취소됐습니다 "
+                f"({cancelled.start_time[:10]} ~ {cancelled.end_time[:10]})"
             )
-            print_success("회의실 점검 일정이 생성되었습니다.")
-            print(f"  일정 ID: {schedule.id[:8]}...")
-            print(f"  기간: {format_booking_time_range(schedule.start_time, schedule.end_time)}")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
-        pause()
-
-    def _cancel_room_maintenance(self, selected_room_id=None):
-        print_header("회의실 점검 일정 취소")
-        schedules = [
-            schedule
-            for schedule in self.room_service.maintenance_repo.get_all()
-            if schedule.status in {"scheduled", "active"}
-            and (selected_room_id is None or schedule.room_id == selected_room_id)
-        ]
-        if not schedules:
-            print_info("취소 가능한 점검 일정이 없습니다.")
             pause()
             return
-        items = []
-        for schedule in schedules:
-            room = self.room_service.get_room(schedule.room_id)
-            room_name = room.name if room else "알 수 없음"
-            items.append((schedule.id, f"{room_name} - {format_booking_time_range(schedule.start_time, schedule.end_time)}"))
-        schedule_id = select_from_list(items, "취소할 점검 일정 선택")
-        if not schedule_id:
-            return
+
+        # 기존 점검 없음 -> 신규 등록
+        print_header(f"정기 점검 (회의실 : {selected_room.name})")
+        print("\n정기 점검 시작일은 입력한 날짜의 18:00, 종료일은 입력한 날짜의 09:00으로 해석됩니다.")
+
+        def parse_date(value):
+            # YYYY-MM-DD 문자열 -> date, 형식 오류 시 None
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                return None
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return None
+
         while True:
-            if not input_start_gate("회의실 점검 일정 취소 입력"):
+            print()
+            start_str = input("정기 점검 시작일 (YYYY-MM-DD): ")
+            if start_str == "0":
                 return
-            reason = input("취소 사유 (선택, 20자 이하): ").strip()
-            valid, error = validate_reason(reason)
+            end_str = input("정기 점검 종료일 (YYYY-MM-DD): ")
+            if end_str == "0":
+                return
+
+            start_date = parse_date(start_str)
+            end_date = parse_date(end_str)
+            if start_date is None or end_date is None:
+                print()
+                print_error("형식에 맞게 다시 입력해주세요.")
+                print("다시 입력해 주세요.")
+                continue
+
+            valid, error = self.room_service.validate_maintenance_request(
+                selected_room.id, start_date, end_date
+            )
             if not valid:
+                print()
                 print_error(error)
-                pause()
+                print("다시 입력해 주세요.")
+                continue
+
+            print()
+            if not confirm("정기 점검 예약하시겠습니까?"):
                 return
-            self._print_review_rows([("일정 ID", schedule_id[:8]), ("취소 사유", reason or "-")])
-            decision = review_action("회의실 점검 일정 취소 검토", "처리")
-            if decision == "confirm":
-                break
-            if decision == "cancel":
-                print_info("점검 일정 취소를 중단했습니다.")
-                pause()
-                return
-        try:
-            cancelled = self.room_service.cancel_maintenance_schedule(self.user, schedule_id, reason)
-            print_success("회의실 점검 일정이 취소되었습니다.")
-            print(f"  일정 ID: {cancelled.id[:8]}...")
-        except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
-        pause()
+            try:
+                scheduled = self.room_service.schedule_room_maintenance(
+                    admin=self.user,
+                    room_id=selected_room.id,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except (RoomBookingError, RoomAdminRequiredError, AuthError, PenaltyError) as e:
+                print()
+                print_error(str(e))
+                print("다시 입력해 주세요.")
+                continue
+
+            print_success("정기 점검이 등록되었습니다.")
+            print(f"회의실 : {selected_room.name}")
+            print(
+                f"점검 기간: {scheduled.start_time[:16].replace('T', ' ')} ~ "
+                f"{scheduled.end_time[:16].replace('T', ' ')}"
+            )
+            pause()
+            return
 
     def _show_users(self):
         """사용자 목록"""

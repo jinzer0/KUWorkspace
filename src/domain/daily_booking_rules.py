@@ -55,15 +55,46 @@ def build_daily_booking_period(start_date, end_date):
 
 
 def validate_maintenance_dates(start_date, end_date, now):
-    valid, error, duration_days = validate_daily_booking_dates(start_date, end_date, now)
-    if not valid:
-        return False, error, duration_days
+    """정기 점검 시작일/종료일 의미 규칙 검증 (기획서 6.6.1.2.2)
+
+    반환: (valid, error_message, duration_days)
+    예약(회의실 예약) 충돌 검증은 RoomService에서 별도로 수행한다.
+    """
+    today = now.date()
+
+    # 시작일 == 종료일 (시작 18:00, 종료 09:00 이므로 같은 날짜 불가)
     if start_date == end_date:
-        return False, "점검 시작일과 종료일은 같을 수 없습니다.", 0
+        return (
+            False,
+            "정기 점검은 시작일 기준 18 시부터 시작되고 종료일 기준 09시까지 진행되므로, 날짜가 같을 수 없습니다.",
+            0,
+        )
+    # 종료일이 시작일보다 앞섬
+    if end_date < start_date:
+        return False, "정기 점검 종료일은 정기 점검 시작일보다 앞설 수 없습니다.", 0
+    # 시작일 == 현재 운영 시점 (당일 시작 불가)
+    if start_date == today:
+        return False, "정기 점검 시작일은 현 운영 시점과 동일할 수 없습니다.", 0
+    # 시작일이 과거
+    if start_date < today:
+        return False, "정기 점검 시작일은 과거일 수 없습니다.", 0
+    # 시작일은 현재 운영 시점 기준 180일 이내
+    if start_date > today + timedelta(days=BOOKING_WINDOW_DAYS):
+        return (
+            False,
+            f"정기 점검 시작일은 현재 운영 시점 기준 {BOOKING_WINDOW_DAYS}일 이내여야 합니다.",
+            0,
+        )
+    # 점검 기간 최대 14일
+    duration_days = (end_date - start_date).days + 1
+    if duration_days > MAX_BOOKING_DAYS:
+        return False, f"정기 점검 기간은 최대 {MAX_BOOKING_DAYS}일까지 가능합니다.", 0
+
     return True, "", duration_days
 
 
 def build_maintenance_period(start_date, end_date):
+    # 정기 점검 기간: 시작일 18:00 ~ 종료일 09:00
     start_time = datetime.combine(
         start_date,
         time(hour=FIXED_BOOKING_END_HOUR, minute=FIXED_BOOKING_END_MINUTE),
