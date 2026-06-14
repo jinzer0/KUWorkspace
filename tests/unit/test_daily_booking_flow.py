@@ -21,7 +21,7 @@ def test_room_daily_booking_success(room_service, create_test_user, create_test_
             attendee_count=5,
         )
 
-        assert booking.status == RoomBookingStatus.RESERVED
+        assert booking.status == RoomBookingStatus.PENDING
         assert datetime.fromisoformat(booking.start_time) == datetime(2024, 6, 16, 9, 0, 0)
         assert datetime.fromisoformat(booking.end_time) == datetime(2024, 6, 18, 18, 0, 0)
 
@@ -114,7 +114,7 @@ def test_policy_allows_one_room_and_one_equipment_separately(
         )
 
         limits = policy_service.get_user_flow_limits(user)
-        assert limits["room_limit"] == 0
+        assert limits["room_limit"] == 1
         assert limits["equipment_limit"] == 1
 
         booking = equipment_service.create_daily_booking(
@@ -123,7 +123,7 @@ def test_policy_allows_one_room_and_one_equipment_separately(
             start_date=date(2024, 6, 16),
             end_date=date(2024, 6, 16),
         )
-        assert booking.status == EquipmentBookingStatus.RESERVED
+        assert booking.status == EquipmentBookingStatus.PENDING
 
 
 def test_room_capacity_falls_back_to_larger_room(
@@ -146,7 +146,7 @@ def test_room_capacity_falls_back_to_larger_room(
 def test_room_checkout_request_and_approval_completes_without_delay_penalty(
     room_service, auth_service, create_test_user, create_test_room, mock_now
 ):
-    with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
+    with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
         user = create_test_user()
         admin = create_test_user(username="admin_room", role=UserRole.ADMIN)
         room = create_test_room(capacity=6)
@@ -176,7 +176,7 @@ def test_room_checkout_request_and_approval_completes_without_delay_penalty(
 def test_equipment_return_request_and_approval_completes_without_delay_penalty(
     equipment_service, auth_service, create_test_user, create_test_equipment, mock_now
 ):
-    with mock_now(datetime(2024, 6, 15, 10, 0, 0)):
+    with mock_now(datetime(2024, 6, 15, 18, 0, 0)):
         user = create_test_user()
         admin = create_test_user(username="admin_equip", role=UserRole.ADMIN)
         equipment = create_test_equipment(status=ResourceStatus.AVAILABLE)

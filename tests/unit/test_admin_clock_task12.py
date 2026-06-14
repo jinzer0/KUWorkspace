@@ -54,7 +54,7 @@ def test_admin_creates_and_cancels_room_maintenance_through_service(
         assert cancelled.cancelled_at != "-"
 
 
-def test_admin_schedules_and_cancels_equipment_future_status_through_service(
+def test_admin_equipment_future_status_flow_schedules_maintenance(
     monkeypatch,
     auth_service,
     room_service,
@@ -70,25 +70,21 @@ def test_admin_schedules_and_cancels_equipment_future_status_through_service(
         admin = create_test_user(role=UserRole.ADMIN)
         equipment = create_test_equipment()
         menu = _admin_menu(admin, auth_service, room_service, equipment_service, penalty_service, policy_service)
-        inputs = iter(["2"])
+        inputs = iter(["1", "2", "y", "0"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-        monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda items, prompt: items[0][0])
-        monkeypatch.setattr("src.cli.admin_menu.get_daily_date_range_input", lambda *_args: (date(2024, 6, 16), date(2024, 6, 16)))
-        monkeypatch.setattr("src.cli.admin_menu.input_start_gate", lambda _title: True)
-        monkeypatch.setattr("src.cli.admin_menu.review_action", lambda *_args, **_kwargs: "confirm")
+        monkeypatch.setattr(
+            "src.cli.admin_menu.CalendarOverlay",
+            lambda *_args, **_kwargs: type("FakeCalendar", (), {"show": lambda _self: "2024-06-16"})(),
+        )
         monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
         monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
         monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
 
-        menu._schedule_equipment_future_status()
+        menu._change_equipment_status()
         updated = equipment_repo.get_by_id(equipment.id)
         items = decode_future_status_changes(updated.future_status_changes)
         assert len(items) == 1
         assert items[0]["status"] == ResourceStatus.MAINTENANCE.value
-
-        menu._cancel_equipment_future_status()
-        updated = equipment_repo.get_by_id(equipment.id)
-        assert decode_future_status_changes(updated.future_status_changes) == []
 
 
 def test_inspect1_equipment_future_status_reachable_from_resource_status_flow(
@@ -105,22 +101,19 @@ def test_inspect1_equipment_future_status_reachable_from_resource_status_flow(
     create_test_equipment(name="노트북A")
     menu = _admin_menu(admin, auth_service, room_service, equipment_service, penalty_service, policy_service)
     calls = []
-    inputs = iter(["2", "3", "0"])
+    inputs = iter(["1", "0", "0"])
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
     monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
     monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
-    monkeypatch.setattr(menu, "_schedule_equipment_future_status", lambda: calls.append("schedule"))
-    monkeypatch.setattr(menu, "_cancel_equipment_future_status", lambda: calls.append("cancel"))
     monkeypatch.setattr(
-        "src.cli.admin_menu.select_from_list",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("date-selection flow should dispatch before selecting equipment")),
+        "src.cli.admin_menu.CalendarOverlay",
+        lambda *_args, **_kwargs: type("FakeCalendar", (), {"show": lambda _self: calls.append("calendar") or None})(),
     )
 
     menu._change_equipment_status()
-    menu._change_equipment_status()
 
-    assert calls == ["schedule", "cancel"]
+    assert calls == ["calendar"]
 
 
 def test_clock_advance_prints_task11_maintenance_summary(monkeypatch, capsys):

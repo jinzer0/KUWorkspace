@@ -44,17 +44,35 @@ from src.config import (
 from src.runtime_clock import format_clock_marker, get_runtime_clock
 
 
+def _has_real_group_id(booking) -> bool:
+    """group_id가 실제 묶음 ID인지 확인합니다.
+
+    기존 장비 코드 일부가 단일 예약의 group_id를 "-"로 저장하기 때문에,
+    "-"는 묶음 예약으로 보지 않습니다.
+    """
+    group_id = getattr(booking, "group_id", None)
+    return bool(group_id) and group_id != "-"
+
+
 def _count_active_booking_units(bookings: list[RoomBooking] | list[EquipmentBooking]) -> int:
     seen_group_ids = set()
     count = 0
     for booking in bookings:
         group_id = getattr(booking, "group_id", None)
-        if group_id:
+        if _has_real_group_id(booking):
             if group_id in seen_group_ids:
                 continue
             seen_group_ids.add(group_id)
         count += 1
     return count
+
+
+def _booking_time_overlap(left, right) -> bool:
+    left_start = datetime.fromisoformat(left.start_time)
+    left_end = datetime.fromisoformat(left.end_time)
+    right_start = datetime.fromisoformat(right.start_time)
+    right_end = datetime.fromisoformat(right.end_time)
+    return left_start < right_end and left_end > right_start
 
 
 class PolicyService:
@@ -93,16 +111,32 @@ class PolicyService:
             clock=self.clock,
         )
 
-    def run_all_checks(self, current_time=None):
+    def run_all_checks(
+        self,
+        current_time=None,
+        resolve_pending=True,
+        resolve_equipment_pending=None,
+    ):
         if current_time is None:
             current_time = self.clock.now()
+        if resolve_equipment_pending is None:
+            resolve_equipment_pending = resolve_pending
 
         with global_lock():
             validate_all_data_files()
             with UnitOfWork():
-                return self._run_checks_locked(current_time)
+                return self._run_checks_locked(
+                    current_time,
+                    resolve_pending=resolve_pending,
+                    resolve_equipment_pending=resolve_equipment_pending,
+                )
 
-    def _run_checks_locked(self, current_time):
+    def _run_checks_locked(
+        self,
+        current_time,
+        resolve_pending=True,
+        resolve_equipment_pending=False,
+    ):
         results = {
             "penalty_reset_users": [],
             "restriction_expired_users": [],
@@ -120,13 +154,15 @@ class PolicyService:
         results["room_maintenance_expired"] = completed_maintenance
         results["equipment_future_status_changes"] = self._apply_equipment_future_status_changes(current_time)
 
-        room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
-        results["room_pending_promoted"] = room_promoted
-        results["room_pending_cancelled"] = room_cancelled
+        if resolve_pending:
+            room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
+            results["room_pending_promoted"] = room_promoted
+            results["room_pending_cancelled"] = room_cancelled
 
-        equipment_promoted, equipment_cancelled = self._resolve_equipment_pending_bookings(current_time)
-        results["equipment_pending_promoted"] = equipment_promoted
-        results["equipment_pending_cancelled"] = equipment_cancelled
+        if resolve_equipment_pending:
+            equipment_promoted, equipment_cancelled = self._resolve_equipment_pending_bookings(current_time)
+            results["equipment_pending_promoted"] = equipment_promoted
+            results["equipment_pending_cancelled"] = equipment_cancelled
 
         reset_users = self._check_penalty_resets(current_time)
         results["penalty_reset_users"] = [u.id for u in reset_users]
@@ -263,42 +299,87 @@ class PolicyService:
                 processed.add(loser.id)
         return promoted, cancelled
 
-    def _resolve_equipment_pending_bookings(self, current_time):
-        promoted = []
-        cancelled = []
-        processed = set()
-        pending = sorted(
-            [
-                booking
-                for booking in self.equipment_booking_repo.get_all()
-                if booking.status == EquipmentBookingStatus.PENDING
-            ],
-            key=lambda booking: (
-                booking.equipment_id,
-                booking.start_time,
-                booking.end_time,
-                self._pending_sort_key(booking),
-            ),
+    def _cancel_equipment_pending_booking(self, booking, timestamp, reason):
+        self.equipment_booking_repo.update(
+            replace(
+                booking,
+                status=EquipmentBookingStatus.CANCELLED,
+                cancelled_at=timestamp,
+                updated_at=timestamp,
+            )
+        )
+        self.audit_repo.log_action(
+            actor_id="system",
+            action="resolve_equipment_pending_booking_cancel",
+            target_type="equipment_booking",
+            target_id=booking.id,
+            details=f"pending resolver cancelled booking for {booking.equipment_id}: {reason}",
         )
 
+    def _resolve_equipment_pending_bookings(self, current_time):
+        """장비 PENDING 예약을 운영 시점 이동 시 장비 단위로 확정/탈락 처리합니다.
+
+        묶음 예약도 group_id 전체를 한 번에 성공/실패 처리하지 않습니다.
+        각 예약 행의 equipment_id + start_time + end_time 기준으로만 경쟁시키므로,
+        묶음 예약 3개 중 2개는 RESERVED, 1개는 CANCELLED가 될 수 있습니다.
+
+        우선순위는 penalty_points 낮은 순 → 파일 기록 순서 순입니다.
+        즉 패널티 점수가 같으면 equipment_booking.txt에 먼저 기록된 예약이 확정됩니다.
+        """
+        promoted = []
+        cancelled = []
+        timestamp = current_time.isoformat()
+
+        pending = [
+            booking
+            for booking in self.equipment_booking_repo.get_all()
+            if booking.status == EquipmentBookingStatus.PENDING
+        ]
+        # 선착순은 created_at이 아니라 파일 저장 순서입니다.
+        # equipment_booking.txt에서 먼저 읽힌 예약이 먼저 신청된 예약으로 간주됩니다.
+        pending_order = {booking.id: index for index, booking in enumerate(pending)}
+
+        def equipment_priority_key(booking):
+            user = self.user_repo.get_by_id(booking.user_id)
+            penalty_points = user.penalty_points if user else 0
+            return (
+                penalty_points,
+                pending_order.get(booking.id, 10**12),
+            )
+
+        # 핵심: group_id를 절대 경쟁 기준으로 쓰지 않습니다.
+        # 묶음 예약이어도 각 장비 예약 행을 equipment_id + 기간 단위로 따로 경쟁시킵니다.
+        slots = {}
         for booking in pending:
-            if booking.id in processed:
+            slot_key = (booking.equipment_id, booking.start_time, booking.end_time)
+            slots.setdefault(slot_key, []).append(booking)
+
+        for slot_key in sorted(slots):
+            contenders = sorted(slots[slot_key], key=equipment_priority_key)
+            if not contenders:
                 continue
-            if not self._equipment_available_for_pending(booking):
+
+            equipment_id, start_time, end_time = slot_key
+
+            if not all(self._equipment_available_for_pending(booking) for booking in contenders):
                 continue
+
+            # 이미 확정된 예약이 있으면 이 장비/기간 pending만 취소합니다.
+            # 같은 묶음의 다른 장비는 각자 slot에서 계속 처리됩니다.
             conflicts = self.equipment_booking_repo.get_confirmed_conflicting(
-                booking.equipment_id, booking.start_time, booking.end_time
+                equipment_id, start_time, end_time
             )
             if conflicts:
+                for booking in contenders:
+                    self._cancel_equipment_pending_booking(
+                        booking, timestamp, "confirmed_conflict"
+                    )
+                    cancelled.append(booking.id)
                 continue
-            competition = self.equipment_booking_repo.get_pending_competition(
-                booking.equipment_id, booking.start_time, booking.end_time, self.user_repo
-            )
-            competition = [item for item in competition if item.id not in processed]
-            if not competition:
-                continue
-            winner = competition[0]
-            timestamp = current_time.isoformat()
+
+            # 경쟁자가 1명이든 여러 명이든, 이 장비/기간 slot에서는 우선순위 1명만 확정합니다.
+            # 패널티가 같으면 먼저 파일에 저장된 예약이 winner가 됩니다.
+            winner = contenders[0]
             self.equipment_booking_repo.update(
                 replace(winner, status=EquipmentBookingStatus.RESERVED, updated_at=timestamp)
             )
@@ -310,25 +391,11 @@ class PolicyService:
                 details=f"pending resolver promoted booking for {winner.equipment_id}",
             )
             promoted.append(winner.id)
-            processed.add(winner.id)
-            for loser in competition[1:]:
-                self.equipment_booking_repo.update(
-                    replace(
-                        loser,
-                        status=EquipmentBookingStatus.CANCELLED,
-                        cancelled_at=timestamp,
-                        updated_at=timestamp,
-                    )
-                )
-                self.audit_repo.log_action(
-                    actor_id="system",
-                    action="resolve_equipment_pending_booking_cancel",
-                    target_type="equipment_booking",
-                    target_id=loser.id,
-                    details=f"pending resolver cancelled booking for {loser.equipment_id}",
-                )
+
+            for loser in contenders[1:]:
+                self._cancel_equipment_pending_booking(loser, timestamp, "lost_priority")
                 cancelled.append(loser.id)
-                processed.add(loser.id)
+
         return promoted, cancelled
 
     def _user_can_accept_room_waitlist_promotion(self, user, current_time):
@@ -515,10 +582,22 @@ class PolicyService:
             )
 
             next_time = self.clock.next_slot()
-            maintenance = self._run_checks_locked(next_time)
-            events = list(cast(list[str], state["events"]))
-            events.extend(auto_events)
-            events.extend(self._build_post_advance_events(next_time, maintenance))
+            maintenance = self._run_checks_locked(
+                next_time,
+                resolve_pending=True,
+                resolve_equipment_pending=True,
+            )
+
+            # 운영 시점 이동 결과 화면에는 장비 우선권 결과 중
+            # 현재 사용자에게 해당하는 알림만 출력합니다.
+            # prepare_advance의 예상 이벤트, 자동 처리 상세, 정책 점검 요약은
+            # 기획서 출력 형식에 없으므로 결과 화면에 노출하지 않습니다.
+            events = self._build_post_advance_events(
+                next_time,
+                maintenance,
+                actor_id=actor_id,
+            )
+
             uow.stage_text(config.CLOCK_FILE, format_clock_marker(next_time))
 
             self.audit_repo.log_action(
@@ -869,8 +948,75 @@ class PolicyService:
             ]
         )
 
-    def _build_post_advance_events(self, current_time, maintenance):
+    def _equipment_result_sort_key(self, booking):
+        equipment = self.equipment_repo.get_by_id(booking.equipment_id)
+        if equipment is None:
+            return ("", booking.equipment_id, booking.start_time, booking.id)
+        return (equipment.name, equipment.serial_number, booking.start_time, booking.id)
+
+    def _equipment_result_label(self, booking):
+        equipment = self.equipment_repo.get_by_id(booking.equipment_id)
+        if equipment is None:
+            name = booking.equipment_id
+            serial = booking.equipment_id
+        else:
+            name = equipment.name
+            serial = equipment.serial_number
+        start = datetime.fromisoformat(booking.start_time).strftime("%Y-%m-%d %H:%M")
+        end = datetime.fromisoformat(booking.end_time).strftime("%Y-%m-%d %H:%M")
+        return f"{name} ({serial}) : {start} ~ {end}"
+
+    def _equipment_result_summary_label(self, booking):
+        equipment = self.equipment_repo.get_by_id(booking.equipment_id)
+        if equipment is None:
+            return booking.equipment_id
+        return equipment.name
+
+    def _priority_bookings_for_actor(self, booking_ids, actor_id):
+        bookings_by_id = {booking.id: booking for booking in self.equipment_booking_repo.get_all()}
+        bookings = [bookings_by_id[booking_id] for booking_id in booking_ids if booking_id in bookings_by_id]
+        actor = self.user_repo.get_by_id(actor_id)
+        if actor is not None and actor.role != UserRole.ADMIN:
+            bookings = [booking for booking in bookings if booking.user_id == actor.id]
+        return sorted(bookings, key=self._equipment_result_sort_key)
+
+    def _format_equipment_priority_block(self, bookings, success):
+        if not bookings:
+            return []
+        if success:
+            header = "[알림] 동시 예약 시도로 인해 예약이 확정되었습니다."
+            result_word = "성공"
+        else:
+            header = "[알림] 동시 예약 시도로 인해 예약에 실패하였습니다. 다시 시도해주세요."
+            result_word = "실패"
+
+        # 1건이면 알림 문장만 출력합니다.
+        if len(bookings) == 1:
+            return [header]
+
+        first = bookings[0]
+        first_label = self._equipment_result_summary_label(first)
+        return [header, f"{first_label} 예약 외 {len(bookings) - 1}건 {result_word}"]
+
+    def _build_equipment_priority_events(self, maintenance, actor_id):
+        promoted_ids = maintenance.get("equipment_pending_promoted", [])
+        cancelled_ids = maintenance.get("equipment_pending_cancelled", [])
+
+        # 사용자 화면에는 현재 사용자의 예약 결과만 보여줍니다.
+        # 다른 사용자의 성공/실패 결과는 이 화면에 출력하지 않습니다.
+        promoted = self._priority_bookings_for_actor(promoted_ids, actor_id)
+        cancelled = self._priority_bookings_for_actor(cancelled_ids, actor_id)
+
+        events = []
+        # 성공 알림을 먼저 출력하고 실패 알림을 아래에 출력합니다.
+        # 1건이면 알림 문장만, 2건 이상이면 "첫 장비 예약 외 N건 성공/실패"를 추가합니다.
+        events.extend(self._format_equipment_priority_block(promoted, success=True))
+        events.extend(self._format_equipment_priority_block(cancelled, success=False))
+        return events
+
+    def _build_post_advance_events(self, current_time, maintenance, actor_id="system"):
         events = [f"운영 시점이 {current_time.strftime('%Y-%m-%d %H:%M')}로 이동했습니다."]
+        events.extend(self._build_equipment_priority_events(maintenance, actor_id))
 
         reset_count = len(maintenance["penalty_reset_users"])
         expired_count = len(maintenance["restriction_expired_users"])

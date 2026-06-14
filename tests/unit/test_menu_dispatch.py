@@ -1,10 +1,9 @@
 import pytest
-from datetime import date
 from types import SimpleNamespace
 
 from src.cli.admin_menu import AdminMenu
 from src.cli.user_menu import UserMenu
-from src.domain.models import ResourceStatus, UserRole
+from src.domain.models import ResourceStatus, UserRole, decode_future_status_changes
 
 
 @pytest.mark.parametrize(
@@ -313,8 +312,6 @@ def test_admin_menu_rejects_old_standalone_resource_choices(
     for method_name in [
         "_create_room_maintenance",
         "_cancel_room_maintenance",
-        "_schedule_equipment_future_status",
-        "_cancel_equipment_future_status",
     ]:
         monkeypatch.setattr(menu, method_name, lambda name=method_name: calls.append(name))
 
@@ -510,9 +507,11 @@ def test_inspect1_admin_equipment_status_flow_exposes_current_future_and_cancel_
     menu._change_equipment_status()
 
     output = capsys.readouterr().out
-    assert "현재 시점 상태 변경" in output
-    assert "미래 상태 예약" in output
-    assert "미래 상태 예약 취소" in output
+    assert "장비 목록" in output
+    assert "+. 편집" in output
+    assert "현재 시점 상태 변경" not in output
+    assert "미래 상태 예약" not in output
+    assert "미래 상태 예약 취소" not in output
 
 
 def test_admin_equipment_future_status_cli_accepts_disabled_choice(
@@ -524,6 +523,7 @@ def test_admin_equipment_future_status_cli_accepts_disabled_choice(
     policy_service,
     create_test_user,
     create_test_equipment,
+    equipment_repo,
 ):
     admin = create_test_user(role=UserRole.ADMIN)
     equipment = create_test_equipment(name="노트북A")
@@ -535,27 +535,22 @@ def test_admin_equipment_future_status_cli_accepts_disabled_choice(
         penalty_service=penalty_service,
         policy_service=policy_service,
     )
-    calls = []
-    inputs = iter(["3"])
+    inputs = iter(["1", "3", "y", "0"])
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    monkeypatch.setattr("src.cli.admin_menu.input_start_gate", lambda _title: True)
-    monkeypatch.setattr("src.cli.admin_menu.select_from_list", lambda *_args, **_kwargs: equipment.id)
-    monkeypatch.setattr("src.cli.admin_menu.get_daily_date_range_input", lambda *_args: (date(2024, 6, 16), date(2024, 6, 16)))
-    monkeypatch.setattr("src.cli.admin_menu.review_action", lambda *_args, **_kwargs: "confirm")
+    monkeypatch.setattr(
+        "src.cli.admin_menu.CalendarOverlay",
+        lambda *_args, **_kwargs: type("FakeCalendar", (), {"show": lambda _self: "2099-06-16"})(),
+    )
     monkeypatch.setattr("src.cli.admin_menu.pause", lambda: None)
     monkeypatch.setattr("src.cli.admin_menu.print_header", lambda *_: None)
     monkeypatch.setattr("src.cli.admin_menu.print_success", lambda *_: None)
 
-    def schedule(_admin, equipment_id, _start_time, _end_time, status):
-        calls.append((equipment_id, status))
-        return {"id": "schedule-1", "status": status.value, "start_time": "2024-06-16T09:00", "end_time": "2024-06-16T18:00"}
+    menu._change_equipment_status()
 
-    monkeypatch.setattr(menu.equipment_service, "schedule_future_status_change", schedule)
-
-    menu._schedule_equipment_future_status()
-
-    assert calls == [(equipment.id, ResourceStatus.DISABLED)]
+    updated = equipment_repo.get_by_id(equipment.id)
+    [item] = decode_future_status_changes(updated.future_status_changes)
+    assert item["status"] == ResourceStatus.DISABLED.value
 
 
 def test_admin_damage_penalty_review_cancel_does_not_apply_penalty(

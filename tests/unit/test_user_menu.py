@@ -66,7 +66,7 @@ class TestUserMenuRefresh:
         monkeypatch.setattr(
             menu.policy_service,
             "run_all_checks",
-            lambda: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
+            lambda **_kwargs: (_ for _ in ()).throw(PenaltyError("존재하지 않는 사용자입니다.")),
         )
         monkeypatch.setattr("src.cli.user_menu.pause", lambda: None)
         messages = []
@@ -1601,7 +1601,7 @@ class TestUserMenuGroupBookingTask12:
         output = capsys.readouterr().out
         assert "노트북A" not in output
         assert "웹캠A" in output
-        assert "예약이 완료되었습니다." in output
+        assert "예약 요청이 접수되었습니다." in output
 
     def test_equipment_booking_cli_reports_no_available_equipment_when_all_conflict(
         self,

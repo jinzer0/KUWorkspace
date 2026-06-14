@@ -170,7 +170,7 @@ class RoomService:
             audit_repo=self.audit_repo,
             penalty_service=self.penalty_service,
             clock=self.clock,
-        ).run_all_checks()
+        ).run_all_checks(None, False)
 
     def cleanup_expired_maintenance(self):
         with global_lock(), UnitOfWork():
@@ -225,10 +225,6 @@ class RoomService:
                 if room is None:
                     raise RoomBookingError("존재하지 않는 회의실입니다.")
 
-                # 불변식: 한 회의실당 scheduled/active 정기 점검은 1건만 허용
-                if self.get_active_or_scheduled_room_maintenance(room_id):
-                    raise RoomBookingError("이미 정기 점검 예약이 있습니다.")
-
                 start_time, end_time = self._validate_maintenance_time(start_time, end_time)
                 conflicts = self.maintenance_repo.get_conflicting(
                     room_id, start_time.isoformat(), end_time.isoformat()
@@ -243,6 +239,10 @@ class RoomService:
                     raise RoomBookingError(
                         "해당 기간에 겹치는 예약이 있어 점검 일정을 생성할 수 없습니다."
                     )
+
+                # 불변식: 한 회의실당 scheduled/active 정기 점검은 1건만 허용
+                if self.get_active_or_scheduled_room_maintenance(room_id):
+                    raise RoomBookingError("이미 정기 점검 예약이 있습니다.")
 
                 schedule = RoomMaintenanceSchedule(
                     # schedule_id: 기획서 5.10 규칙(0-9, a-f 소문자, 하이픈 불가)을 충족하는
@@ -451,6 +451,14 @@ class RoomService:
                 "18:00 다음날 예약은 선착순 예외 정책에 따라 이후 동일 자원/기간 요청이 거부됩니다."
             )
 
+    def _initial_booking_status(self, start_time):
+        if self._is_eighteen_next_day_request(start_time):
+            return RoomBookingStatus.RESERVED
+        return RoomBookingStatus.PENDING
+
+    def _legacy_initial_booking_status(self, conflicts):
+        return RoomBookingStatus.PENDING if conflicts else RoomBookingStatus.RESERVED
+
     def create_daily_booking(
         self, user, room_id, start_date, end_date, attendee_count, max_active=MAX_ACTIVE_ROOM_BOOKINGS, memo=""
     ):
@@ -497,9 +505,7 @@ class RoomService:
                 self._ensure_no_room_maintenance(room_id, start_time, end_time)
                 validate_reservation_memo_text(memo)
 
-                booking_status = (
-                    RoomBookingStatus.PENDING if conflicts else RoomBookingStatus.RESERVED
-                )
+                booking_status = self._initial_booking_status(start_time)
                 booking = RoomBooking(
                     id=generate_id(),
                     user_id=user.id,
@@ -677,9 +683,7 @@ class RoomService:
                 self._ensure_no_room_maintenance(room_id, start_time, end_time)
                 validate_reservation_memo_text(memo)
 
-                booking_status = (
-                    RoomBookingStatus.PENDING if conflicts else RoomBookingStatus.RESERVED
-                )
+                booking_status = self._legacy_initial_booking_status(conflicts)
                 booking = RoomBooking(
                     id=generate_id(),
                     user_id=user.id,
@@ -1434,6 +1438,88 @@ class RoomService:
             self.audit_repo.log_action(
                 actor_id=admin.id,
                 action="delete_room",
+                target_type="room",
+                target_id=room.id,
+                details=f"회의실 삭제: {room.name}",
+            )
+            return room
+
+    def add_room_resource(self, admin, name, capacity, location, description=""):
+        admin = self._get_existing_admin(admin)
+        try:
+            capacity = int(capacity)
+            validate_room_name(name)
+            validate_room_capacity(capacity)
+            validate_room_location(location)
+        except (TypeError, ValueError) as error:
+            raise RoomBookingError(str(error)) from error
+
+        with global_lock(), UnitOfWork():
+            rooms = self.room_repo.get_all()
+            if len(rooms) >= MAX_ROOM_RESOURCES:
+                raise RoomBookingError("회의실은 최대 20개까지 등록할 수 있습니다.")
+            if any(room.name == name for room in rooms):
+                raise RoomBookingError("이미 등록된 회의실 이름입니다.")
+
+            room = Room(
+                id=name,
+                name=name,
+                capacity=capacity,
+                location=location,
+                status=ResourceStatus.AVAILABLE,
+                description=description or "자원관리",
+            )
+            self.room_repo.add(room)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="add_room_resource",
+                target_type="room",
+                target_id=room.id,
+                details=f"회의실 추가: {room.name}",
+            )
+            return room
+
+    def edit_room_resource(self, admin, room_id, capacity, location):
+        admin = self._get_existing_admin(admin)
+        try:
+            capacity = int(capacity)
+            validate_room_capacity(capacity)
+            validate_room_location(location)
+        except (TypeError, ValueError) as error:
+            raise RoomBookingError(str(error)) from error
+
+        with global_lock(), UnitOfWork():
+            room = self.room_repo.get_by_id(room_id)
+            if room is None:
+                raise RoomBookingError("존재하지 않는 회의실입니다.")
+            self._ensure_room_resource_editable(room)
+            updated_room = replace(
+                room,
+                capacity=capacity,
+                location=location,
+                updated_at=now_iso(),
+            )
+            self.room_repo.update(updated_room)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="edit_room_resource",
+                target_type="room",
+                target_id=room.id,
+                details=f"수정: {capacity}명, {location}",
+            )
+            return updated_room
+
+    def delete_room_resource(self, admin, room_id):
+        admin = self._get_existing_admin(admin)
+        with global_lock(), UnitOfWork():
+            room = self.room_repo.get_by_id(room_id)
+            if room is None:
+                raise RoomBookingError("존재하지 않는 회의실입니다.")
+            self._ensure_room_resource_editable(room)
+            self.room_repo.delete(room_id)
+            self.audit_repo.log_action(
+                actor_id=admin.id,
+                action="delete_room_resource",
                 target_type="room",
                 target_id=room.id,
                 details=f"회의실 삭제: {room.name}",
