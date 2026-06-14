@@ -1354,20 +1354,25 @@ class EquipmentService:
             for booking in self.booking_repo.get_by_equipment(equipment_id)
         )
 
-    def _next_serial_number(self, asset_type):
+    def _next_serial_number(self, asset_type, abbr=None):
         equipment_list = self.equipment_repo.get_all()
-        matching_prefixes = [
-            item.serial_number.split("-", 1)[0]
-            for item in equipment_list
-            if item.asset_type == asset_type and "-" in item.serial_number
-        ]
-        if matching_prefixes:
-            prefix = sorted(matching_prefixes)[0]
+        if abbr is not None:
+            # 직접입력 시 관리자가 입력한 약자 사용
+            prefix = abbr.upper()
         else:
-            ascii_letters = "".join(
-                char.upper() for char in asset_type if char.isascii() and char.isalpha()
-            )
-            prefix = (ascii_letters + "EQ")[:2]
+            # 기존 종류 선택 시 해당 종류의 기존 prefix 사용
+            matching_prefixes = [
+                item.serial_number.split("-", 1)[0]
+                for item in equipment_list
+                if item.asset_type == asset_type and "-" in item.serial_number
+            ]
+            if matching_prefixes:
+                prefix = sorted(matching_prefixes)[0]
+            else:
+                ascii_letters = "".join(
+                    char.upper() for char in asset_type if char.isascii() and char.isalpha()
+                )
+                prefix = (ascii_letters + "EQ")[:2]
         used_numbers = []
         for item in equipment_list:
             if not item.serial_number.startswith(f"{prefix}-"):
@@ -1380,7 +1385,7 @@ class EquipmentService:
             raise EquipmentBookingError("장비 시리얼 번호를 더 이상 자동 생성할 수 없습니다.")
         return f"{prefix}-{next_number:03d}"
 
-    def add_equipment_resource(self, admin, name, asset_type, description=""):
+    def add_equipment_resource(self, admin, name, asset_type, description="", abbr=None):
         admin = self._get_existing_admin(admin)
         try:
             validate_equipment_name(name)
@@ -1393,13 +1398,13 @@ class EquipmentService:
             equipment_list = self.equipment_repo.get_all()
             if len(equipment_list) >= MAX_EQUIPMENT_RESOURCES:
                 raise EquipmentBookingError("장비는 최대 20개까지 등록할 수 있습니다.")
-            serial_number = self._next_serial_number(asset_type)
+            serial_number = self._next_serial_number(asset_type, abbr=abbr)
             equipment = EquipmentAsset(
                 id=serial_number,
                 name=name,
                 asset_type=asset_type,
                 serial_number=serial_number,
-                status=ResourceStatus.AVAILABLE,
+                status=ResourceStatus.DISABLED,
                 description=description or "",
             )
             self.equipment_repo.add(equipment)
