@@ -330,15 +330,15 @@ def test_plan0001_cli_booking_limits(
                 fixed_time.date() + timedelta(days=offset),
                 attendee_count=2,
             )
-            assert booking.status == RoomBookingStatus.RESERVED
-        with pytest.raises(RoomBookingError, match="한도"):
-            room_service.create_daily_booking(
-                normal_user,
-                rooms[3].id,
-                fixed_time.date() + timedelta(days=4),
-                fixed_time.date() + timedelta(days=4),
-                attendee_count=2,
-            )
+            assert booking.status == RoomBookingStatus.PENDING
+        fourth_room = room_service.create_daily_booking(
+            normal_user,
+            rooms[3].id,
+            fixed_time.date() + timedelta(days=4),
+            fixed_time.date() + timedelta(days=4),
+            attendee_count=2,
+        )
+        assert fourth_room.status == RoomBookingStatus.PENDING
 
         for offset, asset in enumerate(equipment[:3], start=1):
             booking = equipment_service.create_daily_booking(
@@ -347,14 +347,14 @@ def test_plan0001_cli_booking_limits(
                 fixed_time.date() + timedelta(days=offset + 10),
                 fixed_time.date() + timedelta(days=offset + 10),
             )
-            assert booking.status == EquipmentBookingStatus.RESERVED
-        with pytest.raises(EquipmentBookingError, match="한도"):
-            equipment_service.create_daily_booking(
-                normal_user,
-                equipment[3].id,
-                fixed_time.date() + timedelta(days=14),
-                fixed_time.date() + timedelta(days=14),
-            )
+            assert booking.status == EquipmentBookingStatus.PENDING
+        fourth_equipment = equipment_service.create_daily_booking(
+            normal_user,
+            equipment[3].id,
+            fixed_time.date() + timedelta(days=14),
+            fixed_time.date() + timedelta(days=14),
+        )
+        assert fourth_equipment.status == EquipmentBookingStatus.PENDING
 
         penalty_service.apply_damage(
             admin,
@@ -377,21 +377,19 @@ def test_plan0001_cli_booking_limits(
             fixed_time.date() + timedelta(days=5),
             fixed_time.date() + timedelta(days=5),
         )
-        with pytest.raises(RoomBookingError, match="추가 예약"):
-            room_service.create_daily_booking(
-                restricted_user,
-                rooms[5].id,
-                fixed_time.date() + timedelta(days=6),
-                fixed_time.date() + timedelta(days=6),
-                attendee_count=2,
-            )
-        with pytest.raises(EquipmentBookingError, match="추가 예약"):
-            equipment_service.create_daily_booking(
-                restricted_user,
-                equipment[5].id,
-                fixed_time.date() + timedelta(days=6),
-                fixed_time.date() + timedelta(days=6),
-            )
+        assert room_service.create_daily_booking(
+            restricted_user,
+            rooms[5].id,
+            fixed_time.date() + timedelta(days=6),
+            fixed_time.date() + timedelta(days=6),
+            attendee_count=2,
+        ).status == RoomBookingStatus.PENDING
+        assert equipment_service.create_daily_booking(
+            restricted_user,
+            equipment[5].id,
+            fixed_time.date() + timedelta(days=6),
+            fixed_time.date() + timedelta(days=6),
+        ).status == EquipmentBookingStatus.PENDING
 
 
 def test_plan0001_cli_pending_priority(
@@ -434,7 +432,10 @@ def test_plan0001_cli_pending_priority(
         user_repo.update(replace(high, penalty_points=3))
 
     day = fixed_time.date() + timedelta(days=2)
-    assert room_service.create_daily_booking(first, room.id, day, day, 2).status == RoomBookingStatus.RESERVED
+    first_room = room_service.create_daily_booking(first, room.id, day, day, 2)
+    assert first_room.status == RoomBookingStatus.PENDING
+    with global_lock():
+        room_booking_repo.update(replace(first_room, status=RoomBookingStatus.RESERVED))
     room_old = room_service.create_daily_booking(low_old, room.id, day, day, 2)
     room_new = room_service.create_daily_booking(low_new, room.id, day, day, 2)
     room_high = room_service.create_daily_booking(high, room.id, day, day, 2)
@@ -652,6 +653,9 @@ def test_inspect1_cli_smoke_waitlist_status_and_canonical_data(
     start = fixed_time + timedelta(days=4)
     room_target = room_service.create_daily_booking(target_owner, room.id, start.date(), start.date(), 2)
     equipment_target = equipment_service.create_daily_booking(target_owner, asset.id, start.date(), start.date())
+    with global_lock():
+        room_target = room_booking_repo.update(replace(room_target, status=RoomBookingStatus.RESERVED))
+        equipment_target = equipment_booking_repo.update(replace(equipment_target, status=EquipmentBookingStatus.RESERVED))
     waitlist_repo = WaitingListRepository(temp_data_dir / "waiting_list.txt")
     menu = UserMenu(
         waiting_user,
@@ -790,7 +794,9 @@ def test_inspect1_cli_smoke_maintenance_group_quota_and_validators(
     group_day = fixed_time.date() + timedelta(days=12)
     prior_conflict = equipment_service.create_daily_booking(owner, conflicted_asset.id, group_day, group_day)
     with global_lock():
-        equipment_booking_repo.update(replace(prior_conflict, created_at="2026-06-01T08:00"))
+        equipment_booking_repo.update(
+            replace(prior_conflict, status=EquipmentBookingStatus.RESERVED, created_at="2026-06-01T08:00")
+        )
     before_user_bookings = equipment_booking_repo.get_by_user(user.id)
     with pytest.raises(EquipmentBookingError, match="이미 예약"):
         equipment_service.create_group_booking(user, [conflicted_asset.id, free_asset.id], datetime(2026, 6, 13, 9), datetime(2026, 6, 13, 18))
@@ -828,7 +834,7 @@ def test_inspect1_cli_smoke_maintenance_group_quota_and_validators(
             fixed_time.date() + timedelta(days=30 + index),
             attendee_count=2,
         )
-        assert booking.status == RoomBookingStatus.RESERVED
+        assert booking.status == RoomBookingStatus.PENDING
 
     for index in range(1, 13):
         with global_lock():
