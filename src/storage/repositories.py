@@ -529,6 +529,10 @@ class RoomMaintenanceRepository(BaseRepository):
     def get_by_room(self, room_id):
         return [schedule for schedule in self.get_all() if schedule.room_id == room_id]
 
+    def find_by_room(self, room_id):
+        """get_by_room 별칭 (설계문서 표기). 해당 회의실의 모든 정기 점검 일정을 반환한다."""
+        return self.get_by_room(room_id)
+
     def _overlaps(self, schedule, start_time, end_time):
         requested_start = datetime.fromisoformat(start_time)
         requested_end = datetime.fromisoformat(end_time)
