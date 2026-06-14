@@ -318,7 +318,7 @@ class CalendarOverlay:
 
         elif key == curses.KEY_LEFT:
             cur_date = self._date_of(self.cursor_row, self.cursor_col)
-            if cur_date and cur_date - timedelta(days=1) >= self.today:
+            if cur_date:
                 prev_date = cur_date - timedelta(days=1)
                 if prev_date.month != self.current_month:
                     self._prev_month()
@@ -1839,69 +1839,77 @@ class AdminMenu:
                 label = f"{equip.name if equip else '-'}({equip.serial_number if equip else '-'}) / {user.username} / {format_booking_time_range(booking.start_time, booking.end_time)}"
             items.append((booking.id, label))
 
-        # 가. 변경할 예약 선택
-        booking_id = select_from_list(items, "변경할 예약 선택 (번호)")
-        if not booking_id:
-            return
-
-        # 나. 날짜 입력
+        # 가. 변경할 예약 선택 → 나. 날짜 입력 루프 (나.단계 0 입력 시 가.단계로 복귀)
         while True:
-            print()
-            print("  이용 시간은 대여 시작일 09:00 부터 반납일 18:00까지 입니다.")
-            print("  예약 시작일은 기존 예약 시작일(시작일 포함) 기준으로부터 최대 180일 사이에서")
-            print("  선택할 수 있고, 예약기간은 최대 14일 입니다.")
-            start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
-            if start_date is None or end_date is None:
-                # 0 입력 → 이전단계 복귀
+            booking_id = select_from_list(items, "변경할 예약 선택 (번호)")
+            if not booking_id:
                 return
 
-            # 묶음 예약 충돌 체크
-            selected_booking = next((b for b in modifiable if b.id == booking_id), None)
-            if selected_booking and selected_booking.group_id:
-                group_members = [b for b in modifiable if b.group_id == selected_booking.group_id]
-                conflict_names = []
-                for member in group_members:
-                    try:
-                        self.equipment_service.admin_modify_daily_booking(
-                            admin=self.user,
-                            booking_id=member.id,
-                            start_date=start_date,
-                            end_date=end_date,
-                        )
-                    except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
-                        equip = self.equipment_service.get_equipment(member.equipment_id)
-                        if equip:
-                            conflict_names.append(equip.name)
-                if conflict_names:
-                    print_error(f"{'，'.join(conflict_names)}의 예약이 이미 존재합니다.")
-                    continue
+            # 나. 날짜 입력
+            date_selected = False
+            start_date = end_date = None
+            while True:
+                print()
+                print("  이용 시간은 대여 시작일 09:00 부터 반납일 18:00까지 입니다.")
+                print("  예약 시작일은 기존 예약 시작일(시작일 포함) 기준으로부터 최대 180일 사이에서")
+                print("  선택할 수 있고, 예약기간은 최대 14일 입니다.")
+                start_date, end_date = get_daily_date_range_input("시작 날짜", "종료 날짜")
+                if start_date is None or end_date is None:
+                    # 0 입력 → 가.단계(예약 목록)로 복귀
+                    break
 
-            self._print_review_rows([("예약 ID", booking_id[:8]), ("새 기간", f"{start_date} ~ {end_date}")])
-            decision = review_action("관리자 장비 예약 변경 검토", "저장")
-            if decision == "confirm":
-                break
-            if decision == "cancel":
-                print_info("예약 변경을 취소했습니다.")
-                return
+                # 묶음 예약 충돌 체크
+                selected_booking = next((b for b in modifiable if b.id == booking_id), None)
+                if selected_booking and selected_booking.group_id:
+                    group_members = [b for b in modifiable if b.group_id == selected_booking.group_id]
+                    conflict_names = []
+                    for member in group_members:
+                        try:
+                            self.equipment_service.admin_modify_daily_booking(
+                                admin=self.user,
+                                booking_id=member.id,
+                                start_date=start_date,
+                                end_date=end_date,
+                            )
+                        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+                            equip = self.equipment_service.get_equipment(member.equipment_id)
+                            if equip:
+                                conflict_names.append(equip.name)
+                    if conflict_names:
+                        print_error(f"{'，'.join(conflict_names)}의 예약이 이미 존재합니다.")
+                        continue
 
-        # 다. 최종 확인 및 변경
-        try:
-            self.equipment_service.admin_modify_daily_booking(
-                admin=self.user,
-                booking_id=booking_id,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            print_success(f"✓ 예약이 {start_date} 09:00 ~ {end_date} 18:00 로 변경되었습니다.")
-            print_success("예약을 변경했습니다.")
-        except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
-            print_error(str(e))
+                self._print_review_rows([("예약 ID", booking_id[:8]), ("새 기간", f"{start_date} ~ {end_date}")])
+                decision = review_action("관리자 장비 예약 변경 검토", "저장")
+                if decision == "confirm":
+                    date_selected = True
+                    break
+                if decision == "cancel":
+                    print_info("예약 변경을 취소했습니다.")
+                    return
 
-        print("\n0. 상위 메뉴로 복귀")
-        while True:
-            k = input("선택: ").strip()
-            if k == "0":
-                return
+            if not date_selected:
+                # 나.단계에서 0 입력 → 가.단계 재진입
+                continue
+
+            # 다. 최종 확인 및 변경
+            try:
+                self.equipment_service.admin_modify_daily_booking(
+                    admin=self.user,
+                    booking_id=booking_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                print_success(f"✓ 예약이 {start_date} 09:00 ~ {end_date} 18:00 로 변경되었습니다.")
+                print_success("예약을 변경했습니다.")
+            except (EquipmentBookingError, EquipmentAdminRequiredError, AuthError, PenaltyError) as e:
+                print_error(str(e))
+
+            print("\n0. 상위 메뉴로 복귀")
+            while True:
+                k = input("선택: ").strip()
+                if k == "0":
+                    return
 
     def _admin_cancel_equipment_booking(self):
         """관리자 장비 예약 취소 - 기획서 6.6.2.6"""
