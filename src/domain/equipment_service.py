@@ -1404,7 +1404,7 @@ class EquipmentService:
                 name=name,
                 asset_type=asset_type,
                 serial_number=serial_number,
-                status=ResourceStatus.DISABLED,
+                status=ResourceStatus.AVAILABLE,
                 description=description or "",
             )
             self.equipment_repo.add(equipment)
