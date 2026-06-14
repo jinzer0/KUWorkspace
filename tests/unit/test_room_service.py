@@ -1795,6 +1795,10 @@ class TestRoomBookingMemo:
                 attendee_count=2,
                 memo="기존메모",
             )
+            with global_lock():
+                room_booking_repo.update(
+                    replace(booking, status=RoomBookingStatus.RESERVED)
+                )
             with pytest.raises(ValueError, match="줄바꿈"):
                 room_service.modify_daily_booking(
                     user=user,
