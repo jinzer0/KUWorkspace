@@ -152,7 +152,7 @@ class EquipmentService:
             audit_repo=self.audit_repo,
             penalty_service=self.penalty_service,
             clock=self.clock,
-        ).run_all_checks()
+        ).run_all_checks(None, False)
 
     def _future_unavailable_overlaps(self, equipment, start_time, end_time):
         requested_start = datetime.fromisoformat(start_time) if isinstance(start_time, str) else start_time
@@ -432,6 +432,18 @@ class EquipmentService:
             "해당 기간에 이미 예약이 있습니다. 다른 날짜 또는 장비를 선택해주세요."
         )
 
+    def _requested_status_for_conflicts(self, start_time, end_time, conflicts):
+        if not conflicts:
+            if self._is_eighteen_next_day_request(start_time):
+                return EquipmentBookingStatus.RESERVED
+            return EquipmentBookingStatus.PENDING
+        self._reject_eighteen_next_day_conflict(start_time, conflicts)
+        if all(self._same_operating_moment_conflict(conflict, start_time, end_time) for conflict in conflicts):
+            return EquipmentBookingStatus.PENDING
+        raise EquipmentBookingError(
+            "해당 기간에 이미 예약이 있습니다. 다른 날짜 또는 장비를 선택해주세요."
+        )
+
     def create_daily_booking(
         self, user, equipment_id, start_date, end_date, max_active=MAX_ACTIVE_EQUIPMENT_BOOKINGS, memo=""
     ):
@@ -468,7 +480,7 @@ class EquipmentService:
                 conflicts = self.booking_repo.get_confirmed_conflicting(
                     equipment_id, start_time.isoformat(), end_time.isoformat()
                 )
-                booking_status = self._pending_status_for_conflicts(
+                booking_status = self._requested_status_for_conflicts(
                     start_time, end_time, conflicts
                 )
 
@@ -744,7 +756,7 @@ class EquipmentService:
                     conflicts = self.booking_repo.get_confirmed_conflicting(
                         equipment_id, start_time.isoformat(), end_time.isoformat()
                     )
-                    status_by_id[equipment_id] = self._pending_status_for_conflicts(
+                    status_by_id[equipment_id] = self._requested_status_for_conflicts(
                         start_time, end_time, conflicts
                     )
                     equipment_by_id[equipment_id] = equipment

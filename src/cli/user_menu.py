@@ -44,6 +44,7 @@ from src.config import (
     FIXED_BOOKING_START_HOUR,
     FIXED_BOOKING_START_MINUTE,
 )
+from src.runtime_clock import get_runtime_clock
 from src.cli.menu import confirm, input_start_gate, pause, review_action, select_from_list
 from src.cli.clock_menu import ClockMenu
 from src.cli.formatters import (
@@ -110,30 +111,12 @@ def _eq_confirm(prompt):
 
 def _eq_back():
     """결과/조회 화면 하단의 '0. 돌아가기' 입력 대기 (Enter 복귀 폐지)."""
-    print("-" * 60)
-    print("0. 돌아가기")
-    while True:
-        if input("선택 : ").strip() == "0":
-            return
-        print("잘못 입력했습니다. 다시 입력해주세요.")
+    pause()
 
 
 def _input_start_or_back():
     """6.1절 CUI: 값 입력 전 '1. 입력 시작 / 0. 돌아가기' 선택."""
-    print("\n1. 입력 시작")
-    print("0. 돌아가기")
-    while True:
-        raw = input("선택: ").strip()
-        if raw == "1":
-            return True
-        if raw == "0":
-            return False
-        if raw == "":
-            print_error("번호를 입력해주세요.")
-        elif not raw.isdigit():
-            print_error("숫자를 입력해주세요.")
-        else:
-            print_error("잘못 입력했습니다. 다시 입력해주세요.")
+    return input_start_gate("장비 예약 입력")
 
 
 def _overlap(s1, e1, s2, e2):
@@ -154,7 +137,8 @@ def _group_by_group_id(bookings):
     """예약들을 group_id 기준으로 묶어 리스트의 리스트로 반환 (단일은 1개짜리)."""
     group_map = {}
     for b in bookings:
-        key = b.id if (not b.group_id or b.group_id == "-") else b.group_id
+        group_id = getattr(b, "group_id", None)
+        key = b.id if (not group_id or group_id == "-") else group_id
         group_map.setdefault(key, []).append(b)
     return list(group_map.values())
 
@@ -248,27 +232,7 @@ class EquipmentBookingManager:
         return ""
 
     def _input_dates(self):
-        while True:
-            start_str = input("  시작 날짜 (YYYY-MM-DD): ").strip()
-            if start_str.lower() in ("q", "quit", "취소"):
-                return None, None
-            end_str = input("  종료 날짜 (YYYY-MM-DD): ").strip()
-            if end_str.lower() in ("q", "quit", "취소"):
-                return None, None
-            sv, start_date, _ = validate_date_plan(start_str)
-            if not sv or start_date is None:
-                print("  날짜 형식이 올바르지 않습니다. (예: 2099-01-01)")
-                continue
-            ev, end_date, _ = validate_date_plan(end_str)
-            if not ev or end_date is None:
-                print("  날짜 형식이 올바르지 않습니다. (예: 2099-01-01)")
-                continue
-            valid, error, _ = validate_daily_booking_dates(
-                start_date, end_date, self.clock.now()
-            )
-            if valid:
-                return start_date, end_date
-            print(f"  {error}")
+        return get_daily_date_range_input(self.clock.now())
 
     def _input_memo(self):
         while True:
@@ -431,73 +395,52 @@ class EquipmentGroupBookingManager:
             _eq_back()
             return
 
-        # ── 2. 장비 종류 목록 → 종류 선택 ──
         try:
             all_equips = self.equipment_service.get_all_equipment()
         except EquipmentBookingError as e:
             print_error(str(e))
             _eq_back()
             return
-
-        _TYPE_ORDER = EquipmentListViewer._TYPE_ORDER
-        available_types = sorted(
-            {e.asset_type for e in all_equips if e.status == ResourceStatus.AVAILABLE},
-            key=lambda t: (_TYPE_ORDER.index(t.lower())
-                           if t.lower() in _TYPE_ORDER else 99),
-        )
-        if not available_types:
+        if not any(e.status == ResourceStatus.AVAILABLE for e in all_equips):
             print_info("현재 예약 가능한 장비가 없습니다.")
             _eq_back()
             return
 
-        print()
-        for i, t in enumerate(available_types, 1):
-            print(f"  {i}. {t}")
-        print("  0. 취소")
-        print("-" * 50)
-
         while True:
-            raw = input("장비 종류 선택 (번호): ").strip()
-            result_type, type_indices, msg = self._parse_selection_input(
-                raw, available_types)
-            if result_type == "cancel":
+            if not _input_start_or_back():
                 return
-            if result_type == "error":
-                print_error(msg)
-                continue
-            break
 
-        selected_types = [available_types[i] for i in type_indices]
-
-        # ── 3. 날짜 입력 전 검토 (6.1 CUI 정책) ──
-        if not _input_start_or_back():
-            return
-
-        print()
-        print(f"  이용 시간: 매일 {FIXED_BOOKING_START_HOUR:02d}:{FIXED_BOOKING_START_MINUTE:02d}"
-              f" ~ {FIXED_BOOKING_END_HOUR:02d}:{FIXED_BOOKING_END_MINUTE:02d} 고정")
-        print("  예약 시작일: 내일부터 최대 180일까지 가능")
-        print("  예약 기간: 1일 이상 14일 이하")
-        print()
-        start_date, end_date = self.mgr._input_dates()
-        if start_date is None or end_date is None:
-            return
-        start_dt, end_dt = build_daily_booking_period(start_date, end_date)
-        start_iso, end_iso = start_dt.isoformat(), end_dt.isoformat()
-
-        # ── 4. 종류별로 개별 장비 선택 ──
-        chosen_equips = []
-        for sel_type in selected_types:
-            try:
-                candidates = self.equipment_service.get_available_equipment_by_type(
-                    sel_type, start_dt, end_dt)
-            except EquipmentBookingError as e:
-                print_error(str(e))
-                _eq_back()
+            print()
+            print(f"  이용 시간: 매일 {FIXED_BOOKING_START_HOUR:02d}:{FIXED_BOOKING_START_MINUTE:02d}"
+                  f" ~ {FIXED_BOOKING_END_HOUR:02d}:{FIXED_BOOKING_END_MINUTE:02d} 고정")
+            print("  예약 시작일: 내일부터 최대 180일까지 가능")
+            print("  예약 기간: 1일 이상 14일 이하")
+            print()
+            start_date, end_date = self.mgr._input_dates()
+            if start_date is None or end_date is None:
                 return
-            candidates.sort(key=lambda e: e.serial_number)
+            start_dt, end_dt = build_daily_booking_period(start_date, end_date)
+
+            candidates = []
+            for asset_type in sorted({e.asset_type for e in all_equips}):
+                try:
+                    candidates.extend(
+                        self.equipment_service.get_available_equipment_by_type(
+                            asset_type,
+                            start_dt,
+                            end_dt,
+                        )
+                    )
+                except EquipmentBookingError as e:
+                    print_error(str(e))
+                    _eq_back()
+                    return
+            candidates = sorted(
+                {equipment.id: equipment for equipment in candidates}.values(),
+                key=lambda e: (e.asset_type, e.serial_number),
+            )
             if not candidates:
-                print_info(f"해당 기간에 예약 가능한 {sel_type} 장비가 없습니다.")
+                print_info("해당 기간에 예약 가능한 장비가 없습니다.")
                 _eq_back()
                 return
 
@@ -506,42 +449,53 @@ class EquipmentGroupBookingManager:
                 print(f"  {i}. {e.name} ({e.asset_type}, S/N: {e.serial_number})")
             print("  0. 취소")
             print("-" * 50)
-            while True:
-                picked = self._pick_one_equipment(candidates)
-                if picked is None:
+
+            if len(candidates) == 1:
+                chosen_equips = [candidates[0]]
+            else:
+                raw = input("장비 선택 (번호): ").strip()
+                result_type, indices, msg = self._parse_selection_input(raw, candidates)
+                if result_type == "cancel":
                     return
-                break
-            chosen_equips.append(picked)
+                if result_type == "error":
+                    print_error(msg)
+                    continue
+                chosen_equips = [candidates[i] for i in indices]
 
-        # ── 5. 메모 입력 (6.5.2.8) ──
-        memo = self.mgr._input_memo()
+            memo = self.mgr._input_memo()
+            if len(chosen_equips) == 1:
+                print(f"\n선택한 장비:\n - {chosen_equips[0].name}"
+                      f" ({chosen_equips[0].serial_number})")
+            else:
+                self._show_group_confirm_list(chosen_equips)
 
-        # ── 6. 최종 확인 ──
-        if len(chosen_equips) == 1:
-            print(f"\n선택한 장비:\n - {chosen_equips[0].name}"
-                  f" ({chosen_equips[0].serial_number})")
-        else:
-            self._show_group_confirm_list(chosen_equips)
+            decision = review_action("장비 예약 검토", "예약")
+            if decision == "retry":
+                continue
+            if decision == "cancel":
+                print_info("장비 예약을 취소했습니다.")
+                _eq_back()
+                return
 
-        if not _eq_confirm("예약하시겠습니까? (y/n): "):
+            if len(chosen_equips) == 1:
+                self.equipment_service.create_daily_booking(
+                    self.user,
+                    chosen_equips[0].id,
+                    start_date,
+                    end_date,
+                    memo=memo,
+                )
+            else:
+                self.equipment_service.create_group_booking(
+                    self.user,
+                    [equipment.id for equipment in chosen_equips],
+                    start_dt,
+                    end_dt,
+                    memo=memo,
+                )
+            print_success("예약 요청이 접수되었습니다.")
+            _eq_back()
             return
-
-        # ── 7. 저장 (global_lock + UnitOfWork) ──
-        with global_lock():
-            with UnitOfWork() as uow:
-                if len(chosen_equips) == 1:
-                    status = self.mgr._decide_status(chosen_equips[0].id, start_iso, end_iso)
-                    if status is None:
-                        print_error("이미 예약된 장비 입니다")
-                        _eq_back()
-                        return
-                    self.mgr._save_booking(
-                        chosen_equips[0].id, start_iso, end_iso, memo, "-", status)
-                else:
-                    self._save_group_bookings(chosen_equips, start_iso, end_iso, memo)
-
-        print_success("예약 신청이 접수되었습니다.")
-        _eq_back()
 
     # ── 종류 선택 파싱 (단일: "1" / 묶음: "1,2,3" "1 2 3") ──
     def _parse_selection_input(self, raw, available_types):
@@ -636,12 +590,12 @@ class EquipmentBookingViewer:
     STATUS_MAP = {
         "pending": "[예약 대기중]",
         "reserved": "[예약됨]",
-        "pickup_requested": "[픽업 요청중]",
-        "checked_out": "[픽업중]",
-        "return_requested": "[반납 요청중]",
-        "returned": "[반납 완료]",
-        "cancelled": "[취소됨]",
-        "admin_cancelled": "[관리자 취소]",
+        "pickup_requested": "[픽업요청]",
+        "checked_out": "[대여중]",
+        "return_requested": "[반납승인대기]",
+        "returned": "[반납완료]",
+        "cancelled": "[취소]",
+        "admin_cancelled": "[관리자취소]",
     }
 
     def __init__(self, user, equipment_service):
@@ -650,7 +604,7 @@ class EquipmentBookingViewer:
         self.booking_repo = equipment_service.booking_repo
 
     def show(self):
-        print_header("장비 예약 조회")
+        print_header("내 장비 예약")
         try:
             # get_user_bookings()는 묶음을 대표 1건으로 접어서 반환하므로,
             # 조회 화면에서는 원본 예약들을 직접 묶어 표시해야 한다.
@@ -660,7 +614,7 @@ class EquipmentBookingViewer:
             _eq_back()
             return
         if not bookings:
-            print_info("예약중인 장비가 없습니다.")
+            print_info("예약 내역이 없습니다.")
             _eq_back()
             return
         print(f"{'ID':<10}{'장비':<36}{'대여 기간':<40}{'상태'}")
@@ -681,7 +635,7 @@ class EquipmentBookingViewer:
         rep = min(group, key=lambda b: b.id)
         period = _period_str(rep)
         status = self.STATUS_MAP.get(rep.status.value.lower(), f"[{rep.status.value}]")
-        label = _equipment_group_label(self.equipment_service, group, sort_by="name")
+        label = _equipment_group_label(self.equipment_service, group, sort_by="serial")
         return f"{rep.id[:8]:<10}{label:<36}{period:<40}{status}"
 
     @staticmethod
@@ -879,7 +833,7 @@ class EquipmentBookingCanceller:
         self.user = user
         self.penalty_service = penalty_service
         self.equipment_service = equipment_service
-        self.clock = equipment_service.clock
+        self.clock = get_runtime_clock()
         self.booking_repo = equipment_service.booking_repo
         self.user_repo = equipment_service.user_repo
         self.audit_repo = equipment_service.audit_repo
@@ -912,14 +866,6 @@ class EquipmentBookingCanceller:
         if selected is None:
             return
 
-        # ── 4. 이미 시작된 예약 (reserved만) ──
-        if not is_pending_item:
-            current = self.clock.now()
-            if all(datetime.fromisoformat(b.start_time) < current for b in selected):
-                print_error("이미 시작된 예약은 취소할 수 없습니다.")
-                _eq_back()
-                return
-
         # ── 5~7. 취소 분기 ──
         if is_pending_item:
             self._cancel_pending(selected)
@@ -932,6 +878,9 @@ class EquipmentBookingCanceller:
         # get_user_bookings()는 묶음 예약을 대표 1건으로 접어서 반환하므로,
         # pending 취소 화면에서는 repository 원본을 사용해야 묶음/일부 pending을 모두 표시·취소할 수 있다.
         all_b = self.booking_repo.get_by_user(self.user.id)
+        service_bookings = self.equipment_service.get_user_bookings(self.user.id)
+        known_ids = {booking.id for booking in all_b}
+        all_b.extend(booking for booking in service_bookings if booking.id not in known_ids)
         pendings = [b for b in all_b if b.status == EquipmentBookingStatus.PENDING]
         reserveds = [b for b in all_b if b.status == EquipmentBookingStatus.RESERVED]
         items = []
@@ -954,46 +903,29 @@ class EquipmentBookingCanceller:
         equip = self.equipment_service.get_equipment(booking.equipment_id)
         if equip is None:
             return ("", booking.equipment_id, booking.id)
-        return (equip.name, equip.serial_number, booking.equipment_id)
+        return (equip.name, getattr(equip, "serial_number", ""), booking.equipment_id)
 
     def _equipment_label_for_cancel(self, booking):
         equip = self.equipment_service.get_equipment(booking.equipment_id)
         if equip is None:
             return f"{booking.equipment_id} 알 수 없음"
-        serial = equip.serial_number or booking.equipment_id
+        serial = getattr(equip, "serial_number", "") or booking.equipment_id
         return f"{serial} {_name_of(equip)}"
 
     # ── 목록 출력 + 선택 입력 ──
     def _select_booking(self, items):
-        print()
-        pending_items = [it for it in items if it[1]]
-        reserved_items = [it for it in items if not it[1]]
-        labels = {}
-        # pending: 가,나,다 (최상단). 사용자가 '가' 또는 '가.' 둘 다 입력해도 처리한다.
-        for k, (group, _) in enumerate(pending_items):
-            label = _KO[k] if k < len(_KO) else f"P{k}"
-            labels[label] = (group, True)
-            labels[f"{label}."] = (group, True)
-            print(f"  {label}. {self._fmt(group, True)}")
-        # reserved: 1,2,3
-        for k, (group, _) in enumerate(reserved_items, 1):
-            labels[str(k)] = (group, False)
-            print(f"  {k}. {self._fmt(group, False)}")
-        print("  0. 취소")
-        print("-" * 60)
-        while True:
-            raw = input("취소할 예약 선택 (번호): ").strip()
-            if raw == "0":
-                return None, False
-            if raw == "":
-                print_error("번호를 입력해주세요.")
-                continue
-            normalized = raw.rstrip(".")
-            if raw in labels:
-                return labels[raw]
-            if normalized in labels:
-                return labels[normalized]
-            print_error("잘못 입력했습니다. 다시 입력해주세요.")
+        options = []
+        groups_by_id = {}
+        pending_by_id = {}
+        for group, is_pending in items:
+            rep = min(group, key=lambda b: b.id)
+            options.append((rep.id, self._fmt(group, is_pending)))
+            groups_by_id[rep.id] = group
+            pending_by_id[rep.id] = is_pending
+        selected_id = select_from_list(options, "취소할 예약 선택 (번호)")
+        if not selected_id:
+            return None, False
+        return groups_by_id[selected_id], pending_by_id[selected_id]
 
     # ── 항목 포맷 ──
     def _fmt(self, group, pending):
@@ -1031,34 +963,25 @@ class EquipmentBookingCanceller:
     # reserved 취소
     # ══════════════════════════════════════════════════════════
     def _cancel_reserved(self, group):
-        # 1단계: 기본 확인
-        if not _eq_confirm("정말 취소하시겠습니까? (y/n): "):
+        booking_id = min(group, key=lambda b: b.id).id
+        impact = self.equipment_service.preview_cancel_booking_impact(
+            self.user,
+            booking_id,
+        )
+        if getattr(impact, "is_late_cancel", False):
+            print_warning(f"직전 취소 패널티 {impact.total_penalty_points}점이 부과됩니다.")
+        if review_action("장비 예약 취소 검토", "취소") != "confirm":
             return
 
-        # 직전 취소 여부 판정
         late_count = sum(1 for b in group if self._is_late_cancel(b))
         is_late = late_count > 0
-
-        # 2단계: 직전 취소면 패널티 경고 추가
-        if is_late:
-            if len(group) == 1:
-                pts = 2
-            else:
-                pts = late_count * LATE_CANCEL_POINT_PER_ITEM
-            if not _eq_confirm(
-                f"직전 취소 패널티 {pts}점이 부과됩니다. "
-                f"그래도 취소하시겠습니까? (y/n): "
-            ):
-                return
 
         # ── 실제 취소 ──
         with global_lock():
             with UnitOfWork() as uow:
                 if len(group) == 1:
-                    booking_id = group[0].id
                     self.equipment_service.cancel_booking(self.user, booking_id)
                 else:
-                    booking_id = min(group, key=lambda b: b.id).id
                     self._cancel_group_booking(group)
                 self.user = self.user_repo.get_by_id(self.user.id)
                 for line in self._apply_frequent_cancel_if_needed(booking_id, is_late):
@@ -1204,7 +1127,7 @@ class EquipmentPickupManager:
         self.user = user
         self.penalty_service = penalty_service
         self.equipment_service = equipment_service
-        self.clock = equipment_service.clock
+        self.clock = get_runtime_clock()
         self.booking_repo = equipment_service.booking_repo
         self.audit_repo = equipment_service.audit_repo
 
@@ -1263,35 +1186,26 @@ class EquipmentPickupManager:
         return False
 
     def _build_pickup_list(self):
+        current_time = self.clock.now()
         bookings = [b for b in self.booking_repo.get_by_user(self.user.id)
-                    if b.status == EquipmentBookingStatus.RESERVED]
+                    if b.status == EquipmentBookingStatus.RESERVED
+                    and datetime.fromisoformat(b.start_time) == current_time]
         groups = _group_by_group_id(bookings)
         groups.sort(key=lambda g: min(g, key=lambda b: b.start_time).start_time)
         return groups
 
     def _select_booking(self, items):
-        print()
-        for i, group in enumerate(items, 1):
+        options = []
+        groups_by_id = {}
+        for group in items:
             rep = min(group, key=lambda b: b.id)
-            label = _equipment_group_label(self.equipment_service, group, sort_by="serial")
-            print(f"  {i}. {label} - {_period_str(rep)}")
-        print("  0. 취소")
-        print("-" * 60)
-        while True:
-            raw = input("픽업할 장비 선택 (번호): ").strip()
-            if raw == "0":
-                return None
-            if raw == "":
-                print_error("번호를 입력해주세요.")
-                continue
-            if not raw.isdigit():
-                print_error("숫자를 입력해주세요.")
-                continue
-            idx = int(raw) - 1
-            if idx < 0 or idx >= len(items):
-                print_error("잘못 입력했습니다. 다시 입력해주세요.")
-                continue
-            return items[idx]
+            label = f"{_equipment_group_label(self.equipment_service, group, sort_by='serial')} - {_period_str(rep)}"
+            options.append((rep.id, label))
+            groups_by_id[rep.id] = group
+        selected_id = select_from_list(options, "픽업할 장비 선택 (번호)")
+        if not selected_id:
+            return None
+        return groups_by_id[selected_id]
 
     def _request_group_pickup(self, group_id):
         group = [b for b in self.booking_repo.get_by_user(self.user.id)
@@ -1345,7 +1259,7 @@ class EquipmentReturnManager:
         if selected is None:
             return
 
-        if not _eq_confirm("정말로 반납하시겠습니까? (y/n): "):
+        if review_action("장비 반납 신청 검토", "반납") != "confirm":
             return
 
         if len(selected) == 1:
@@ -1377,38 +1291,17 @@ class EquipmentReturnManager:
         return groups
 
     def _select_booking(self, items):
-        print()
-        for i, group in enumerate(items, 1):
-            if len(group) == 1:
-                rep = min(group, key=lambda b: b.id)
-                equip = self.equipment_service.get_equipment(rep.equipment_id)
-                serial = equip.serial_number if equip else rep.equipment_id
-                print(f"  {i}. {_name_of(equip)} / {serial} / [사용중]")
-            else:
-                sorted_group = sorted(group, key=lambda x: _equipment_sort_key_by_serial(self.equipment_service, x))
-                names = [_name_of(self.equipment_service.get_equipment(b.equipment_id)) for b in sorted_group]
-                serials = []
-                for b in sorted_group:
-                    equip = self.equipment_service.get_equipment(b.equipment_id)
-                    serials.append(equip.serial_number if equip else b.equipment_id)
-                print(f"  {i}. [묶음] {', '.join(names)} / {', '.join(serials)} / [사용중]")
-        print("  0. 취소")
-        print("-" * 60)
-        while True:
-            raw = input("반납할 장비 선택 (번호): ").strip()
-            if raw == "0":
-                return None
-            if raw == "":
-                print_error("번호를 입력해주세요.")
-                continue
-            if not raw.isdigit():
-                print_error("숫자를 입력해주세요.")
-                continue
-            idx = int(raw) - 1
-            if idx < 0 or idx >= len(items):
-                print_error("잘못 입력했습니다. 다시 입력해주세요.")
-                continue
-            return items[idx]
+        options = []
+        groups_by_id = {}
+        for group in items:
+            rep = min(group, key=lambda b: b.id)
+            label = f"{_equipment_group_label(self.equipment_service, group, sort_by='serial')} / [사용중]"
+            options.append((rep.id, label))
+            groups_by_id[rep.id] = group
+        selected_id = select_from_list(options, "반납할 장비 선택 (번호)")
+        if not selected_id:
+            return None
+        return groups_by_id[selected_id]
 
     def _request_group_return(self, group_id):
         group = [b for b in self.booking_repo.get_by_user(self.user.id)
@@ -1553,7 +1446,7 @@ class UserMenu:
 
     def _run_policy_checks(self):
         try:
-            self.policy_service.run_all_checks()
+            self.policy_service.run_all_checks(resolve_pending=False)
             return True
         except PenaltyError as e:
             print_error(str(e))
@@ -1569,8 +1462,8 @@ class UserMenu:
         es = self.equipment_service
         user_ref = self
 
-        def patched_advance(**kwargs):
-            result = original_advance(**kwargs)
+        def patched_advance(actor_id="system", force=False):
+            result = original_advance(actor_id=actor_id, force=force)
             if result.get("can_advance"):
                 resolver = EquipmentPriorityResolver(es)
                 confirmed, cancelled = resolver.resolve_all()

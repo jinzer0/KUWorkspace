@@ -169,7 +169,7 @@ class RoomService:
             audit_repo=self.audit_repo,
             penalty_service=self.penalty_service,
             clock=self.clock,
-        ).run_all_checks()
+        ).run_all_checks(None, False)
 
     def cleanup_expired_maintenance(self):
         with global_lock(), UnitOfWork():
@@ -392,6 +392,14 @@ class RoomService:
                 "18:00 다음날 예약은 선착순 예외 정책에 따라 이후 동일 자원/기간 요청이 거부됩니다."
             )
 
+    def _initial_booking_status(self, start_time):
+        if self._is_eighteen_next_day_request(start_time):
+            return RoomBookingStatus.RESERVED
+        return RoomBookingStatus.PENDING
+
+    def _legacy_initial_booking_status(self, conflicts):
+        return RoomBookingStatus.PENDING if conflicts else RoomBookingStatus.RESERVED
+
     def create_daily_booking(
         self, user, room_id, start_date, end_date, attendee_count, max_active=MAX_ACTIVE_ROOM_BOOKINGS, memo=""
     ):
@@ -438,9 +446,7 @@ class RoomService:
                 self._ensure_no_room_maintenance(room_id, start_time, end_time)
                 validate_reservation_memo_text(memo)
 
-                booking_status = (
-                    RoomBookingStatus.PENDING if conflicts else RoomBookingStatus.RESERVED
-                )
+                booking_status = self._initial_booking_status(start_time)
                 booking = RoomBooking(
                     id=generate_id(),
                     user_id=user.id,
@@ -618,9 +624,7 @@ class RoomService:
                 self._ensure_no_room_maintenance(room_id, start_time, end_time)
                 validate_reservation_memo_text(memo)
 
-                booking_status = (
-                    RoomBookingStatus.PENDING if conflicts else RoomBookingStatus.RESERVED
-                )
+                booking_status = self._legacy_initial_booking_status(conflicts)
                 booking = RoomBooking(
                     id=generate_id(),
                     user_id=user.id,

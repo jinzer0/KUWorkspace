@@ -111,18 +111,32 @@ class PolicyService:
             clock=self.clock,
         )
 
-    def run_all_checks(self, current_time=None):
+    def run_all_checks(
+        self,
+        current_time=None,
+        resolve_pending=True,
+        resolve_equipment_pending=None,
+    ):
         if current_time is None:
             current_time = self.clock.now()
+        if resolve_equipment_pending is None:
+            resolve_equipment_pending = resolve_pending
 
         with global_lock():
             validate_all_data_files()
             with UnitOfWork():
-                # 메뉴 진입/예약 직후의 일반 정책 점검에서는 장비 PENDING을 확정하지 않습니다.
-                # 장비 우선권 처리는 운영 시계가 다음 시점으로 이동할 때만 수행합니다.
-                return self._run_checks_locked(current_time, resolve_equipment_pending=False)
+                return self._run_checks_locked(
+                    current_time,
+                    resolve_pending=resolve_pending,
+                    resolve_equipment_pending=resolve_equipment_pending,
+                )
 
-    def _run_checks_locked(self, current_time, resolve_equipment_pending=False):
+    def _run_checks_locked(
+        self,
+        current_time,
+        resolve_pending=True,
+        resolve_equipment_pending=False,
+    ):
         results = {
             "penalty_reset_users": [],
             "restriction_expired_users": [],
@@ -140,9 +154,10 @@ class PolicyService:
         results["room_maintenance_expired"] = completed_maintenance
         results["equipment_future_status_changes"] = self._apply_equipment_future_status_changes(current_time)
 
-        room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
-        results["room_pending_promoted"] = room_promoted
-        results["room_pending_cancelled"] = room_cancelled
+        if resolve_pending:
+            room_promoted, room_cancelled = self._resolve_room_pending_bookings(current_time)
+            results["room_pending_promoted"] = room_promoted
+            results["room_pending_cancelled"] = room_cancelled
 
         if resolve_equipment_pending:
             equipment_promoted, equipment_cancelled = self._resolve_equipment_pending_bookings(current_time)
@@ -346,14 +361,7 @@ class PolicyService:
 
             equipment_id, start_time, end_time = slot_key
 
-            # 장비 자체가 사용 불가이면 이 장비/기간에 신청한 pending만 취소합니다.
-            # 같은 group_id 안의 다른 장비 예약에는 영향을 주지 않습니다.
             if not all(self._equipment_available_for_pending(booking) for booking in contenders):
-                for booking in contenders:
-                    self._cancel_equipment_pending_booking(
-                        booking, timestamp, "equipment_unavailable"
-                    )
-                    cancelled.append(booking.id)
                 continue
 
             # 이미 확정된 예약이 있으면 이 장비/기간 pending만 취소합니다.
@@ -574,13 +582,21 @@ class PolicyService:
             )
 
             next_time = self.clock.next_slot()
-            maintenance = self._run_checks_locked(next_time, resolve_equipment_pending=True)
+            maintenance = self._run_checks_locked(
+                next_time,
+                resolve_pending=True,
+                resolve_equipment_pending=True,
+            )
 
             # 운영 시점 이동 결과 화면에는 장비 우선권 결과 중
             # 현재 사용자에게 해당하는 알림만 출력합니다.
             # prepare_advance의 예상 이벤트, 자동 처리 상세, 정책 점검 요약은
             # 기획서 출력 형식에 없으므로 결과 화면에 노출하지 않습니다.
-            events = self._build_equipment_priority_events(maintenance, actor_id=actor_id)
+            events = self._build_post_advance_events(
+                next_time,
+                maintenance,
+                actor_id=actor_id,
+            )
 
             uow.stage_text(config.CLOCK_FILE, format_clock_marker(next_time))
 
@@ -594,9 +610,7 @@ class PolicyService:
 
             state["next_time"] = next_time
             state["events"] = events
-            # ClockMenu의 "[정책 점검 요약]" 출력은 기획서에 없는 내용이라
-            # 표시되지 않도록 None으로 내려줍니다. 내부 정책 처리는 위에서 이미 수행됩니다.
-            state["maintenance"] = None
+            state["maintenance"] = maintenance
             state["forced"] = force
             state["can_advance"] = True
         self.clock.set_time(next_time, persist=False)

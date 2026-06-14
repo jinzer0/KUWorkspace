@@ -262,8 +262,8 @@ class TestPenaltyAccumulationFlow:
 
             can_book, max_total, message = policy_service.check_user_can_book(user)
 
-            assert can_book is False
-            assert booking.status == EquipmentBookingStatus.RESERVED
+            assert can_book is True
+            assert booking.status == EquipmentBookingStatus.PENDING
             assert max_total == 2
 
 
