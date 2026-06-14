@@ -107,7 +107,7 @@ def normalize_datetime_string(value: Optional[str]) -> Optional[str]:
 def normalize_persisted_text(value: Optional[str], max_length: int = 40) -> str:
     if value is None:
         return ""
-    return value.replace("\r", " ").replace("\n", " ")[:max_length]
+    return value.replace("\r", " ").replace("\n", " ").replace("|", " ")[:max_length]
 
 
 # ===== Dataclasses =====
@@ -239,7 +239,7 @@ class Room:
             str(self.capacity),
             self.location,
             self.status.value,
-            self.description,
+            normalize_persisted_text(self.description, 100),
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
         ]
@@ -312,14 +312,13 @@ class EquipmentAsset:
             self.asset_type,
             self.serial_number,
             self.status.value,
-            self.description,
+            normalize_persisted_text(self.description, 100),
             normalize_datetime_string(self.created_at),
             normalize_datetime_string(self.updated_at),
         ]
 
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "EquipmentAsset":
-        # 데이터 파일 형식: name|asset_type|serial_number|status|description|created_at|updated_at
         if len(record) == 7:
             name, asset_type, serial_number, status, description, created_at, updated_at = record
         else:
@@ -483,9 +482,9 @@ class EquipmentBooking:
 
     @classmethod
     def from_record(cls, record: List[Optional[str]]) -> "EquipmentBooking":
-        # 1차(13필드) 레코드도 읽을 수 있도록 group_id, memo 기본값 보충
-        if len(record) == 13:
-            record = list(record) + ["-", "-"]
+        # 1차(13필드) 레코드도 읽을 수 있도록 동적 패딩
+        if len(record) < 15:
+            record = list(record) + ["-"] * (15 - len(record))
         (
             booking_id,
             user_id,
@@ -502,7 +501,7 @@ class EquipmentBooking:
             updated_at,
             group_id,
             memo,
-        ) = record
+        ) = record[:15]
         return cls(
             id=booking_id or generate_id(),
             user_id=user_id or "",
