@@ -52,6 +52,29 @@ def require_write_lock():
         raise RuntimeError("Write operations must hold the global lock")
 
 
+def _isoformat(value):
+    """datetime 객체와 ISO 문자열을 저장소 비교용 문자열로 정규화합니다."""
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _intervals_overlap(existing_start, existing_end, requested_start, requested_end):
+    """두 ISO datetime 구간이 겹치는지 확인합니다."""
+    requested_start_dt = datetime.fromisoformat(requested_start)
+    requested_end_dt = datetime.fromisoformat(requested_end)
+    existing_start_dt = datetime.fromisoformat(existing_start)
+    existing_end_dt = datetime.fromisoformat(existing_end)
+    return not (requested_end_dt <= existing_start_dt or requested_start_dt >= existing_end_dt)
+
+
+def _pending_competition_key(penalty_points_by_user):
+    """대기 예약 우선순위 정렬 키를 생성합니다."""
+    return lambda booking: (
+        penalty_points_by_user.get(booking.user_id, 0),
+        booking.created_at,
+        booking.id,
+    )
+
+
 class UnitOfWork:
     """
     다중 파일 트랜잭션 (스택 기반 중첩 지원)
@@ -307,11 +330,7 @@ class RoomBookingRepository(BaseRepository):
         return self.get_quota_active_by_user(user_id)
 
     def _overlaps(self, booking, start_time, end_time):
-        requested_start = datetime.fromisoformat(start_time)
-        requested_end = datetime.fromisoformat(end_time)
-        booking_start = datetime.fromisoformat(booking.start_time)
-        booking_end = datetime.fromisoformat(booking.end_time)
-        return not (requested_end <= booking_start or requested_start >= booking_end)
+        return _intervals_overlap(booking.start_time, booking.end_time, start_time, end_time)
 
     def get_confirmed_conflicting(self, room_id, start_time, end_time, exclude_id=None):
         from src.domain.models import RoomBookingStatus
@@ -350,14 +369,7 @@ class RoomBookingRepository(BaseRepository):
             if booking.status == RoomBookingStatus.PENDING
             and self._overlaps(booking, start_time, end_time)
         ]
-        return sorted(
-            pending,
-            key=lambda booking: (
-                penalty_points_by_user.get(booking.user_id, 0),
-                booking.created_at,
-                booking.id,
-            ),
-        )
+        return sorted(pending, key=_pending_competition_key(penalty_points_by_user))
 
 class EquipmentBookingRepository(BaseRepository):
     """장비 예약 Repository"""
@@ -399,11 +411,7 @@ class EquipmentBookingRepository(BaseRepository):
         return self.get_quota_active_by_user(user_id)
 
     def _overlaps(self, booking, start_time, end_time):
-        requested_start = datetime.fromisoformat(start_time)
-        requested_end = datetime.fromisoformat(end_time)
-        booking_start = datetime.fromisoformat(booking.start_time)
-        booking_end = datetime.fromisoformat(booking.end_time)
-        return not (requested_end <= booking_start or requested_start >= booking_end)
+        return _intervals_overlap(booking.start_time, booking.end_time, start_time, end_time)
 
     def get_confirmed_conflicting(
         self, equipment_id, start_time, end_time, exclude_id=None, exclude_ids=None
@@ -448,14 +456,7 @@ class EquipmentBookingRepository(BaseRepository):
             if booking.status == EquipmentBookingStatus.PENDING
             and self._overlaps(booking, start_time, end_time)
         ]
-        return sorted(
-            pending,
-            key=lambda booking: (
-                penalty_points_by_user.get(booking.user_id, 0),
-                booking.created_at,
-                booking.id,
-            ),
-        )
+        return sorted(pending, key=_pending_competition_key(penalty_points_by_user))
 
 
 class WaitingListRepository(BaseRepository):
@@ -534,11 +535,7 @@ class RoomMaintenanceRepository(BaseRepository):
         return self.get_by_room(room_id)
 
     def _overlaps(self, schedule, start_time, end_time):
-        requested_start = datetime.fromisoformat(start_time)
-        requested_end = datetime.fromisoformat(end_time)
-        schedule_start = datetime.fromisoformat(schedule.start_time)
-        schedule_end = datetime.fromisoformat(schedule.end_time)
-        return not (requested_end <= schedule_start or requested_start >= schedule_end)
+        return _intervals_overlap(schedule.start_time, schedule.end_time, start_time, end_time)
 
     def get_conflicting(self, room_id, start_time, end_time, exclude_id=None):
         conflicts = []
@@ -552,7 +549,7 @@ class RoomMaintenanceRepository(BaseRepository):
         return sorted(conflicts, key=lambda schedule: (schedule.start_time, schedule.end_time, schedule.id))
 
     def get_expired(self, current_time):
-        current_iso = current_time.isoformat() if hasattr(current_time, "isoformat") else current_time
+        current_iso = _isoformat(current_time)
         return sorted(
             [
                 schedule
@@ -564,7 +561,7 @@ class RoomMaintenanceRepository(BaseRepository):
         )
 
     def get_ready_to_activate(self, current_time):
-        current_iso = current_time.isoformat() if hasattr(current_time, "isoformat") else current_time
+        current_iso = _isoformat(current_time)
         return sorted(
             [
                 schedule
@@ -579,7 +576,7 @@ class RoomMaintenanceRepository(BaseRepository):
         expired = self.get_expired(current_time)
         if not expired:
             return []
-        timestamp = current_time.isoformat() if hasattr(current_time, "isoformat") else current_time
+        timestamp = _isoformat(current_time)
         expired_ids = {schedule.id for schedule in expired}
         updated_records = []
         completed = []
